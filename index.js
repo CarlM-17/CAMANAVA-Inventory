@@ -33,6 +33,7 @@ let cache = {
   criticalItems: [],
   overstockItems: [],
   deadStockItems: [],
+  outOfStockItems: [],
   storeAnalysis: [],
   supplierAnalysis: [],
   filterMeta: {},
@@ -101,7 +102,11 @@ function parseStoresXLSX(buffer) {
     const storeName = (row[3] || '').toString().trim();
     const remarks = (row[4] || '').toString().trim();
     if (storeId) {
-      storeMap[storeId] = { region, area, storeName, remarks };
+      const info = { region, area, storeName, remarks };
+      storeMap[storeId] = info;
+      // Also store without leading zeros and with padded zeros for fuzzy match
+      const numStoreId = parseInt(storeId).toString();
+      if (numStoreId !== storeId) storeMap[numStoreId] = info;
     }
   }
   return storeMap;
@@ -184,9 +189,9 @@ function buildAnalytics(rawRows, storeMap) {
   const enriched = [];
   for (const row of dataRows) {
     if (!row || row.length < 10) continue;
-    const storeId = (row[COL.storeNumber] || '').toString().trim();
-    const storeInfo = storeMap[storeId] || {};
-    const area = storeInfo.area || '';
+    const storeIdRaw = (row[COL.storeNumber] || '').toString().trim();
+    const storeId = parseInt(storeIdRaw).toString();
+    const storeInfo = storeMap[storeIdRaw] || storeMap[storeId] || {};
     const wtsNet = num(row[COL.wtsNet]);
     const onHand = num(row[COL.onHand]);
     const onHandValue = num(row[COL.onHandValue]);
@@ -200,13 +205,17 @@ function buildAnalytics(rawRows, storeMap) {
     const isOverstock = wtsNet > 12 && onHand > 0;
     const isDeadStock = onHand > 0 && p8ave === 0 && currentWkSales === 0;
     const isZeroStock = onHand === 0;
+    const avgCost = num(row[COL.avgCost]);
+    // Out of Stock = no stock + was selling = LOST SALES
+    const isOutOfStock = onHand === 0 && p8ave > 0;
+    const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
-      regionName: row[COL.regionName] || '',
+      regionName: storeInfo.region || row[COL.regionName] || '',
       storeNumber: storeId,
-      storeName: row[COL.storeName] || storeInfo.storeName || '',
-      area,
+      storeName: storeInfo.storeName || row[COL.storeName] || '',
+      area: storeInfo.area || '',
       dept: row[COL.dept] || '',
       deptName: row[COL.deptName] || '',
       subDept: row[COL.subDept] || '',
@@ -221,7 +230,7 @@ function buildAnalytics(rawRows, storeMap) {
       skuStatus: row[COL.skuStatus] || '',
       onHand,
       onHandValue,
-      avgCost: num(row[COL.avgCost]),
+      avgCost,
       totalPO,
       poValue,
       trfValue,
@@ -234,10 +243,12 @@ function buildAnalytics(rawRows, storeMap) {
       supplierCode: row[COL.supplierCode] || '',
       supplierName: row[COL.supplierName] || '',
       delivMode: row[COL.delivMode] || '',
+      lostSalesPerWeek,
       isCritical,
       isOverstock,
       isDeadStock,
-      isZeroStock
+      isZeroStock,
+      isOutOfStock
     });
   }
 
@@ -247,6 +258,8 @@ function buildAnalytics(rawRows, storeMap) {
   const criticalCount = enriched.filter(r => r.isCritical).length;
   const overstockCount = enriched.filter(r => r.isOverstock).length;
   const deadStockCount = enriched.filter(r => r.isDeadStock).length;
+  const outOfStockCount = enriched.filter(r => r.isOutOfStock).length;
+  const totalLostSalesPerWeek = enriched.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const activeStores = new Set(enriched.map(r => r.storeNumber)).size;
   const activeSuppliers = new Set(enriched.map(r => r.supplierCode).filter(Boolean)).size;
   const totalPOValue = enriched.reduce((s, r) => s + r.poValue, 0);
@@ -260,6 +273,8 @@ function buildAnalytics(rawRows, storeMap) {
     criticalCount,
     overstockCount,
     deadStockCount,
+    outOfStockCount,
+    totalLostSalesPerWeek,
     activeStores,
     activeSuppliers,
     totalPOValue,
@@ -320,6 +335,24 @@ function buildAnalytics(rawRows, storeMap) {
       onHand: r.onHand,
       onHandValue: r.onHandValue,
       action: 'No Sales 8 Wks - Review/Markdown'
+    }));
+
+  // ── OUT OF STOCK ITEMS (Lost Sales) ───────────────────────────────────────
+  const outOfStockItems = enriched
+    .filter(r => r.isOutOfStock)
+    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
+    .slice(0, 500)
+    .map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`,
+      area: r.area,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      p8ave: r.p8ave,
+      avgCost: r.avgCost,
+      lostSalesPerWeek: r.lostSalesPerWeek,
+      totalPO: r.totalPO,
+      action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
     }));
 
   // ── STORE ANALYSIS ────────────────────────────────────────────────────────
@@ -388,7 +421,7 @@ function buildAnalytics(rawRows, storeMap) {
     skuStatuses: uniq(enriched.map(r => r.skuStatus))
   };
 
-  return { kpis, criticalItems, overstockItems, deadStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
+  return { kpis, criticalItems, overstockItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
 }
 
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
@@ -462,6 +495,7 @@ async function refreshData(force = false) {
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
     cache.deadStockItems = analytics.deadStockItems;
+    cache.outOfStockItems = analytics.outOfStockItems;
     cache.storeAnalysis = analytics.storeAnalysis;
     cache.supplierAnalysis = analytics.supplierAnalysis;
     cache.filterMeta = analytics.filterMeta;
@@ -524,10 +558,13 @@ app.get('/api/kpis', (req, res) => {
   const criticalCount = filtered.filter(r => r.isCritical).length;
   const overstockCount = filtered.filter(r => r.isOverstock).length;
   const deadStockCount = filtered.filter(r => r.isDeadStock).length;
+  const outOfStockCount = filtered.filter(r => r.isOutOfStock).length;
+  const totalLostSalesPerWeek = filtered.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const validWts = filtered.filter(r => r.wtsNet > 0 && r.wtsNet < 999);
   const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
   res.json({
     totalOnHandValue, totalOnHand, criticalCount, overstockCount, deadStockCount,
+    outOfStockCount, totalLostSalesPerWeek,
     activeStores: new Set(filtered.map(r => r.storeNumber)).size,
     activeSuppliers: new Set(filtered.map(r => r.supplierCode).filter(Boolean)).size,
     totalPOValue: filtered.reduce((s, r) => s + r.poValue, 0),
@@ -590,6 +627,22 @@ app.get('/api/deadstock', (req, res) => {
   res.json(filtered);
 });
 
+app.get('/api/outofstock', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = req.query;
+  if (Object.keys(filters).length === 0) return res.json(cache.outOfStockItems);
+  const filtered = applyFilters(cache.rows, filters).filter(r => r.isOutOfStock)
+    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).slice(0, 500)
+    .map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
+      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      p8ave: r.p8ave, avgCost: r.avgCost,
+      lostSalesPerWeek: r.lostSalesPerWeek, totalPO: r.totalPO,
+      action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
+    }));
+  res.json(filtered);
+});
+
 app.get('/api/stores', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = req.query;
@@ -636,7 +689,7 @@ app.post('/api/refresh', async (req, res) => {
 app.get('/api/export/:type', (req, res) => {
   if (!cache.ready) return res.status(503).send('Cache not ready');
   const type = req.params.type;
-  const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, deadstock: cache.deadStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
+  const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
   const data = dataMap[type];
   if (!data) return res.status(404).send('Not found');
   if (data.length === 0) return res.status(204).send('No data');
@@ -753,6 +806,42 @@ a { color: var(--green-bright); }
   font-size:12px; font-family:'IBM Plex Sans',sans-serif; cursor:pointer;
 }
 .filter-select:focus { outline:none; border-color:var(--green-bright); }
+
+/* Searchable Dropdown */
+.search-dropdown { position:relative; }
+.sd-trigger {
+  width:100%; padding:6px 8px; border-radius:var(--radius);
+  border:1px solid var(--border); background:var(--bg3); color:var(--text);
+  font-size:12px; font-family:'IBM Plex Sans',sans-serif; cursor:pointer;
+  display:flex; align-items:center; justify-content:space-between; gap:4px;
+  text-align:left;
+}
+.sd-trigger:hover { border-color:var(--green-bright); }
+.sd-trigger .sd-arrow { font-size:10px; color:var(--text2); }
+.sd-trigger.has-value { border-color:var(--green-bright); color:var(--green-bright); }
+.sd-panel {
+  position:absolute; top:100%; left:0; right:0; z-index:50;
+  background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius);
+  margin-top:2px; box-shadow:0 6px 18px rgba(0,0,0,0.5);
+  display:none; max-height:280px; overflow:hidden;
+  display:flex; flex-direction:column;
+}
+.search-dropdown.open .sd-panel { display:flex; }
+.sd-search {
+  width:100%; padding:6px 8px; border:none; border-bottom:1px solid var(--border);
+  background:var(--bg2); color:var(--text); font-size:12px; outline:none;
+  font-family:'IBM Plex Sans',sans-serif;
+}
+.sd-options { overflow-y:auto; max-height:240px; }
+.sd-option {
+  padding:6px 10px; font-size:12px; cursor:pointer; color:var(--text);
+  border-bottom:1px solid rgba(48,54,61,0.4);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.sd-option:hover { background:var(--green-dim); color:var(--green-bright); }
+.sd-option.selected { background:var(--green); color:#fff; }
+.sd-option.empty-state { color:var(--text2); font-style:italic; cursor:default; }
+.sd-option.empty-state:hover { background:transparent; color:var(--text2); }
 .filter-search {
   width:100%; padding:6px 8px; border-radius:var(--radius);
   border:1px solid var(--border); background:var(--bg3); color:var(--text);
@@ -924,53 +1013,37 @@ canvas { max-height:260px; }
     </div>
     <div class="filter-group">
       <div class="filter-label">Area</div>
-      <select class="filter-select" id="f-area" onchange="applyFilter('area',this.value)">
-        <option value="">All Areas</option>
-      </select>
+      <div class="search-dropdown" data-field="area" data-default="All Areas"></div>
     </div>
     <div class="filter-group">
       <div class="filter-label">Store</div>
-      <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
-        <option value="">All Stores</option>
-      </select>
+      <div class="search-dropdown" data-field="store" data-default="All Stores"></div>
     </div>
     <div class="sidebar-divider"></div>
     <div class="filter-group">
       <div class="filter-label">Department</div>
-      <select class="filter-select" id="f-dept" onchange="applyFilter('dept',this.value)">
-        <option value="">All Departments</option>
-      </select>
+      <div class="search-dropdown" data-field="dept" data-default="All Departments"></div>
     </div>
     <div class="filter-group">
       <div class="filter-label">Sub-Department</div>
-      <select class="filter-select" id="f-subdept" onchange="applyFilter('subDept',this.value)">
-        <option value="">All Sub-Depts</option>
-      </select>
+      <div class="search-dropdown" data-field="subDept" data-default="All Sub-Depts"></div>
     </div>
     <div class="filter-group">
       <div class="filter-label">Class</div>
-      <select class="filter-select" id="f-cls" onchange="applyFilter('cls',this.value)">
-        <option value="">All Classes</option>
-      </select>
+      <div class="search-dropdown" data-field="cls" data-default="All Classes"></div>
     </div>
     <div class="sidebar-divider"></div>
     <div class="filter-group">
       <div class="filter-label">Supplier</div>
-      <select class="filter-select" id="f-supplier" onchange="applyFilter('supplier',this.value)">
-        <option value="">All Suppliers</option>
-      </select>
+      <div class="search-dropdown" data-field="supplier" data-default="All Suppliers"></div>
     </div>
     <div class="filter-group">
       <div class="filter-label">Brand</div>
-      <select class="filter-select" id="f-brand" onchange="applyFilter('brand',this.value)">
-        <option value="">All Brands</option>
-      </select>
+      <div class="search-dropdown" data-field="brand" data-default="All Brands"></div>
     </div>
     <div class="filter-group">
       <div class="filter-label">SKU Status</div>
-      <select class="filter-select" id="f-skustatus" onchange="applyFilter('skuStatus',this.value)">
-        <option value="">All Statuses</option>
-      </select>
+      <div class="search-dropdown" data-field="skuStatus" data-default="All Statuses"></div>
     </div>
     <div class="sidebar-divider"></div>
     <div>
@@ -993,6 +1066,7 @@ canvas { max-height:260px; }
     <!-- TABS -->
     <div class="tabs">
       <div class="tab active" onclick="showTab('overview')">Overview</div>
+      <div class="tab" onclick="showTab('outofstock')">🚫 Out of Stock</div>
       <div class="tab" onclick="showTab('critical')">⚠ Critical</div>
       <div class="tab" onclick="showTab('overstock')">📦 Overstock</div>
       <div class="tab" onclick="showTab('deadstock')">💀 Dead Stock</div>
@@ -1118,6 +1192,37 @@ canvas { max-height:260px; }
       </div>
     </div>
 
+    <!-- OUT OF STOCK TAB -->
+    <div id="tab-outofstock" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">🚫 Out of Stock — Lost Sales <span class="badge badge-red" id="outofstock-count">0</span></div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('outofstock-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportData('outofstock')">⬇ Export CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="outofstock-table">
+            <thead><tr>
+              <th onclick="sortTable('outofstock-table',0)">Store</th>
+              <th onclick="sortTable('outofstock-table',1)">Area</th>
+              <th onclick="sortTable('outofstock-table',2)">SKU Code</th>
+              <th onclick="sortTable('outofstock-table',3)">Description</th>
+              <th onclick="sortTable('outofstock-table',4)">Supplier</th>
+              <th onclick="sortTable('outofstock-table',5)">P8 Ave/Wk</th>
+              <th onclick="sortTable('outofstock-table',6)">Avg Cost</th>
+              <th onclick="sortTable('outofstock-table',7)">Lost Sales/Wk</th>
+              <th onclick="sortTable('outofstock-table',8)">Incoming PO</th>
+              <th>Action</th>
+            </tr></thead>
+            <tbody id="outofstock-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="outofstock-pagination"></div>
+      </div>
+    </div>
+
     <!-- STORES TAB -->
     <div id="tab-stores" style="display:none;">
       <div class="section">
@@ -1186,7 +1291,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, deadstock:1, stores:1, suppliers:1 };
+let tablePages = { critical:1, overstock:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
 const PAGE_SIZE = 50;
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
@@ -1276,22 +1381,94 @@ async function loadFilters() {
   const d = await r.json();
   if (d.error) return;
 
-  populateSelect('f-area', d.areas, 'All Areas');
-  populateSelect('f-dept', d.depts, 'All Departments');
-  populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
-  populateSelect('f-cls', d.classes, 'All Classes');
-  populateSelect('f-supplier', d.suppliers, 'All Suppliers');
-  populateSelect('f-brand', d.brands, 'All Brands');
-  populateSelect('f-skustatus', d.skuStatuses, 'All Statuses');
+  // Build options arrays { value, label }
+  const filterData = {
+    area: (d.areas || []).map(v => ({ value: v, label: v })),
+    store: (d.stores || []).map(s => ({ value: s.id, label: s.id + ' - ' + s.name })),
+    dept: (d.depts || []).map(v => ({ value: v, label: v })),
+    subDept: (d.subDepts || []).map(v => ({ value: v, label: v })),
+    cls: (d.classes || []).map(v => ({ value: v, label: v })),
+    supplier: (d.suppliers || []).map(v => ({ value: v, label: v })),
+    brand: (d.brands || []).map(v => ({ value: v, label: v })),
+    skuStatus: (d.skuStatuses || []).map(v => ({ value: v, label: v }))
+  };
+  window._filterData = filterData;
 
-  const storeSelect = document.getElementById('f-store');
-  storeSelect.innerHTML = '<option value="">All Stores</option>';
-  (d.stores || []).forEach(s => {
-    const o = document.createElement('option');
-    o.value = s.id; o.textContent = s.id + ' - ' + s.name;
-    storeSelect.appendChild(o);
+  // Render all searchable dropdowns
+  document.querySelectorAll('.search-dropdown').forEach(el => {
+    const field = el.getAttribute('data-field');
+    const defText = el.getAttribute('data-default');
+    el.innerHTML = '<button class="sd-trigger" type="button" onclick="toggleDropdown(this)"><span class="sd-text">' + defText + '</span><span class="sd-arrow">&#9662;</span></button><div class="sd-panel"><input type="text" class="sd-search" placeholder="Search..." oninput="filterDropdownOptions(this)"/><div class="sd-options"></div></div>';
+    renderDropdownOptions(el, filterData[field] || [], defText);
   });
 }
+
+function renderDropdownOptions(el, options, defText, query) {
+  const optionsBox = el.querySelector('.sd-options');
+  const q = (query || '').toLowerCase().trim();
+  const field = el.getAttribute('data-field');
+  const current = activeFilters[field] || '';
+  let html = '<div class="sd-option' + (!current ? ' selected' : '') + '" data-value="" data-label="" onclick="pickDropdownEl(this)">' + escHtml(defText) + '</div>';
+  let filtered = options;
+  if (q) filtered = options.filter(o => o.label.toLowerCase().includes(q));
+  if (filtered.length === 0) {
+    html += '<div class="sd-option empty-state">No matches</div>';
+  } else {
+    filtered.slice(0, 200).forEach(o => {
+      const sel = o.value === current ? ' selected' : '';
+      html += '<div class="sd-option' + sel + '" data-value="' + escAttr(o.value) + '" data-label="' + escAttr(o.label) + '" onclick="pickDropdownEl(this)">' + escHtml(o.label) + '</div>';
+    });
+    if (filtered.length > 200) {
+      html += '<div class="sd-option empty-state">' + (filtered.length - 200) + ' more - keep typing...</div>';
+    }
+  }
+  optionsBox.innerHTML = html;
+}
+
+function escAttr(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function toggleDropdown(btn) {
+  const el = btn.closest('.search-dropdown');
+  const wasOpen = el.classList.contains('open');
+  // Close all other dropdowns
+  document.querySelectorAll('.search-dropdown.open').forEach(o => o.classList.remove('open'));
+  if (!wasOpen) {
+    el.classList.add('open');
+    const search = el.querySelector('.sd-search');
+    search.value = '';
+    const field = el.getAttribute('data-field');
+    const defText = el.getAttribute('data-default');
+    renderDropdownOptions(el, window._filterData[field] || [], defText, '');
+    setTimeout(() => search.focus(), 50);
+  }
+}
+
+function filterDropdownOptions(input) {
+  const el = input.closest('.search-dropdown');
+  const field = el.getAttribute('data-field');
+  const defText = el.getAttribute('data-default');
+  renderDropdownOptions(el, window._filterData[field] || [], defText, input.value);
+}
+
+function pickDropdownEl(opt) {
+  const value = opt.getAttribute('data-value') || '';
+  const label = opt.getAttribute('data-label') || '';
+  const el = opt.closest('.search-dropdown');
+  const field = el.getAttribute('data-field');
+  const defText = el.getAttribute('data-default');
+  el.querySelector('.sd-text').textContent = value ? label : defText;
+  el.querySelector('.sd-trigger').classList.toggle('has-value', !!value);
+  el.classList.remove('open');
+  applyFilter(field, value);
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.search-dropdown')) {
+    document.querySelectorAll('.search-dropdown.open').forEach(o => o.classList.remove('open'));
+  }
+});
 
 function populateSelect(id, items, defaultText) {
   const sel = document.getElementById(id);
@@ -1312,13 +1489,29 @@ function applyFilter(key, value) {
 
 function removeFilterTag(btn) {
   const key = btn.getAttribute('data-key');
-  if (key) applyFilter(key, '');
+  if (!key) return;
+  // Reset matching dropdown UI
+  document.querySelectorAll('.search-dropdown').forEach(el => {
+    if (el.getAttribute('data-field') === key) {
+      const defText = el.getAttribute('data-default');
+      const t = el.querySelector('.sd-text');
+      if (t) t.textContent = defText;
+      const trig = el.querySelector('.sd-trigger');
+      if (trig) trig.classList.remove('has-value');
+    }
+  });
+  applyFilter(key, '');
 }
 
 function clearFilters() {
   activeFilters = {};
-  ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier','f-brand','f-skustatus']
-    .forEach(id => { document.getElementById(id).value = ''; });
+  document.querySelectorAll('.search-dropdown').forEach(el => {
+    const defText = el.getAttribute('data-default');
+    const triggerText = el.querySelector('.sd-text');
+    if (triggerText) triggerText.textContent = defText;
+    const trigger = el.querySelector('.sd-trigger');
+    if (trigger) trigger.classList.remove('has-value');
+  });
   renderActiveTags();
   loadAll();
 }
@@ -1349,6 +1542,8 @@ async function loadKPIs() {
   grid.innerHTML = [
     kpiCard('Total Inv Value', '₱' + fmtM(d.totalOnHandValue), 'w/ VAT', 'green'),
     kpiCard('On Hand Qty', fmt(d.totalOnHand), 'units', 'blue'),
+    kpiCard('Out of Stock', fmt(d.outOfStockCount || 0), 'SKUs losing sales', 'red'),
+    kpiCard('Lost Sales/Wk', '₱' + fmtM(d.totalLostSalesPerWeek || 0), 'estimated/week', 'red'),
     kpiCard('Critical SKUs', fmt(d.criticalCount), 'WTS < 2 weeks', 'red'),
     kpiCard('Overstock SKUs', fmt(d.overstockCount), 'WTS > 12 weeks', 'yellow'),
     kpiCard('Dead Stock SKUs', fmt(d.deadStockCount), 'No sales 8 wks', 'red'),
@@ -1445,6 +1640,7 @@ async function loadTabData() {
   if (activeTab === 'critical') await loadCritical();
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'deadstock') await loadDeadstock();
+  if (activeTab === 'outofstock') await loadOutOfStock();
   if (activeTab === 'stores') await loadStores();
   if (activeTab === 'suppliers') await loadSuppliers();
 }
@@ -1469,6 +1665,13 @@ async function loadDeadstock() {
   if (!Array.isArray(data)) return;
   document.getElementById('deadstock-count').textContent = fmt(data.length);
   renderTable('deadstock-body', data, renderDeadstockRow, 'deadstock-pagination', 'deadstock', tablePages.deadstock);
+}
+async function loadOutOfStock() {
+  const r = await fetch('/api/outofstock' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  document.getElementById('outofstock-count').textContent = fmt(data.length);
+  renderTable('outofstock-body', data, renderOutOfStockRow, 'outofstock-pagination', 'outofstock', tablePages.outofstock);
 }
 async function loadStores() {
   const r = await fetch('/api/stores' + filterQuery());
@@ -1567,6 +1770,21 @@ function renderDeadstockRow(r) {
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
+function renderOutOfStockRow(r) {
+  const ac = r.action === 'URGENT: Place PO Now' ? 'action-urgent' : 'action-po';
+  return '<tr>' +
+    '<td>' + esc(r.store) + '</td>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td class="mono">' + esc(r.skuCode) + '</td>' +
+    '<td>' + esc(r.skuDesc) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.avgCost) + '</td>' +
+    '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.lostSalesPerWeek) + '</td>' +
+    '<td class="mono">' + fmt(r.totalPO) + '</td>' +
+    '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
+    '</tr>';
+}
 function renderStoreRow(r) {
   const ci = r.criticalCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.criticalCount) + '</span>' : '0';
   const ov = r.overstockCount > 0 ? '<span style="color:var(--yellow-light);">' + fmt(r.overstockCount) + '</span>' : '0';
@@ -1600,11 +1818,11 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','critical','overstock','deadstock','stores','suppliers'].forEach(t => {
+  ['overview','outofstock','critical','overstock','deadstock','stores','suppliers'].forEach(t => {
     document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
   });
   document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['overview','critical','overstock','deadstock','stores','suppliers'][i] === name);
+    el.classList.toggle('active', ['overview','outofstock','critical','overstock','deadstock','stores','suppliers'][i] === name);
   });
   activeTab = name;
   loadTabData();
