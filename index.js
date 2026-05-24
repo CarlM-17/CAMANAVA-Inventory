@@ -96,9 +96,12 @@ function parseStoresXLSX(buffer) {
   // Skip header row (row 0), data starts row 1
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
+    if (!row || row.length === 0) continue;
     const region = (row[0] || '').toString().trim();
     const area = (row[1] || '').toString().trim();
-    const storeId = (row[2] || '').toString().trim();
+    let storeId = row[2];
+    if (storeId === null || storeId === undefined) storeId = '';
+    storeId = storeId.toString().trim();
     const storeName = (row[3] || '').toString().trim();
     const remarks = (row[4] || '').toString().trim();
     if (storeId) {
@@ -106,9 +109,13 @@ function parseStoresXLSX(buffer) {
       storeMap[storeId] = info;
       // Also store without leading zeros and with padded zeros for fuzzy match
       const numStoreId = parseInt(storeId).toString();
-      if (numStoreId !== storeId) storeMap[numStoreId] = info;
+      if (numStoreId !== storeId && numStoreId !== 'NaN') storeMap[numStoreId] = info;
     }
   }
+  console.log('[Stores] Loaded ' + Object.keys(storeMap).length + ' store keys');
+  // Log a sample
+  const keys = Object.keys(storeMap).slice(0, 5);
+  keys.forEach(k => console.log('[Stores] Sample: ' + k + ' -> ' + JSON.stringify(storeMap[k])));
   return storeMap;
 }
 
@@ -196,6 +203,20 @@ function buildAnalytics(rawRows, storeMap) {
       skuCostLookup[skuCode] = cost;
     }
   }
+
+  // Debug: sample of InvData store IDs
+  const sampleStoreIds = new Set();
+  for (let i = 0; i < Math.min(50, dataRows.length); i++) {
+    const row = dataRows[i];
+    if (row && row[2]) sampleStoreIds.add(row[2].toString().trim());
+    if (sampleStoreIds.size >= 10) break;
+  }
+  console.log('[InvData] Sample store IDs from CSV:', [...sampleStoreIds].join(', '));
+  console.log('[Match] Testing lookups:');
+  [...sampleStoreIds].slice(0, 5).forEach(sid => {
+    const info = storeMap[sid] || storeMap[parseInt(sid).toString()];
+    console.log('  Store "' + sid + '" -> ' + (info ? ('Area: ' + info.area + ' | Name: ' + info.storeName) : 'NOT FOUND'));
+  });
 
   // Enrich rows and map store info
   const enriched = [];
@@ -486,12 +507,23 @@ async function refreshData(force = false) {
     // Find and parse ListOfStores.xlsx
     let storeMap = {};
     try {
+      console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
       const storesFile = await findFile(drive, STORES_FILE_NAME);
       if (storesFile) {
-        console.log('[Cache] Downloading ListOfStores.xlsx...');
+        console.log('[Cache] Found stores file ID: ' + storesFile.id + ', downloading...');
         const storesBuffer = await downloadFileBuffer(drive, storesFile.id);
         storeMap = parseStoresXLSX(storesBuffer);
         console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores.`);
+      } else {
+        console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
+        // List all files in folder for debugging
+        const allFiles = await drive.files.list({
+          q: `'${GDRIVE_FOLDER_ID}' in parents and trashed=false`,
+          fields: 'files(id,name,mimeType)',
+          pageSize: 20
+        });
+        console.warn('[Cache] Files in folder:');
+        (allFiles.data.files || []).forEach(f => console.warn('  - "' + f.name + '" (type: ' + f.mimeType + ')'));
       }
     } catch (e) {
       console.warn('[Cache] Could not load stores file:', e.message);
