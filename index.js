@@ -1500,13 +1500,21 @@ function renderPagination(id, current, total, key, data) {
   const cont = document.getElementById(id);
   if (total <= 1) { cont.innerHTML = '<span class="page-info">' + fmt(data.length) + ' rows</span>'; return; }
   let html = '<span class="page-info">' + fmt(data.length) + ' rows | Page ' + current + ' of ' + total + '</span>';
-  html += '<button class="page-btn" onclick="goPage(\'' + key + '\',1)">«</button>';
-  html += '<button class="page-btn" onclick="goPage(\'' + key + '\',' + Math.max(1,current-1) + ')">‹</button>';
-  const start = Math.max(1, current - 2), end = Math.min(total, current + 2);
-  for (let i = start; i <= end; i++) html += '<button class="page-btn' + (i===current?' active':'') + '" onclick="goPage(\'' + key + '\',' + i + ')">' + i + '</button>';
-  html += '<button class="page-btn" onclick="goPage(\'' + key + '\',' + Math.min(total,current+1) + ')">›</button>';
-  html += '<button class="page-btn" onclick="goPage(\'' + key + '\',' + total + ')">»</button>';
+  html += '<button class="page-btn" data-key="' + key + '" data-page="1" onclick="pageBtnClick(this)">&laquo;</button>';
+  html += '<button class="page-btn" data-key="' + key + '" data-page="' + Math.max(1,current-1) + '" onclick="pageBtnClick(this)">&lsaquo;</button>';
+  const startP = Math.max(1, current - 2), endP = Math.min(total, current + 2);
+  for (let i = startP; i <= endP; i++) {
+    html += '<button class="page-btn' + (i===current?' active':'') + '" data-key="' + key + '" data-page="' + i + '" onclick="pageBtnClick(this)">' + i + '</button>';
+  }
+  html += '<button class="page-btn" data-key="' + key + '" data-page="' + Math.min(total,current+1) + '" onclick="pageBtnClick(this)">&rsaquo;</button>';
+  html += '<button class="page-btn" data-key="' + key + '" data-page="' + total + '" onclick="pageBtnClick(this)">&raquo;</button>';
   cont.innerHTML = html;
+}
+
+function pageBtnClick(btn) {
+  const key = btn.getAttribute('data-key');
+  const page = parseInt(btn.getAttribute('data-page'));
+  goPage(key, page);
 }
 
 function goPage(key, page) {
