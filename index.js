@@ -1310,6 +1310,11 @@ function applyFilter(key, value) {
   loadAll();
 }
 
+function removeFilterTag(btn) {
+  const key = btn.getAttribute('data-key');
+  if (key) applyFilter(key, '');
+}
+
 function clearFilters() {
   activeFilters = {};
   ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier','f-brand','f-skustatus']
@@ -1322,10 +1327,12 @@ function renderActiveTags() {
   const cont = document.getElementById('active-filters');
   const entries = Object.entries(activeFilters);
   if (entries.length === 0) { cont.innerHTML = '<span style="font-size:11px;color:var(--text2);">None</span>'; return; }
-  cont.innerHTML = entries.map(([k,v]) =>
-    '<span class="filter-tag">' + k + ': ' + v.substring(0,15) +
-    '<button onclick="applyFilter(\'' + k + '\',\'\')">✕</button></span>'
-  ).join('');
+  let html = '';
+  entries.forEach(function(entry) {
+    const k = entry[0]; const v = entry[1];
+    html += '<span class="filter-tag">' + k + ': ' + v.substring(0,15) + '<button onclick="removeFilterTag(this)" data-key="' + k + '">x</button></span>';
+  });
+  cont.innerHTML = html;
 }
 
 function filterQuery() {
