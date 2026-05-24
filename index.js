@@ -1192,14 +1192,34 @@ const PAGE_SIZE = 50;
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 async function init() {
   setLoadingMsg('Checking server status...');
-  await pollUntilReady();
-  setLoadingMsg('Loading filters...');
-  await loadFilters();
-  setLoadingMsg('Loading dashboard...');
-  await loadAll();
+  let ready = false;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch('/api/status?t=' + Date.now());
+      const text = await r.text();
+      const d = JSON.parse(text);
+      if (d && d.ready === true) { ready = true; break; }
+    } catch(e) {}
+    await sleep(1000);
+  }
   document.getElementById('loading-overlay').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('app').style.flexDirection = 'column';
+  await loadFilters();
+  await loadAll();
+  if (!ready) { pollAndRefresh(); }
+}
+
+async function pollAndRefresh() {
+  while (true) {
+    await sleep(3000);
+    try {
+      const r = await fetch('/api/status?t=' + Date.now());
+      const text = await r.text();
+      const d = JSON.parse(text);
+      if (d && d.ready === true) { await loadFilters(); await loadAll(); return; }
+    } catch(e) {}
+  }
 }
 
 function setLoadingMsg(msg) {
