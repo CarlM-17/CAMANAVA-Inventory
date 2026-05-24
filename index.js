@@ -185,6 +185,18 @@ function buildAnalytics(rawRows, storeMap) {
     replenishment: 74 // BW
   };
 
+  // PRE-PASS: Build SKU price lookup (avg cost by SKU code, from rows that have stock/cost)
+  const skuCostLookup = {};
+  for (const row of dataRows) {
+    if (!row || row.length < 10) continue;
+    const skuCode = (row[COL.skuCode] || '').toString().trim();
+    if (!skuCode) continue;
+    const cost = num(row[COL.avgCost]);
+    if (cost > 0 && !skuCostLookup[skuCode]) {
+      skuCostLookup[skuCode] = cost;
+    }
+  }
+
   // Enrich rows and map store info
   const enriched = [];
   for (const row of dataRows) {
@@ -205,7 +217,12 @@ function buildAnalytics(rawRows, storeMap) {
     const isOverstock = wtsNet > 12 && onHand > 0;
     const isDeadStock = onHand > 0 && p8ave === 0 && currentWkSales === 0;
     const isZeroStock = onHand === 0;
-    const avgCost = num(row[COL.avgCost]);
+    const skuCode = (row[COL.skuCode] || '').toString().trim();
+    // Get avg cost from this row, fallback to SKU lookup from other stores
+    let avgCost = num(row[COL.avgCost]);
+    if (avgCost === 0 && skuCode && skuCostLookup[skuCode]) {
+      avgCost = skuCostLookup[skuCode];
+    }
     // Out of Stock = no stock + was selling = LOST SALES
     const isOutOfStock = onHand === 0 && p8ave > 0;
     const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
@@ -1013,37 +1030,53 @@ canvas { max-height:260px; }
     </div>
     <div class="filter-group">
       <div class="filter-label">Area</div>
-      <div class="search-dropdown" data-field="area" data-default="All Areas"></div>
+      <select class="filter-select" id="f-area" onchange="applyFilter('area',this.value)">
+        <option value="">All Areas</option>
+      </select>
     </div>
     <div class="filter-group">
       <div class="filter-label">Store</div>
-      <div class="search-dropdown" data-field="store" data-default="All Stores"></div>
+      <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
+        <option value="">All Stores</option>
+      </select>
     </div>
     <div class="sidebar-divider"></div>
     <div class="filter-group">
       <div class="filter-label">Department</div>
-      <div class="search-dropdown" data-field="dept" data-default="All Departments"></div>
+      <select class="filter-select" id="f-dept" onchange="applyFilter('dept',this.value)">
+        <option value="">All Departments</option>
+      </select>
     </div>
     <div class="filter-group">
       <div class="filter-label">Sub-Department</div>
-      <div class="search-dropdown" data-field="subDept" data-default="All Sub-Depts"></div>
+      <select class="filter-select" id="f-subdept" onchange="applyFilter('subDept',this.value)">
+        <option value="">All Sub-Depts</option>
+      </select>
     </div>
     <div class="filter-group">
       <div class="filter-label">Class</div>
-      <div class="search-dropdown" data-field="cls" data-default="All Classes"></div>
+      <select class="filter-select" id="f-cls" onchange="applyFilter('cls',this.value)">
+        <option value="">All Classes</option>
+      </select>
     </div>
     <div class="sidebar-divider"></div>
     <div class="filter-group">
       <div class="filter-label">Supplier</div>
-      <div class="search-dropdown" data-field="supplier" data-default="All Suppliers"></div>
+      <select class="filter-select" id="f-supplier" onchange="applyFilter('supplier',this.value)">
+        <option value="">All Suppliers</option>
+      </select>
     </div>
     <div class="filter-group">
       <div class="filter-label">Brand</div>
-      <div class="search-dropdown" data-field="brand" data-default="All Brands"></div>
+      <select class="filter-select" id="f-brand" onchange="applyFilter('brand',this.value)">
+        <option value="">All Brands</option>
+      </select>
     </div>
     <div class="filter-group">
       <div class="filter-label">SKU Status</div>
-      <div class="search-dropdown" data-field="skuStatus" data-default="All Statuses"></div>
+      <select class="filter-select" id="f-skustatus" onchange="applyFilter('skuStatus',this.value)">
+        <option value="">All Statuses</option>
+      </select>
     </div>
     <div class="sidebar-divider"></div>
     <div>
@@ -1381,94 +1414,22 @@ async function loadFilters() {
   const d = await r.json();
   if (d.error) return;
 
-  // Build options arrays { value, label }
-  const filterData = {
-    area: (d.areas || []).map(v => ({ value: v, label: v })),
-    store: (d.stores || []).map(s => ({ value: s.id, label: s.id + ' - ' + s.name })),
-    dept: (d.depts || []).map(v => ({ value: v, label: v })),
-    subDept: (d.subDepts || []).map(v => ({ value: v, label: v })),
-    cls: (d.classes || []).map(v => ({ value: v, label: v })),
-    supplier: (d.suppliers || []).map(v => ({ value: v, label: v })),
-    brand: (d.brands || []).map(v => ({ value: v, label: v })),
-    skuStatus: (d.skuStatuses || []).map(v => ({ value: v, label: v }))
-  };
-  window._filterData = filterData;
+  populateSelect('f-area', d.areas, 'All Areas');
+  populateSelect('f-dept', d.depts, 'All Departments');
+  populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
+  populateSelect('f-cls', d.classes, 'All Classes');
+  populateSelect('f-supplier', d.suppliers, 'All Suppliers');
+  populateSelect('f-brand', d.brands, 'All Brands');
+  populateSelect('f-skustatus', d.skuStatuses, 'All Statuses');
 
-  // Render all searchable dropdowns
-  document.querySelectorAll('.search-dropdown').forEach(el => {
-    const field = el.getAttribute('data-field');
-    const defText = el.getAttribute('data-default');
-    el.innerHTML = '<button class="sd-trigger" type="button" onclick="toggleDropdown(this)"><span class="sd-text">' + defText + '</span><span class="sd-arrow">&#9662;</span></button><div class="sd-panel"><input type="text" class="sd-search" placeholder="Search..." oninput="filterDropdownOptions(this)"/><div class="sd-options"></div></div>';
-    renderDropdownOptions(el, filterData[field] || [], defText);
+  const storeSelect = document.getElementById('f-store');
+  storeSelect.innerHTML = '<option value="">All Stores</option>';
+  (d.stores || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.id; o.textContent = s.id + ' - ' + s.name;
+    storeSelect.appendChild(o);
   });
 }
-
-function renderDropdownOptions(el, options, defText, query) {
-  const optionsBox = el.querySelector('.sd-options');
-  const q = (query || '').toLowerCase().trim();
-  const field = el.getAttribute('data-field');
-  const current = activeFilters[field] || '';
-  let html = '<div class="sd-option' + (!current ? ' selected' : '') + '" data-value="" data-label="" onclick="pickDropdownEl(this)">' + escHtml(defText) + '</div>';
-  let filtered = options;
-  if (q) filtered = options.filter(o => o.label.toLowerCase().includes(q));
-  if (filtered.length === 0) {
-    html += '<div class="sd-option empty-state">No matches</div>';
-  } else {
-    filtered.slice(0, 200).forEach(o => {
-      const sel = o.value === current ? ' selected' : '';
-      html += '<div class="sd-option' + sel + '" data-value="' + escAttr(o.value) + '" data-label="' + escAttr(o.label) + '" onclick="pickDropdownEl(this)">' + escHtml(o.label) + '</div>';
-    });
-    if (filtered.length > 200) {
-      html += '<div class="sd-option empty-state">' + (filtered.length - 200) + ' more - keep typing...</div>';
-    }
-  }
-  optionsBox.innerHTML = html;
-}
-
-function escAttr(s) { return String(s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;'); }
-function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-function toggleDropdown(btn) {
-  const el = btn.closest('.search-dropdown');
-  const wasOpen = el.classList.contains('open');
-  // Close all other dropdowns
-  document.querySelectorAll('.search-dropdown.open').forEach(o => o.classList.remove('open'));
-  if (!wasOpen) {
-    el.classList.add('open');
-    const search = el.querySelector('.sd-search');
-    search.value = '';
-    const field = el.getAttribute('data-field');
-    const defText = el.getAttribute('data-default');
-    renderDropdownOptions(el, window._filterData[field] || [], defText, '');
-    setTimeout(() => search.focus(), 50);
-  }
-}
-
-function filterDropdownOptions(input) {
-  const el = input.closest('.search-dropdown');
-  const field = el.getAttribute('data-field');
-  const defText = el.getAttribute('data-default');
-  renderDropdownOptions(el, window._filterData[field] || [], defText, input.value);
-}
-
-function pickDropdownEl(opt) {
-  const value = opt.getAttribute('data-value') || '';
-  const label = opt.getAttribute('data-label') || '';
-  const el = opt.closest('.search-dropdown');
-  const field = el.getAttribute('data-field');
-  const defText = el.getAttribute('data-default');
-  el.querySelector('.sd-text').textContent = value ? label : defText;
-  el.querySelector('.sd-trigger').classList.toggle('has-value', !!value);
-  el.classList.remove('open');
-  applyFilter(field, value);
-}
-
-// Close dropdown when clicking outside
-document.addEventListener('click', function(e) {
-  if (!e.target.closest('.search-dropdown')) {
-    document.querySelectorAll('.search-dropdown.open').forEach(o => o.classList.remove('open'));
-  }
-});
 
 function populateSelect(id, items, defaultText) {
   const sel = document.getElementById(id);
@@ -1490,28 +1451,16 @@ function applyFilter(key, value) {
 function removeFilterTag(btn) {
   const key = btn.getAttribute('data-key');
   if (!key) return;
-  // Reset matching dropdown UI
-  document.querySelectorAll('.search-dropdown').forEach(el => {
-    if (el.getAttribute('data-field') === key) {
-      const defText = el.getAttribute('data-default');
-      const t = el.querySelector('.sd-text');
-      if (t) t.textContent = defText;
-      const trig = el.querySelector('.sd-trigger');
-      if (trig) trig.classList.remove('has-value');
-    }
-  });
+  const idMap = { area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier', brand: 'f-brand', skuStatus: 'f-skustatus' };
+  const sel = document.getElementById(idMap[key]);
+  if (sel) sel.value = '';
   applyFilter(key, '');
 }
 
 function clearFilters() {
   activeFilters = {};
-  document.querySelectorAll('.search-dropdown').forEach(el => {
-    const defText = el.getAttribute('data-default');
-    const triggerText = el.querySelector('.sd-text');
-    if (triggerText) triggerText.textContent = defText;
-    const trigger = el.querySelector('.sd-trigger');
-    if (trigger) trigger.classList.remove('has-value');
-  });
+  ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier','f-brand','f-skustatus']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   renderActiveTags();
   loadAll();
 }
@@ -1900,4 +1849,3 @@ app.listen(PORT, () => {
     refreshData(true);
   }
 });
-
