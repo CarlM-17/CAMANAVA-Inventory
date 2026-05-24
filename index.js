@@ -1210,18 +1210,20 @@ async function pollUntilReady(maxWait = 300000) {
   const start = Date.now();
   while (Date.now() - start < maxWait) {
     try {
-      const r = await fetch('/api/status');
-      const d = await r.json();
-      if (d.ready) return true;
-      if (d.error && !d.refreshing) {
+      const r = await fetch('/api/status?t=' + Date.now());
+      if (!r.ok) { await sleep(2000); continue; }
+      const text = await r.text();
+      const d = JSON.parse(text);
+      if (d && d.ready === true) return true;
+      if (d && d.error && !d.refreshing) {
         setLoadingMsg('Error: ' + d.error);
         await sleep(5000);
       } else {
-        setLoadingMsg(d.refreshing ? 'Processing inventory data... (120MB file, please wait)' : 'Waiting for data...');
+        setLoadingMsg(d && d.refreshing ? 'Processing inventory data... (120MB file, please wait)' : 'Waiting for data...');
         await sleep(3000);
       }
     } catch(e) {
-      setLoadingMsg('Connecting...');
+      setLoadingMsg('Connecting... (' + e.message + ')');
       await sleep(2000);
     }
   }
