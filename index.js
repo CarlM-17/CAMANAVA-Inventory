@@ -837,24 +837,30 @@ a { color: var(--green-bright); }
 /* LAYOUT */
 .main { display:flex; height:calc(100vh - 60px); }
 
-/* SIDEBAR */
-.sidebar {
-  width: 260px; min-width:260px;
-  background: var(--bg2);
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
-  padding: 16px;
-  display: flex; flex-direction: column; gap: 12px;
-}
-.sidebar-title { font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:1px; color:var(--text2); margin-bottom:4px; }
-.filter-group { display:flex; flex-direction:column; gap:6px; }
-.filter-label { font-size:11px; color:var(--text2); }
+/* SIDEBAR (deprecated - using top filter bar) */
 .filter-select {
   width:100%; padding:6px 8px; border-radius:var(--radius);
   border:1px solid var(--border); background:var(--bg3); color:var(--text);
   font-size:12px; font-family:'IBM Plex Sans',sans-serif; cursor:pointer;
 }
 .filter-select:focus { outline:none; border-color:var(--green-bright); }
+
+/* Top Filter Bar */
+.filter-bar {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+.fb-group { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; max-width: 220px; }
+.fb-group label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text2); font-weight: 600; }
+.fb-group .filter-select { width: 100%; }
+.fb-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; flex-wrap: wrap; }
+.fb-actions .active-filters { display: flex; flex-wrap: wrap; gap: 4px; max-width: 400px; }
 
 /* Searchable Dropdown */
 .search-dropdown { position:relative; }
@@ -1056,70 +1062,46 @@ canvas { max-height:260px; }
 <div class="main">
 
   <!-- SIDEBAR FILTERS -->
-  <aside class="sidebar">
-    <div>
-      <div class="sidebar-title">Filters</div>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">Area</div>
-      <select class="filter-select" id="f-area" onchange="applyFilter('area',this.value)">
-        <option value="">All Areas</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">Store</div>
-      <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
-        <option value="">All Stores</option>
-      </select>
-    </div>
-    <div class="sidebar-divider"></div>
-    <div class="filter-group">
-      <div class="filter-label">Department</div>
-      <select class="filter-select" id="f-dept" onchange="applyFilter('dept',this.value)">
-        <option value="">All Departments</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">Sub-Department</div>
-      <select class="filter-select" id="f-subdept" onchange="applyFilter('subDept',this.value)">
-        <option value="">All Sub-Depts</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">Class</div>
-      <select class="filter-select" id="f-cls" onchange="applyFilter('cls',this.value)">
-        <option value="">All Classes</option>
-      </select>
-    </div>
-    <div class="sidebar-divider"></div>
-    <div class="filter-group">
-      <div class="filter-label">Supplier</div>
-      <select class="filter-select" id="f-supplier" onchange="applyFilter('supplier',this.value)">
-        <option value="">All Suppliers</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">Brand</div>
-      <select class="filter-select" id="f-brand" onchange="applyFilter('brand',this.value)">
-        <option value="">All Brands</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <div class="filter-label">SKU Status</div>
-      <select class="filter-select" id="f-skustatus" onchange="applyFilter('skuStatus',this.value)">
-        <option value="">All Statuses</option>
-      </select>
-    </div>
-    <div class="sidebar-divider"></div>
-    <div>
-      <div class="sidebar-title">Active Filters</div>
-      <div class="active-filters" id="active-filters"><span style="font-size:11px;color:var(--text2);">None</span></div>
-    </div>
-    <button class="btn" style="margin-top:4px;" onclick="clearFilters()">✕ Clear All Filters</button>
-  </aside>
-
-  <!-- MAIN CONTENT -->
+  <!-- MAIN CONTENT (full width now) -->
   <main class="content">
+
+    <!-- TOP FILTER BAR -->
+    <div class="filter-bar">
+      <div class="fb-group">
+        <label>Store</label>
+        <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
+          <option value="">All Stores</option>
+        </select>
+      </div>
+      <div class="fb-group">
+        <label>Department</label>
+        <select class="filter-select" id="f-dept" onchange="applyFilter('dept',this.value)">
+          <option value="">All Departments</option>
+        </select>
+      </div>
+      <div class="fb-group">
+        <label>Sub-Department</label>
+        <select class="filter-select" id="f-subdept" onchange="applyFilter('subDept',this.value)">
+          <option value="">All Sub-Depts</option>
+        </select>
+      </div>
+      <div class="fb-group">
+        <label>Class</label>
+        <select class="filter-select" id="f-cls" onchange="applyFilter('cls',this.value)">
+          <option value="">All Classes</option>
+        </select>
+      </div>
+      <div class="fb-group">
+        <label>Supplier</label>
+        <select class="filter-select" id="f-supplier" onchange="applyFilter('supplier',this.value)">
+          <option value="">All Suppliers</option>
+        </select>
+      </div>
+      <div class="fb-actions">
+        <div class="active-filters" id="active-filters"></div>
+        <button class="btn btn-sm" onclick="clearFilters()">✕ Clear</button>
+      </div>
+    </div>
 
     <!-- STATUS BAR -->
     <div class="status-bar" id="status-bar">
@@ -1446,13 +1428,10 @@ async function loadFilters() {
   const d = await r.json();
   if (d.error) return;
 
-  populateSelect('f-area', d.areas, 'All Areas');
   populateSelect('f-dept', d.depts, 'All Departments');
   populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
   populateSelect('f-cls', d.classes, 'All Classes');
   populateSelect('f-supplier', d.suppliers, 'All Suppliers');
-  populateSelect('f-brand', d.brands, 'All Brands');
-  populateSelect('f-skustatus', d.skuStatuses, 'All Statuses');
 
   const storeSelect = document.getElementById('f-store');
   storeSelect.innerHTML = '<option value="">All Stores</option>';
@@ -1483,7 +1462,7 @@ function applyFilter(key, value) {
 function removeFilterTag(btn) {
   const key = btn.getAttribute('data-key');
   if (!key) return;
-  const idMap = { area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier', brand: 'f-brand', skuStatus: 'f-skustatus' };
+  const idMap = { store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
   const sel = document.getElementById(idMap[key]);
   if (sel) sel.value = '';
   applyFilter(key, '');
@@ -1491,7 +1470,7 @@ function removeFilterTag(btn) {
 
 function clearFilters() {
   activeFilters = {};
-  ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier','f-brand','f-skustatus']
+  ['f-store','f-dept','f-subdept','f-cls','f-supplier']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   renderActiveTags();
   loadAll();
