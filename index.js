@@ -125,6 +125,42 @@ function num(val) {
   return isNaN(n) ? 0 : n;
 }
 
+// ─── DATE PARSER ─────────────────────────────────────────────────────────────
+function parseDate(val) {
+  if (!val) return null;
+  const s = val.toString().trim();
+  if (!s || s === '0' || s === '00000000') return null;
+  // Try common formats: MM/DD/YYYY, YYYY-MM-DD, M/D/YYYY, YYYYMMDD
+  let d = new Date(s);
+  if (!isNaN(d.getTime()) && d.getFullYear() > 2000 && d.getFullYear() < 2100) return d;
+  // Try YYYYMMDD
+  if (/^\d{8}$/.test(s)) {
+    const y = parseInt(s.substr(0, 4));
+    const m = parseInt(s.substr(4, 2)) - 1;
+    const dy = parseInt(s.substr(6, 2));
+    d = new Date(y, m, dy);
+    if (!isNaN(d.getTime())) return d;
+  }
+  return null;
+}
+
+function formatDate(d) {
+  if (!d) return '';
+  if (typeof d === 'string') d = parseDate(d);
+  if (!d) return '';
+  const m = (d.getMonth() + 1).toString().padStart(2, '0');
+  const dy = d.getDate().toString().padStart(2, '0');
+  return m + '/' + dy + '/' + d.getFullYear();
+}
+
+function daysSince(d) {
+  if (!d) return null;
+  if (typeof d === 'string') d = parseDate(d);
+  if (!d) return null;
+  const ms = Date.now() - d.getTime();
+  return Math.floor(ms / (1000 * 60 * 60 * 24));
+}
+
 // ─── BUILD ANALYTICS FROM ROWS ────────────────────────────────────────────────
 function buildAnalytics(rawRows, storeMap) {
   // rawRows[0] = header
@@ -189,6 +225,14 @@ function buildAnalytics(rawRows, storeMap) {
     delivMode: 63,   // BL
     stsBatch: 64,    // BM
     stsNumber: 65,   // BN
+    dateLastReceived: 66, // BO
+    qtyLastReceived: 67,  // BP
+    dateLastOrdered: 68,  // BQ
+    setCode: 69,          // BR
+    dateLastAdjusted: 70, // BS
+    dateLastSold: 71,     // BT
+    lastXfer1: 72,        // BU
+    lastXfer2: 73,        // BV
     replenishment: 74 // BW
   };
 
@@ -247,6 +291,9 @@ function buildAnalytics(rawRows, storeMap) {
     // Out of Stock = no stock + was selling = LOST SALES
     const isOutOfStock = onHand === 0 && p8ave > 0;
     const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
+    const dateLastSold = row[COL.dateLastSold] || '';
+    const dateLastReceived = row[COL.dateLastReceived] || '';
+    const daysNoSales = daysSince(dateLastSold);
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
@@ -281,6 +328,9 @@ function buildAnalytics(rawRows, storeMap) {
       supplierCode: row[COL.supplierCode] || '',
       supplierName: row[COL.supplierName] || '',
       delivMode: row[COL.delivMode] || '',
+      dateLastSold,
+      dateLastReceived,
+      daysNoSales,
       lostSalesPerWeek,
       isCritical,
       isOverstock,
@@ -338,6 +388,8 @@ function buildAnalytics(rawRows, storeMap) {
       p8ave: r.p8ave,
       wtsNet: r.wtsNet,
       totalPO: r.totalPO,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
     }));
 
@@ -356,6 +408,8 @@ function buildAnalytics(rawRows, storeMap) {
       onHandValue: r.onHandValue,
       p8ave: r.p8ave,
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
     }));
 
@@ -372,6 +426,8 @@ function buildAnalytics(rawRows, storeMap) {
       supplier: r.supplierName,
       onHand: r.onHand,
       onHandValue: r.onHandValue,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: 'No Sales 8 Wks - Review/Markdown'
     }));
 
@@ -390,6 +446,9 @@ function buildAnalytics(rawRows, storeMap) {
       avgCost: r.avgCost,
       lostSalesPerWeek: r.lostSalesPerWeek,
       totalPO: r.totalPO,
+      daysNoSales: r.daysNoSales != null ? r.daysNoSales : '',
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
     }));
 
@@ -640,6 +699,8 @@ app.get('/api/critical', (req, res) => {
       onHand: r.onHand, onHandValue: r.onHandValue,
       currentWkSales: r.currentWkSales, p8ave: r.p8ave,
       wtsNet: r.wtsNet, totalPO: r.totalPO,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
     }));
   res.json(filtered);
@@ -656,6 +717,8 @@ app.get('/api/overstock', (req, res) => {
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave,
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
     }));
   res.json(filtered);
@@ -671,6 +734,8 @@ app.get('/api/deadstock', (req, res) => {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand, onHandValue: r.onHandValue,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: 'No Sales 8 Wks - Review/Markdown'
     }));
   res.json(filtered);
@@ -687,6 +752,9 @@ app.get('/api/outofstock', (req, res) => {
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       p8ave: r.p8ave, avgCost: r.avgCost,
       lostSalesPerWeek: r.lostSalesPerWeek, totalPO: r.totalPO,
+      daysNoSales: r.daysNoSales != null ? r.daysNoSales : '',
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
       action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
     }));
   res.json(filtered);
@@ -1170,6 +1238,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('critical-table',8)">P8 Ave</th>
               <th onclick="sortTable('critical-table',9)">WTS Net</th>
               <th onclick="sortTable('critical-table',10)">Total PO</th>
+              <th onclick="sortTable('critical-table',11)">Last Sold</th>
+              <th onclick="sortTable('critical-table',12)">Last Received</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="critical-body"></tbody>
@@ -1201,6 +1271,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('overstock-table',6)">Value</th>
               <th onclick="sortTable('overstock-table',7)">P8 Ave</th>
               <th onclick="sortTable('overstock-table',8)">WTS Net</th>
+              <th onclick="sortTable('overstock-table',9)">Last Sold</th>
+              <th onclick="sortTable('overstock-table',10)">Last Received</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -1230,6 +1302,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('deadstock-table',4)">Supplier</th>
               <th onclick="sortTable('deadstock-table',5)">On Hand</th>
               <th onclick="sortTable('deadstock-table',6)">Value</th>
+              <th onclick="sortTable('deadstock-table',7)">Last Sold</th>
+              <th onclick="sortTable('deadstock-table',8)">Last Received</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -1261,6 +1335,9 @@ canvas { max-height:260px; }
               <th onclick="sortTable('outofstock-table',6)">Avg Cost</th>
               <th onclick="sortTable('outofstock-table',7)">Lost Sales/Wk</th>
               <th onclick="sortTable('outofstock-table',8)">Incoming PO</th>
+              <th onclick="sortTable('outofstock-table',9)">Days No Sales</th>
+              <th onclick="sortTable('outofstock-table',10)">Last Sold</th>
+              <th onclick="sortTable('outofstock-table',11)">Last Received</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="outofstock-body"></tbody>
@@ -1700,6 +1777,8 @@ function renderCriticalRow(r) {
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmtN(r.wtsNet) + '</td>' +
     '<td class="mono">' + fmt(r.totalPO) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -1715,6 +1794,8 @@ function renderOverstockRow(r) {
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + r.wtsNet + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -1727,11 +1808,15 @@ function renderDeadstockRow(r) {
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
 function renderOutOfStockRow(r) {
   const ac = r.action === 'URGENT: Place PO Now' ? 'action-urgent' : 'action-po';
+  const days = r.daysNoSales !== '' && r.daysNoSales != null ? r.daysNoSales : '-';
+  const daysColor = (typeof r.daysNoSales === 'number' && r.daysNoSales > 30) ? 'var(--red-light)' : (typeof r.daysNoSales === 'number' && r.daysNoSales > 14) ? 'var(--yellow-light)' : 'var(--text)';
   return '<tr>' +
     '<td>' + esc(r.store) + '</td>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
@@ -1742,6 +1827,9 @@ function renderOutOfStockRow(r) {
     '<td class="mono">₱' + fmtN(r.avgCost) + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.lostSalesPerWeek) + '</td>' +
     '<td class="mono">' + fmt(r.totalPO) + '</td>' +
+    '<td class="mono" style="color:' + daysColor + ';font-weight:600;">' + days + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
