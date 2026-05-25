@@ -463,8 +463,8 @@ function buildAnalytics(rawRows, storeMap) {
         area: r.area,
         region: r.regionName,
         totalValue: 0, totalOnHand: 0,
-        criticalCount: 0, overstockCount: 0, deadCount: 0,
-        totalSKUs: 0, totalSales: 0
+        criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
+        totalSKUs: 0, totalSales: 0, totalLostSales: 0
       };
     }
     const g = storeGroups[key];
@@ -472,11 +472,21 @@ function buildAnalytics(rawRows, storeMap) {
     g.totalOnHand += r.onHand;
     g.totalSKUs++;
     g.totalSales += r.currentWkSales;
+    g.totalLostSales += r.lostSalesPerWeek;
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
+    if (r.isOutOfStock) g.oosCount++;
   }
-  const storeAnalysis = Object.values(storeGroups).sort((a, b) => b.totalValue - a.totalValue);
+  // Compute risk percentages
+  const storeAnalysis = Object.values(storeGroups).map(g => {
+    const total = g.totalSKUs || 1;
+    g.criticalPct = (g.criticalCount / total) * 100;
+    g.oosPct = (g.oosCount / total) * 100;
+    g.overstockPct = (g.overstockCount / total) * 100;
+    g.deadPct = (g.deadCount / total) * 100;
+    return g;
+  }).sort((a, b) => b.totalValue - a.totalValue);
 
   // ── SUPPLIER ANALYSIS ─────────────────────────────────────────────────────
   const supplierGroups = {};
@@ -768,15 +778,25 @@ app.get('/api/stores', (req, res) => {
   const storeGroups = {};
   for (const r of filtered) {
     const key = r.storeNumber;
-    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, totalSKUs: 0, totalSales: 0 };
+    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0 };
     const g = storeGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
     g.totalSales += r.currentWkSales;
+    g.totalLostSales += r.lostSalesPerWeek;
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
+    if (r.isOutOfStock) g.oosCount++;
   }
-  res.json(Object.values(storeGroups).sort((a, b) => b.totalValue - a.totalValue));
+  const result = Object.values(storeGroups).map(g => {
+    const total = g.totalSKUs || 1;
+    g.criticalPct = (g.criticalCount / total) * 100;
+    g.oosPct = (g.oosCount / total) * 100;
+    g.overstockPct = (g.overstockCount / total) * 100;
+    g.deadPct = (g.deadCount / total) * 100;
+    return g;
+  }).sort((a, b) => b.totalValue - a.totalValue);
+  res.json(result);
 });
 
 app.get('/api/suppliers', (req, res) => {
@@ -1051,6 +1071,17 @@ tbody td.mono { font-family:'IBM Plex Mono',monospace; font-size:11px; }
 .action-review { background:var(--bg3); color:var(--text2); }
 .action-markdown { background:#3a1a4a; color:#c084fc; }
 
+/* RISK PILLS */
+.risk-pill {
+  display:inline-flex; align-items:center; gap:4px;
+  padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600;
+  font-family:'IBM Plex Mono',monospace; min-width:60px; justify-content:center;
+}
+.risk-low { background:rgba(63,185,80,0.15); color:#3fb950; border:1px solid rgba(63,185,80,0.3); }
+.risk-med { background:rgba(227,179,65,0.15); color:#e3b341; border:1px solid rgba(227,179,65,0.3); }
+.risk-high { background:rgba(248,81,73,0.15); color:#f85149; border:1px solid rgba(248,81,73,0.3); }
+.risk-none { background:var(--bg3); color:var(--text2); }
+
 /* SEARCH IN TABLE */
 .table-search {
   padding:6px 10px; border-radius:var(--radius);
@@ -1200,6 +1231,40 @@ canvas { max-height:260px; }
       <div class="kpi-grid" id="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Loading...</div></div>
       </div>
+
+      <!-- STORE RISK MATRIX -->
+      <div class="section" style="margin-top:4px;">
+        <div class="section-header">
+          <div class="section-title">📊 Store Risk Matrix
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;">
+              <span style="color:#3fb950;">🟢 Low</span> &nbsp;
+              <span style="color:#e3b341;">🟡 Medium</span> &nbsp;
+              <span style="color:#f85149;">🔴 High</span>
+            </span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('risk-matrix-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportData('stores')">⬇ Export CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:520px;">
+          <table id="risk-matrix-table">
+            <thead><tr>
+              <th onclick="sortRiskTable(0)">Store #</th>
+              <th onclick="sortRiskTable(1)">Store Name</th>
+              <th onclick="sortRiskTable(2)">Area</th>
+              <th onclick="sortRiskTable(3)">SKUs</th>
+              <th onclick="sortRiskTable(4)" title="< 2 weeks supply / Total SKUs">Critical %</th>
+              <th onclick="sortRiskTable(5)" title="Out of Stock / Total SKUs">OOS %</th>
+              <th onclick="sortRiskTable(6)" title="> 12 weeks supply / Total SKUs">Overstock %</th>
+              <th onclick="sortRiskTable(7)" title="No sales 8 weeks / Total SKUs">Dead %</th>
+              <th onclick="sortRiskTable(8)">Lost Sales/Wk</th>
+            </tr></thead>
+            <tbody id="risk-matrix-body"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="charts-grid" style="margin-top:4px;">
         <div class="chart-card">
           <div class="chart-title">Top 10 Stores by Inventory Value</div>
@@ -1678,9 +1743,77 @@ async function loadCharts() {
   });
 }
 
+// ─── RISK MATRIX ──────────────────────────────────────────────────────────────
+// Thresholds:
+// Critical:  Low <5%, Med 5-10%, High >10%
+// OOS:       Low <3%, Med 3-7%, High >7%
+// Overstock: Low <10%, Med 10-20%, High >20%
+// Dead:      Low <3%, Med 3-7%, High >7%
+function riskPill(pct, type) {
+  if (pct == null || isNaN(pct)) return '<span class="risk-pill risk-none">—</span>';
+  let level = 'low';
+  if (type === 'critical') {
+    if (pct > 10) level = 'high';
+    else if (pct >= 5) level = 'med';
+  } else if (type === 'oos') {
+    if (pct > 7) level = 'high';
+    else if (pct >= 3) level = 'med';
+  } else if (type === 'overstock') {
+    if (pct > 20) level = 'high';
+    else if (pct >= 10) level = 'med';
+  } else if (type === 'dead') {
+    if (pct > 7) level = 'high';
+    else if (pct >= 3) level = 'med';
+  }
+  const icon = level === 'high' ? '🔴' : level === 'med' ? '🟡' : '🟢';
+  return '<span class="risk-pill risk-' + level + '">' + icon + ' ' + pct.toFixed(1) + '%</span>';
+}
+
+let riskMatrixData = [];
+async function loadRiskMatrix() {
+  const r = await fetch('/api/stores' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  riskMatrixData = data;
+  renderRiskMatrix(data);
+}
+
+function renderRiskMatrix(data) {
+  const tbody = document.getElementById('risk-matrix-body');
+  if (!tbody) return;
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No data</td></tr>'; return; }
+  tbody.innerHTML = data.map(s => {
+    return '<tr>' +
+      '<td class="mono" style="font-weight:600;">' + esc(s.storeNumber) + '</td>' +
+      '<td>' + esc(s.storeName) + '</td>' +
+      '<td><span class="badge badge-blue">' + esc(s.area) + '</span></td>' +
+      '<td class="mono">' + fmt(s.totalSKUs) + '</td>' +
+      '<td>' + riskPill(s.criticalPct, 'critical') + '</td>' +
+      '<td>' + riskPill(s.oosPct, 'oos') + '</td>' +
+      '<td>' + riskPill(s.overstockPct, 'overstock') + '</td>' +
+      '<td>' + riskPill(s.deadPct, 'dead') + '</td>' +
+      '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(s.totalLostSales || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+let riskSortState = {};
+function sortRiskTable(colIndex) {
+  const keys = ['storeNumber','storeName','area','totalSKUs','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
+  const key = keys[colIndex];
+  const asc = riskSortState[colIndex] !== true;
+  riskSortState[colIndex] = asc;
+  const sorted = [...riskMatrixData].sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
+    return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  renderRiskMatrix(sorted);
+}
+
 // ─── TABLE LOADING ────────────────────────────────────────────────────────────
 async function loadTabData() {
-  if (activeTab === 'overview') { await loadCharts(); return; }
+  if (activeTab === 'overview') { await loadCharts(); await loadRiskMatrix(); return; }
   if (activeTab === 'critical') await loadCritical();
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'deadstock') await loadDeadstock();
