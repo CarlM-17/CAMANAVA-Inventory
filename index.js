@@ -1136,6 +1136,12 @@ canvas { max-height:260px; }
     <!-- TOP FILTER BAR -->
     <div class="filter-bar">
       <div class="fb-group">
+        <label>Area</label>
+        <select class="filter-select" id="f-area" onchange="applyFilter('area',this.value)">
+          <option value="">All Areas</option>
+        </select>
+      </div>
+      <div class="fb-group">
         <label>Store</label>
         <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
           <option value="">All Stores</option>
@@ -1505,6 +1511,7 @@ async function loadFilters() {
   const d = await r.json();
   if (d.error) return;
 
+  populateSelect('f-area', d.areas, 'All Areas');
   populateSelect('f-dept', d.depts, 'All Departments');
   populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
   populateSelect('f-cls', d.classes, 'All Classes');
@@ -1539,7 +1546,7 @@ function applyFilter(key, value) {
 function removeFilterTag(btn) {
   const key = btn.getAttribute('data-key');
   if (!key) return;
-  const idMap = { store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
+  const idMap = { area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
   const sel = document.getElementById(idMap[key]);
   if (sel) sel.value = '';
   applyFilter(key, '');
@@ -1547,7 +1554,7 @@ function removeFilterTag(btn) {
 
 function clearFilters() {
   activeFilters = {};
-  ['f-store','f-dept','f-subdept','f-cls','f-supplier']
+  ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   renderActiveTags();
   loadAll();
