@@ -464,7 +464,7 @@ function buildAnalytics(rawRows, storeMap) {
         region: r.regionName,
         totalValue: 0, totalOnHand: 0,
         criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
-        totalSKUs: 0, totalSales: 0, totalLostSales: 0
+        totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalP8Ave: 0
       };
     }
     const g = storeGroups[key];
@@ -473,18 +473,21 @@ function buildAnalytics(rawRows, storeMap) {
     g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
+    g.totalP8Ave += r.p8ave;
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
     if (r.isOutOfStock) g.oosCount++;
   }
-  // Compute risk percentages
+  // Compute risk percentages and days cover
   const storeAnalysis = Object.values(storeGroups).map(g => {
     const total = g.totalSKUs || 1;
     g.criticalPct = (g.criticalCount / total) * 100;
     g.oosPct = (g.oosCount / total) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
+    // Days Cover = OnHand × 7 / P8Ave (P8Ave is units/week)
+    g.daysCover = g.totalP8Ave > 0 ? (g.totalOnHand * 7) / g.totalP8Ave : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
 
@@ -778,11 +781,12 @@ app.get('/api/stores', (req, res) => {
   const storeGroups = {};
   for (const r of filtered) {
     const key = r.storeNumber;
-    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0 };
+    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalP8Ave: 0 };
     const g = storeGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
+    g.totalP8Ave += r.p8ave;
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
@@ -794,6 +798,7 @@ app.get('/api/stores', (req, res) => {
     g.oosPct = (g.oosCount / total) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
+    g.daysCover = g.totalP8Ave > 0 ? (g.totalOnHand * 7) / g.totalP8Ave : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
   res.json(result);
@@ -846,6 +851,7 @@ app.get('*', (req, res) => {
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>CAMANAVA Inventory Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 :root {
@@ -1254,11 +1260,12 @@ canvas { max-height:260px; }
               <th onclick="sortRiskTable(1)">Store Name</th>
               <th onclick="sortRiskTable(2)">Area</th>
               <th onclick="sortRiskTable(3)">SKUs</th>
-              <th onclick="sortRiskTable(4)" title="< 2 weeks supply / Total SKUs">Critical %</th>
-              <th onclick="sortRiskTable(5)" title="Out of Stock / Total SKUs">OOS %</th>
-              <th onclick="sortRiskTable(6)" title="> 12 weeks supply / Total SKUs">Overstock %</th>
-              <th onclick="sortRiskTable(7)" title="No sales 8 weeks / Total SKUs">Dead %</th>
-              <th onclick="sortRiskTable(8)">Lost Sales/Wk</th>
+              <th onclick="sortRiskTable(4)" title="Avg days of inventory at current sales pace">Days Cover</th>
+              <th onclick="sortRiskTable(5)" title="< 2 weeks supply / Total SKUs">Critical %</th>
+              <th onclick="sortRiskTable(6)" title="Out of Stock / Total SKUs">OOS %</th>
+              <th onclick="sortRiskTable(7)" title="> 12 weeks supply / Total SKUs">Overstock %</th>
+              <th onclick="sortRiskTable(8)" title="No sales 8 weeks / Total SKUs">Dead %</th>
+              <th onclick="sortRiskTable(9)">Lost Sales/Wk</th>
             </tr></thead>
             <tbody id="risk-matrix-body"></tbody>
           </table>
@@ -1438,9 +1445,10 @@ canvas { max-height:260px; }
               <th onclick="sortTable('stores-table',4)">On Hand</th>
               <th onclick="sortTable('stores-table',5)">SKUs</th>
               <th onclick="sortTable('stores-table',6)">Cur Wk Sales</th>
-              <th onclick="sortTable('stores-table',7)">Critical</th>
-              <th onclick="sortTable('stores-table',8)">Overstock</th>
-              <th onclick="sortTable('stores-table',9)">Dead Stock</th>
+              <th onclick="sortTable('stores-table',7)">Out of Stock</th>
+              <th onclick="sortTable('stores-table',8)">Critical</th>
+              <th onclick="sortTable('stores-table',9)">Overstock</th>
+              <th onclick="sortTable('stores-table',10)">Dead Stock</th>
             </tr></thead>
             <tbody id="stores-body"></tbody>
           </table>
@@ -1679,6 +1687,12 @@ async function loadCharts() {
   const suppliers = await suppliersRes.json();
   if (!Array.isArray(stores) || !Array.isArray(suppliers)) return;
 
+  // Register datalabels plugin globally (once)
+  if (window.ChartDataLabels && !Chart._dlRegistered) {
+    Chart.register(window.ChartDataLabels);
+    Chart._dlRegistered = true;
+  }
+
   // Destroy existing charts
   Object.values(charts).forEach(c => { try { c.destroy(); } catch(e){} });
   charts = {};
@@ -1691,7 +1705,15 @@ async function loadCharts() {
       labels: top10stores.map(s => s.storeNumber + '-' + s.storeName.substring(0,12)),
       datasets: [{ label: 'Inv Value', data: top10stores.map(s => s.totalValue), backgroundColor: '#2ea043', borderRadius: 4 }]
     },
-    options: { responsive:true, plugins:{legend:{display:false}}, scales:{ y:{ ticks:{ color:'#8b949e', callback: v => '₱'+fmtM(v) }, grid:{color:'#30363d'} }, x:{ ticks:{color:'#8b949e',font:{size:9}}, grid:{display:false} } } }
+    options: {
+      responsive:true,
+      plugins:{
+        legend:{display:false},
+        datalabels:{ anchor:'end', align:'top', color:'#e6edf3', font:{size:10,weight:'600'}, formatter: v => '₱'+fmtM(v) }
+      },
+      layout:{ padding:{top:20} },
+      scales:{ y:{ ticks:{ color:'#8b949e', callback: v => '₱'+fmtM(v) }, grid:{color:'#30363d'} }, x:{ ticks:{color:'#8b949e',font:{size:9}}, grid:{display:false} } }
+    }
   });
 
   // Top 10 Suppliers
@@ -1702,7 +1724,15 @@ async function loadCharts() {
       labels: top10sup.map(s => s.supplierName.substring(0,15)),
       datasets: [{ label: 'Inv Value', data: top10sup.map(s => s.totalValue), backgroundColor: '#1f6feb', borderRadius: 4 }]
     },
-    options: { indexAxis:'y', responsive:true, plugins:{legend:{display:false}}, scales:{ x:{ ticks:{ color:'#8b949e', callback: v => '₱'+fmtM(v) }, grid:{color:'#30363d'} }, y:{ ticks:{color:'#8b949e',font:{size:9}}, grid:{display:false} } } }
+    options: {
+      indexAxis:'y', responsive:true,
+      plugins:{
+        legend:{display:false},
+        datalabels:{ anchor:'end', align:'right', color:'#e6edf3', font:{size:10,weight:'600'}, formatter: v => '₱'+fmtM(v) }
+      },
+      layout:{ padding:{right:50} },
+      scales:{ x:{ ticks:{ color:'#8b949e', callback: v => '₱'+fmtM(v) }, grid:{color:'#30363d'} }, y:{ ticks:{color:'#8b949e',font:{size:9}}, grid:{display:false} } }
+    }
   });
 
   // Inventory Health by Area
@@ -1720,11 +1750,18 @@ async function loadCharts() {
     data: {
       labels: areas,
       datasets: [
-        { label: 'Inv Value', data: areas.map(a => areaMap[a].value), backgroundColor: '#2ea043', borderRadius: 4, yAxisID: 'y' },
-        { label: 'Critical', data: areas.map(a => areaMap[a].critical), backgroundColor: '#f85149', borderRadius: 4, yAxisID: 'y1' }
+        { label: 'Inv Value', data: areas.map(a => areaMap[a].value), backgroundColor: '#2ea043', borderRadius: 4, yAxisID: 'y',
+          datalabels: { anchor:'end', align:'top', color:'#3fb950', font:{size:9,weight:'600'}, formatter: v => '₱'+fmtM(v) } },
+        { label: 'Critical', data: areas.map(a => areaMap[a].critical), backgroundColor: '#f85149', borderRadius: 4, yAxisID: 'y1',
+          datalabels: { anchor:'end', align:'top', color:'#f85149', font:{size:9,weight:'600'}, formatter: v => fmt(v) } }
       ]
     },
-    options: { responsive:true, plugins:{legend:{labels:{color:'#8b949e',font:{size:10}}}}, scales:{ y:{ ticks:{color:'#8b949e',callback: v=>'₱'+fmtM(v)}, grid:{color:'#30363d'} }, y1:{position:'right',ticks:{color:'#8b949e'},grid:{display:false}}, x:{ticks:{color:'#8b949e',font:{size:9}},grid:{display:false}} } }
+    options: {
+      responsive:true,
+      plugins:{ legend:{labels:{color:'#8b949e',font:{size:10}}} },
+      layout:{ padding:{top:20} },
+      scales:{ y:{ ticks:{color:'#8b949e',callback: v=>'₱'+fmtM(v)}, grid:{color:'#30363d'} }, y1:{position:'right',ticks:{color:'#8b949e'},grid:{display:false}}, x:{ticks:{color:'#8b949e',font:{size:9}},grid:{display:false}} }
+    }
   });
 
   // Risk Distribution
@@ -1733,13 +1770,27 @@ async function loadCharts() {
   const deadTotal = stores.reduce((s,r) => s + r.deadCount, 0);
   const totalSKUs = stores.reduce((s,r) => s + r.totalSKUs, 0);
   const normal = Math.max(0, totalSKUs - critTotal - ovTotal - deadTotal);
+  const grandTotal = normal + ovTotal + critTotal + deadTotal;
   charts.risk = new Chart(document.getElementById('chart-risk'), {
     type: 'doughnut',
     data: {
       labels: ['Normal', 'Overstock', 'Critical', 'Dead Stock'],
       datasets: [{ data: [normal, ovTotal, critTotal, deadTotal], backgroundColor: ['#2ea043','#e3b341','#f85149','#8b949e'], borderWidth: 0 }]
     },
-    options: { responsive:true, plugins:{ legend:{ position:'bottom', labels:{ color:'#8b949e', font:{size:10} } } } }
+    options: {
+      responsive:true,
+      plugins:{
+        legend:{ position:'bottom', labels:{ color:'#8b949e', font:{size:10} } },
+        datalabels:{
+          color:'#fff', font:{size:11,weight:'700'},
+          formatter: (v) => {
+            if (!grandTotal) return '';
+            const pct = (v / grandTotal) * 100;
+            return pct < 3 ? '' : pct.toFixed(1) + '%';
+          }
+        }
+      }
+    }
   });
 }
 
@@ -1769,6 +1820,20 @@ function riskPill(pct, type) {
   return '<span class="risk-pill risk-' + level + '">' + icon + ' ' + pct.toFixed(1) + '%</span>';
 }
 
+// Days Cover pill: 🔴<7, 🟡7-14, 🟢15-60, 🟡61-90, 🔴>90
+function daysCoverPill(days) {
+  if (days == null || isNaN(days)) return '<span class="risk-pill risk-none">No Sales</span>';
+  let level = 'low';
+  if (days < 7) level = 'high';
+  else if (days < 15) level = 'med';
+  else if (days <= 60) level = 'low';
+  else if (days <= 90) level = 'med';
+  else level = 'high';
+  const icon = level === 'high' ? '🔴' : level === 'med' ? '🟡' : '🟢';
+  const display = days > 999 ? '999+' : days.toFixed(0);
+  return '<span class="risk-pill risk-' + level + '">' + icon + ' ' + display + 'd</span>';
+}
+
 let riskMatrixData = [];
 async function loadRiskMatrix() {
   const r = await fetch('/api/stores' + filterQuery());
@@ -1781,13 +1846,14 @@ async function loadRiskMatrix() {
 function renderRiskMatrix(data) {
   const tbody = document.getElementById('risk-matrix-body');
   if (!tbody) return;
-  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No data</td></tr>'; return; }
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="10" class="empty">No data</td></tr>'; return; }
   tbody.innerHTML = data.map(s => {
     return '<tr>' +
       '<td class="mono" style="font-weight:600;">' + esc(s.storeNumber) + '</td>' +
       '<td>' + esc(s.storeName) + '</td>' +
       '<td><span class="badge badge-blue">' + esc(s.area) + '</span></td>' +
       '<td class="mono">' + fmt(s.totalSKUs) + '</td>' +
+      '<td>' + daysCoverPill(s.daysCover) + '</td>' +
       '<td>' + riskPill(s.criticalPct, 'critical') + '</td>' +
       '<td>' + riskPill(s.oosPct, 'oos') + '</td>' +
       '<td>' + riskPill(s.overstockPct, 'overstock') + '</td>' +
@@ -1799,12 +1865,15 @@ function renderRiskMatrix(data) {
 
 let riskSortState = {};
 function sortRiskTable(colIndex) {
-  const keys = ['storeNumber','storeName','area','totalSKUs','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
+  const keys = ['storeNumber','storeName','area','totalSKUs','daysCover','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
   const key = keys[colIndex];
   const asc = riskSortState[colIndex] !== true;
   riskSortState[colIndex] = asc;
   const sorted = [...riskMatrixData].sort((a, b) => {
     const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return asc ? 1 : -1;
+    if (bv == null) return asc ? -1 : 1;
     if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
     return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   });
@@ -1974,6 +2043,7 @@ function renderOutOfStockRow(r) {
     '</tr>';
 }
 function renderStoreRow(r) {
+  const oo = r.oosCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.oosCount) + '</span>' : '0';
   const ci = r.criticalCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.criticalCount) + '</span>' : '0';
   const ov = r.overstockCount > 0 ? '<span style="color:var(--yellow-light);">' + fmt(r.overstockCount) + '</span>' : '0';
   const dd = r.deadCount > 0 ? '<span style="color:var(--text2);">' + fmt(r.deadCount) + '</span>' : '0';
@@ -1985,6 +2055,7 @@ function renderStoreRow(r) {
     '<td class="mono">' + fmt(r.totalOnHand) + '</td>' +
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
     '<td class="mono">' + fmt(r.totalSales) + '</td>' +
+    '<td>' + oo + '</td>' +
     '<td>' + ci + '</td>' +
     '<td>' + ov + '</td>' +
     '<td>' + dd + '</td>' +
