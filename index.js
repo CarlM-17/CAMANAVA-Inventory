@@ -273,6 +273,7 @@ function buildAnalytics(rawRows, storeMap) {
     const onHand = num(row[COL.onHand]);
     const onHandValue = num(row[COL.onHandValue]);
     const p8ave = num(row[COL.p8aveGross]);
+    const wkAveNet = num(row[COL.wkAveNet]);
     const currentWkSales = num(row[COL.currentWkSales]);
     const totalPO = num(row[COL.totalPONet]);
     const poValue = num(row[COL.poValue]);
@@ -322,6 +323,7 @@ function buildAnalytics(rawRows, storeMap) {
       xdockValue: num(row[COL.xdockValue]),
       currentWkSales,
       p8ave,
+      wkAveNet,
       wtsNet: wtsNet === 0 && onHand > 0 && p8ave === 0 ? 999 : wtsNet,
       wtsGross: num(row[COL.wtsGross]),
       wtsAfterDeliv: num(row[COL.wtsAfterDeliv]),
@@ -464,7 +466,8 @@ function buildAnalytics(rawRows, storeMap) {
         region: r.regionName,
         totalValue: 0, totalOnHand: 0,
         criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
-        totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalP8Ave: 0
+        totalSKUs: 0, totalSales: 0, totalLostSales: 0,
+        totalWklSalesValue: 0  // sum of AU × AX (weekly sales value, net wholesale)
       };
     }
     const g = storeGroups[key];
@@ -473,21 +476,22 @@ function buildAnalytics(rawRows, storeMap) {
     g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
-    g.totalP8Ave += r.p8ave;
+    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
     if (r.isOutOfStock) g.oosCount++;
   }
   // Compute risk percentages and days cover
+  // Days Cover = OnHand Value / (Weekly Sales Net WS × Avg Cost / 7) = BC / (AU × AX / 7)
   const storeAnalysis = Object.values(storeGroups).map(g => {
     const total = g.totalSKUs || 1;
     g.criticalPct = (g.criticalCount / total) * 100;
     g.oosPct = (g.oosCount / total) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
-    // Days Cover = OnHand × 7 / P8Ave (P8Ave is units/week)
-    g.daysCover = g.totalP8Ave > 0 ? (g.totalOnHand * 7) / g.totalP8Ave : null;
+    // Days Cover = totalValue / (totalWklSalesValue / 7) = totalValue * 7 / totalWklSalesValue
+    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
 
@@ -781,12 +785,12 @@ app.get('/api/stores', (req, res) => {
   const storeGroups = {};
   for (const r of filtered) {
     const key = r.storeNumber;
-    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalP8Ave: 0 };
+    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0 };
     const g = storeGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
-    g.totalP8Ave += r.p8ave;
+    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
@@ -798,7 +802,7 @@ app.get('/api/stores', (req, res) => {
     g.oosPct = (g.oosCount / total) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
-    g.daysCover = g.totalP8Ave > 0 ? (g.totalOnHand * 7) / g.totalP8Ave : null;
+    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
   res.json(result);
