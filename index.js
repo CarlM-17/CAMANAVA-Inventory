@@ -420,18 +420,24 @@ function buildAnalytics(rawRows, storeMap) {
     .filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue)
     .slice(0, 300)
-    .map(r => ({
-      store: `${r.storeNumber} - ${r.storeName}`,
-      area: r.area,
-      skuCode: r.skuCode,
-      skuDesc: r.skuDesc,
-      supplier: r.supplierName,
-      onHand: r.onHand,
-      onHandValue: r.onHandValue,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      action: 'No Sales 8 Wks - Review/Markdown'
-    }));
+    .map(r => {
+      const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
+      const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
+      return {
+        store: `${r.storeNumber} - ${r.storeName}`,
+        area: r.area,
+        skuCode: r.skuCode,
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        onHand: r.onHand,
+        onHandValue: r.onHandValue,
+        weeksToSell: wtsItem,
+        daysCover: dcItem,
+        dateLastSold: formatDate(r.dateLastSold),
+        dateLastReceived: formatDate(r.dateLastReceived),
+        action: 'No Sales 8 Wks - Review/Markdown'
+      };
+    });
 
   // ── OUT OF STOCK ITEMS (Lost Sales) ───────────────────────────────────────
   const outOfStockItems = enriched
@@ -490,8 +496,8 @@ function buildAnalytics(rawRows, storeMap) {
     g.oosPct = (g.oosCount / total) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
-    // Days Cover = totalValue / (totalWklSalesValue / 7) = totalValue * 7 / totalWklSalesValue
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
 
@@ -505,17 +511,33 @@ function buildAnalytics(rawRows, storeMap) {
         supplierCode: r.supplierCode,
         supplierName: r.supplierName,
         totalValue: 0, totalOnHand: 0,
-        criticalCount: 0, overstockCount: 0, totalSKUs: 0
+        criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
+        totalSKUs: 0, totalSales: 0, totalLostSales: 0,
+        totalWklSalesValue: 0
       };
     }
     const g = supplierGroups[key];
     g.totalValue += r.onHandValue;
     g.totalOnHand += r.onHand;
     g.totalSKUs++;
+    g.totalSales += r.currentWkSales;
+    g.totalLostSales += r.lostSalesPerWeek;
+    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
+    if (r.isDeadStock) g.deadCount++;
+    if (r.isOutOfStock) g.oosCount++;
   }
-  const supplierAnalysis = Object.values(supplierGroups).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100);
+  const supplierAnalysis = Object.values(supplierGroups).map(g => {
+    const total = g.totalSKUs || 1;
+    g.criticalPct = (g.criticalCount / total) * 100;
+    g.oosPct = (g.oosCount / total) * 100;
+    g.overstockPct = (g.overstockCount / total) * 100;
+    g.deadPct = (g.deadCount / total) * 100;
+    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
+    return g;
+  }).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100);
 
   // ── FILTER METADATA ───────────────────────────────────────────────────────
   const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort();
@@ -747,14 +769,20 @@ app.get('/api/deadstock', (req, res) => {
   if (Object.keys(filters).length === 0) return res.json(cache.deadStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue).slice(0, 300)
-    .map(r => ({
-      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      action: 'No Sales 8 Wks - Review/Markdown'
-    }));
+    .map(r => {
+      const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
+      const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
+      return {
+        store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
+        skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+        onHand: r.onHand, onHandValue: r.onHandValue,
+        weeksToSell: wtsItem,
+        daysCover: dcItem,
+        dateLastSold: formatDate(r.dateLastSold),
+        dateLastReceived: formatDate(r.dateLastReceived),
+        action: 'No Sales 8 Wks - Review/Markdown'
+      };
+    });
   res.json(filtered);
 });
 
@@ -803,6 +831,7 @@ app.get('/api/stores', (req, res) => {
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
   res.json(result);
@@ -817,13 +846,28 @@ app.get('/api/suppliers', (req, res) => {
   for (const r of filtered) {
     if (!r.supplierCode) continue;
     const key = r.supplierCode;
-    if (!supplierGroups[key]) supplierGroups[key] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, totalSKUs: 0 };
+    if (!supplierGroups[key]) supplierGroups[key] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0 };
     const g = supplierGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
+    g.totalSales += r.currentWkSales;
+    g.totalLostSales += r.lostSalesPerWeek;
+    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
     if (r.isCritical) g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
+    if (r.isDeadStock) g.deadCount++;
+    if (r.isOutOfStock) g.oosCount++;
   }
-  res.json(Object.values(supplierGroups).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100));
+  const result = Object.values(supplierGroups).map(g => {
+    const total = g.totalSKUs || 1;
+    g.criticalPct = (g.criticalCount / total) * 100;
+    g.oosPct = (g.oosCount / total) * 100;
+    g.overstockPct = (g.overstockCount / total) * 100;
+    g.deadPct = (g.deadCount / total) * 100;
+    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
+    return g;
+  }).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100);
+  res.json(result);
 });
 
 app.post('/api/refresh', async (req, res) => {
@@ -1384,8 +1428,10 @@ canvas { max-height:260px; }
               <th onclick="sortTable('deadstock-table',4)">Supplier</th>
               <th onclick="sortTable('deadstock-table',5)">On Hand</th>
               <th onclick="sortTable('deadstock-table',6)">Value</th>
-              <th onclick="sortTable('deadstock-table',7)">Last Sold</th>
-              <th onclick="sortTable('deadstock-table',8)">Last Received</th>
+              <th onclick="sortTable('deadstock-table',7)">WTS</th>
+              <th onclick="sortTable('deadstock-table',8)">Days Cover</th>
+              <th onclick="sortTable('deadstock-table',9)">Last Sold</th>
+              <th onclick="sortTable('deadstock-table',10)">Last Received</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -1449,10 +1495,12 @@ canvas { max-height:260px; }
               <th onclick="sortTable('stores-table',4)">On Hand</th>
               <th onclick="sortTable('stores-table',5)">SKUs</th>
               <th onclick="sortTable('stores-table',6)">Cur Wk Sales</th>
-              <th onclick="sortTable('stores-table',7)">Out of Stock</th>
-              <th onclick="sortTable('stores-table',8)">Critical</th>
-              <th onclick="sortTable('stores-table',9)">Overstock</th>
-              <th onclick="sortTable('stores-table',10)">Dead Stock</th>
+              <th onclick="sortTable('stores-table',7)">WTS</th>
+              <th onclick="sortTable('stores-table',8)">Days Cover</th>
+              <th onclick="sortTable('stores-table',9)">Out of Stock</th>
+              <th onclick="sortTable('stores-table',10)">Critical</th>
+              <th onclick="sortTable('stores-table',11)">Overstock</th>
+              <th onclick="sortTable('stores-table',12)">Dead Stock</th>
             </tr></thead>
             <tbody id="stores-body"></tbody>
           </table>
@@ -1463,6 +1511,39 @@ canvas { max-height:260px; }
 
     <!-- SUPPLIERS TAB -->
     <div id="tab-suppliers" style="display:none;">
+      <!-- SUPPLIER RISK MATRIX -->
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">📊 Supplier Risk Matrix
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;">
+              <span style="color:#3fb950;">🟢 Low</span> &nbsp;
+              <span style="color:#e3b341;">🟡 Medium</span> &nbsp;
+              <span style="color:#f85149;">🔴 High</span>
+            </span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search supplier..." oninput="searchTable('supplier-risk-table',this.value)"/>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:480px;">
+          <table id="supplier-risk-table">
+            <thead><tr>
+              <th onclick="sortSupplierRisk(0)">Supplier</th>
+              <th onclick="sortSupplierRisk(1)">SKUs</th>
+              <th onclick="sortSupplierRisk(2)">Inv Value</th>
+              <th onclick="sortSupplierRisk(3)">Days Cover</th>
+              <th onclick="sortSupplierRisk(4)">Critical %</th>
+              <th onclick="sortSupplierRisk(5)">OOS %</th>
+              <th onclick="sortSupplierRisk(6)">Overstock %</th>
+              <th onclick="sortSupplierRisk(7)">Dead %</th>
+              <th onclick="sortSupplierRisk(8)">Lost Sales/Wk</th>
+            </tr></thead>
+            <tbody id="supplier-risk-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- SUPPLIER ANALYSIS TABLE -->
       <div class="section">
         <div class="section-header">
           <div class="section-title">🏭 Supplier Analysis</div>
@@ -1479,8 +1560,12 @@ canvas { max-height:260px; }
               <th onclick="sortTable('suppliers-table',2)">Inv Value</th>
               <th onclick="sortTable('suppliers-table',3)">On Hand</th>
               <th onclick="sortTable('suppliers-table',4)">SKUs</th>
-              <th onclick="sortTable('suppliers-table',5)">Critical</th>
-              <th onclick="sortTable('suppliers-table',6)">Overstock</th>
+              <th onclick="sortTable('suppliers-table',5)">WTS</th>
+              <th onclick="sortTable('suppliers-table',6)">Days Cover</th>
+              <th onclick="sortTable('suppliers-table',7)">Out of Stock</th>
+              <th onclick="sortTable('suppliers-table',8)">Critical</th>
+              <th onclick="sortTable('suppliers-table',9)">Overstock</th>
+              <th onclick="sortTable('suppliers-table',10)">Dead Stock</th>
             </tr></thead>
             <tbody id="suppliers-body"></tbody>
           </table>
@@ -1933,7 +2018,46 @@ async function loadSuppliers() {
   const r = await fetch('/api/suppliers' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  supplierRiskData = data;
+  renderSupplierRisk(data);
   renderTable('suppliers-body', data, renderSupplierRow, 'suppliers-pagination', 'suppliers', tablePages.suppliers);
+}
+
+let supplierRiskData = [];
+function renderSupplierRisk(data) {
+  const tbody = document.getElementById('supplier-risk-body');
+  if (!tbody) return;
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No data</td></tr>'; return; }
+  tbody.innerHTML = data.map(s => {
+    return '<tr>' +
+      '<td>' + esc(s.supplierName) + '</td>' +
+      '<td class="mono">' + fmt(s.totalSKUs) + '</td>' +
+      '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(s.totalValue) + '</td>' +
+      '<td>' + daysCoverPill(s.daysCover) + '</td>' +
+      '<td>' + riskPill(s.criticalPct, 'critical') + '</td>' +
+      '<td>' + riskPill(s.oosPct, 'oos') + '</td>' +
+      '<td>' + riskPill(s.overstockPct, 'overstock') + '</td>' +
+      '<td>' + riskPill(s.deadPct, 'dead') + '</td>' +
+      '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(s.totalLostSales || 0) + '</td>' +
+      '</tr>';
+  }).join('');
+}
+
+let supplierRiskSortState = {};
+function sortSupplierRisk(colIndex) {
+  const keys = ['supplierName','totalSKUs','totalValue','daysCover','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
+  const key = keys[colIndex];
+  const asc = supplierRiskSortState[colIndex] !== true;
+  supplierRiskSortState[colIndex] = asc;
+  const sorted = [...supplierRiskData].sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return asc ? 1 : -1;
+    if (bv == null) return asc ? -1 : 1;
+    if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
+    return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  renderSupplierRisk(sorted);
 }
 
 function renderTable(bodyId, data, rowFn, paginationId, key, page) {
@@ -2013,6 +2137,8 @@ function renderOverstockRow(r) {
     '</tr>';
 }
 function renderDeadstockRow(r) {
+  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : 'No Sales';
+  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : 'No Sales';
   return '<tr>' +
     '<td>' + esc(r.store) + '</td>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
@@ -2021,6 +2147,8 @@ function renderDeadstockRow(r) {
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono" style="color:var(--text2);">' + wts + '</td>' +
+    '<td class="mono" style="color:var(--text2);">' + dc + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
@@ -2051,6 +2179,7 @@ function renderStoreRow(r) {
   const ci = r.criticalCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.criticalCount) + '</span>' : '0';
   const ov = r.overstockCount > 0 ? '<span style="color:var(--yellow-light);">' + fmt(r.overstockCount) + '</span>' : '0';
   const dd = r.deadCount > 0 ? '<span style="color:var(--text2);">' + fmt(r.deadCount) + '</span>' : '0';
+  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
   return '<tr>' +
     '<td class="mono" style="font-weight:600;">' + esc(r.storeNumber) + '</td>' +
     '<td>' + esc(r.storeName) + '</td>' +
@@ -2059,6 +2188,8 @@ function renderStoreRow(r) {
     '<td class="mono">' + fmt(r.totalOnHand) + '</td>' +
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
     '<td class="mono">' + fmt(r.totalSales) + '</td>' +
+    '<td class="mono">' + wts + '</td>' +
+    '<td>' + daysCoverPill(r.daysCover) + '</td>' +
     '<td>' + oo + '</td>' +
     '<td>' + ci + '</td>' +
     '<td>' + ov + '</td>' +
@@ -2066,16 +2197,23 @@ function renderStoreRow(r) {
     '</tr>';
 }
 function renderSupplierRow(r) {
+  const oo = r.oosCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.oosCount) + '</span>' : '0';
   const ci = r.criticalCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.criticalCount) + '</span>' : '0';
   const ov = r.overstockCount > 0 ? '<span style="color:var(--yellow-light);">' + fmt(r.overstockCount) + '</span>' : '0';
+  const dd = r.deadCount > 0 ? '<span style="color:var(--text2);">' + fmt(r.deadCount) + '</span>' : '0';
+  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
   return '<tr>' +
     '<td class="mono">' + esc(r.supplierCode) + '</td>' +
     '<td>' + esc(r.supplierName) + '</td>' +
     '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.totalValue) + '</td>' +
     '<td class="mono">' + fmt(r.totalOnHand) + '</td>' +
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
+    '<td class="mono">' + wts + '</td>' +
+    '<td>' + daysCoverPill(r.daysCover) + '</td>' +
+    '<td>' + oo + '</td>' +
     '<td>' + ci + '</td>' +
     '<td>' + ov + '</td>' +
+    '<td>' + dd + '</td>' +
     '</tr>';
 }
 
