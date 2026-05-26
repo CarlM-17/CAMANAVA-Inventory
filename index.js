@@ -263,9 +263,14 @@ function buildAnalytics(rawRows, storeMap) {
   });
 
   // Enrich rows and map store info
+  // GLOBAL FILTER: Only include rows with STS Number (column BN)
   const enriched = [];
+  let skippedNoSTS = 0;
   for (const row of dataRows) {
     if (!row || row.length < 10) continue;
+    // STS Number filter - skip blank/empty STS rows
+    const stsNumber = (row[COL.stsNumber] || '').toString().trim();
+    if (!stsNumber) { skippedNoSTS++; continue; }
     const storeIdRaw = (row[COL.storeNumber] || '').toString().trim();
     const storeId = parseInt(storeIdRaw).toString();
     const storeInfo = storeMap[storeIdRaw] || storeMap[storeId] || {};
@@ -341,6 +346,7 @@ function buildAnalytics(rawRows, storeMap) {
       isOutOfStock
     });
   }
+  console.log('[Filter] STS Number filter: ' + enriched.length + ' rows kept, ' + skippedNoSTS + ' rows skipped (no STS Number)');
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   const totalOnHandValue = enriched.reduce((s, r) => s + r.onHandValue, 0);
@@ -2301,3 +2307,4 @@ app.listen(PORT, () => {
     refreshData(true);
   }
 });
+
