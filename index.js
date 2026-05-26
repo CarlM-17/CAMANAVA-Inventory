@@ -1500,10 +1500,10 @@ canvas { max-height:260px; }
               <th onclick="sortTable('stores-table',3)">Inv Value</th>
               <th onclick="sortTable('stores-table',4)">On Hand</th>
               <th onclick="sortTable('stores-table',5)">SKUs</th>
-              <th onclick="sortTable('stores-table',6)">Cur Wk Sales</th>
-              <th onclick="sortTable('stores-table',7)">WTS</th>
-              <th onclick="sortTable('stores-table',8)">Days Cover</th>
-              <th onclick="sortTable('stores-table',9)">Out of Stock</th>
+              <th onclick="sortTable('stores-table',6)">WTS</th>
+              <th onclick="sortTable('stores-table',7)">Days Cover</th>
+              <th onclick="sortTable('stores-table',8)">Out of Stock</th>
+              <th onclick="sortTable('stores-table',9)">Lost Sales/Wk</th>
               <th onclick="sortTable('stores-table',10)">Critical</th>
               <th onclick="sortTable('stores-table',11)">Overstock</th>
               <th onclick="sortTable('stores-table',12)">Dead Stock</th>
@@ -2193,10 +2193,10 @@ function renderStoreRow(r) {
     '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.totalValue) + '</td>' +
     '<td class="mono">' + fmt(r.totalOnHand) + '</td>' +
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
-    '<td class="mono">' + fmt(r.totalSales) + '</td>' +
     '<td class="mono">' + wts + '</td>' +
     '<td>' + daysCoverPill(r.daysCover) + '</td>' +
     '<td>' + oo + '</td>' +
+    '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.totalLostSales || 0) + '</td>' +
     '<td>' + ci + '</td>' +
     '<td>' + ov + '</td>' +
     '<td>' + dd + '</td>' +
@@ -2307,4 +2307,3 @@ app.listen(PORT, () => {
     refreshData(true);
   }
 });
-
