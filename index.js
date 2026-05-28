@@ -19,6 +19,7 @@ const GDRIVE_FOLDER_ID = process.env.GDRIVE_FOLDER_ID;
 const INV_FILE_NAME = process.env.INV_FILE_NAME || 'InvData.csv';
 const STORES_FILE_NAME = process.env.STORES_FILE_NAME || 'ListOfStores.xlsx';
 const REFRESH_INTERVAL_MINUTES = parseInt(process.env.REFRESH_INTERVAL_MINUTES || '10');
+const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -43,16 +44,117 @@ let cache = {
 };
 
 // ─── GOOGLE DRIVE AUTH ────────────────────────────────────────────────────────
-function getDriveClient() {
-  const auth = new google.auth.GoogleAuth({
+function getAuth() {
+  return new google.auth.GoogleAuth({
     credentials: {
       client_email: GOOGLE_CLIENT_EMAIL,
       private_key: GOOGLE_PRIVATE_KEY
     },
-    scopes: ['https://www.googleapis.com/auth/drive.readonly']
+    scopes: [
+      'https://www.googleapis.com/auth/drive',
+      'https://www.googleapis.com/auth/spreadsheets'
+    ]
   });
-  return google.drive({ version: 'v3', auth });
 }
+
+function getDriveClient() {
+  return google.drive({ version: 'v3', auth: getAuth() });
+}
+
+function getSheetsClient() {
+  return google.sheets({ version: 'v4', auth: getAuth() });
+}
+
+// ─── ACTIVITY LOG (Google Sheets) ─────────────────────────────────────────────
+// Appends a login row, returns the row number for later logout update
+async function logLoginEvent(username, area) {
+  if (!LOGS_SHEET_ID) { console.warn('[Logs] LOGS_SHEET_ID not set, skipping log'); return null; }
+  try {
+    const sheets = getSheetsClient();
+    const loginTime = new Date().toISOString();
+    const resp = await sheets.spreadsheets.values.append({
+      spreadsheetId: LOGS_SHEET_ID,
+      range: 'A:E',
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values: [[username, loginTime, '', '', area || 'All']] }
+    });
+    // Extract row number from updatedRange like "Logs!A5:E5"
+    const updatedRange = resp.data.updates && resp.data.updates.updatedRange;
+    let rowNum = null;
+    if (updatedRange) {
+      const m = updatedRange.match(/!\w?(\d+):/);
+      if (m) rowNum = parseInt(m[1]);
+    }
+    return { rowNum, loginTime };
+  } catch (e) {
+    console.error('[Logs] Login log error:', e.message);
+    return null;
+  }
+}
+
+// Updates the logout time + duration for a given row
+async function logLogoutEvent(rowNum, loginTimeISO) {
+  if (!LOGS_SHEET_ID || !rowNum) return;
+  try {
+    const sheets = getSheetsClient();
+    const logoutTime = new Date();
+    const loginTime = new Date(loginTimeISO);
+    const durationMs = logoutTime - loginTime;
+    const mins = Math.floor(durationMs / 60000);
+    const hrs = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    const durationStr = hrs > 0 ? (hrs + 'h ' + remMins + 'm') : (mins + 'm');
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: LOGS_SHEET_ID,
+      range: 'C' + rowNum + ':D' + rowNum,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values: [[logoutTime.toISOString(), durationStr]] }
+    });
+  } catch (e) {
+    console.error('[Logs] Logout log error:', e.message);
+  }
+}
+
+// Reads all log rows
+async function readLogs() {
+  if (!LOGS_SHEET_ID) return [];
+  try {
+    const sheets = getSheetsClient();
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: LOGS_SHEET_ID,
+      range: 'A2:E'
+    });
+    const rows = resp.data.values || [];
+    return rows.map(r => ({
+      user: r[0] || '',
+      loginTime: r[1] || '',
+      logoutTime: r[2] || '',
+      duration: r[3] || '',
+      area: r[4] || ''
+    })).filter(r => r.user);
+  } catch (e) {
+    console.error('[Logs] Read error:', e.message);
+    return [];
+  }
+}
+
+// Clears all log rows (keeps header)
+async function clearLogs() {
+  if (!LOGS_SHEET_ID) return false;
+  try {
+    const sheets = getSheetsClient();
+    await sheets.spreadsheets.values.clear({
+      spreadsheetId: LOGS_SHEET_ID,
+      range: 'A2:E'
+    });
+    return true;
+  } catch (e) {
+    console.error('[Logs] Clear error:', e.message);
+    return false;
+  }
+}
+
 
 // ─── FIND FILE IN FOLDER ──────────────────────────────────────────────────────
 async function findFile(drive, fileName) {
@@ -764,6 +866,7 @@ app.post('/api/login', (req, res) => {
   }
   const token = makeToken();
   const isAdmin = user.level === 'admin' || (user.area || '').toLowerCase() === 'all';
+  const areaLabel = isAdmin ? 'All' : user.area;
   sessions[token] = {
     username: user.username,
     level: user.level,
@@ -771,6 +874,13 @@ app.post('/api/login', (req, res) => {
     isAdmin,
     created: Date.now()
   };
+  // Log the login event (async, don't block response)
+  logLoginEvent(user.username, areaLabel).then(result => {
+    if (result && sessions[token]) {
+      sessions[token].logRow = result.rowNum;
+      sessions[token].loginTimeISO = result.loginTime;
+    }
+  });
   res.json({
     token,
     username: user.username,
@@ -782,7 +892,13 @@ app.post('/api/login', (req, res) => {
 
 app.post('/api/logout', (req, res) => {
   const token = (req.body && req.body.token) || '';
-  if (token && sessions[token]) delete sessions[token];
+  const s = sessions[token];
+  if (s) {
+    if (s.logRow && s.loginTimeISO) {
+      logLogoutEvent(s.logRow, s.loginTimeISO);
+    }
+    delete sessions[token];
+  }
   res.json({ ok: true });
 });
 
@@ -791,6 +907,28 @@ app.get('/api/me', (req, res) => {
   const s = sessions[token];
   if (!s) return res.status(401).json({ error: 'Not logged in' });
   res.json({ username: s.username, level: s.level, area: s.area, isAdmin: s.isAdmin });
+});
+
+// Activity logs — admin only
+function requireAdmin(req, res) {
+  const token = req.query.token || (req.body && req.body.token) || '';
+  const s = sessions[token];
+  if (!s || !s.isAdmin) { res.status(403).json({ error: 'Admin access required' }); return null; }
+  return s;
+}
+
+app.get('/api/logs', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const logs = await readLogs();
+  // Most recent first
+  logs.reverse();
+  res.json(logs);
+});
+
+app.post('/api/logs/clear', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const ok = await clearLogs();
+  res.json({ ok });
 });
 
 app.get('/api/status', (req, res) => {
@@ -1554,6 +1692,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('stores')">🏪 Stores</div>
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
+      <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
 
     <!-- OVERVIEW TAB -->
@@ -1897,6 +2036,35 @@ canvas { max-height:260px; }
       </div>
     </div>
 
+    <!-- ACTIVITY LOG TAB (admin only) -->
+    <div id="tab-logs" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">🔐 Activity Log
+            <span class="badge badge-blue" id="logs-count" style="margin-left:8px;">0</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search user..." oninput="searchTable('logs-table',this.value)"/>
+            <button class="btn btn-sm" onclick="loadLogs()">↺ Refresh</button>
+            <button class="btn btn-sm" onclick="exportLogs()">⬇ Export Excel</button>
+            <button class="btn btn-sm" style="border-color:var(--red);color:var(--red-light);" onclick="confirmClearLogs()">🗑 Delete All Logs</button>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:600px;">
+          <table id="logs-table">
+            <thead><tr>
+              <th>User</th>
+              <th>Login Time</th>
+              <th>Logout Time</th>
+              <th>Duration</th>
+              <th>Area</th>
+            </tr></thead>
+            <tbody id="logs-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
   </main>
 </div><!-- end main -->
 </div><!-- end app -->
@@ -1949,6 +2117,67 @@ async function doLogout() {
   authToken = ''; currentUser = null;
   try { sessionStorage.removeItem('camanava_token'); sessionStorage.removeItem('camanava_user'); } catch(e) {}
   location.reload();
+}
+
+// ─── ACTIVITY LOG ─────────────────────────────────────────────────────────────
+let logsData = [];
+async function loadLogs() {
+  const r = await fetch('/api/logs?token=' + encodeURIComponent(authToken));
+  if (!r.ok) { document.getElementById('logs-body').innerHTML = '<tr><td colspan="5" class="empty">Access denied or no logs sheet configured</td></tr>'; return; }
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  logsData = data;
+  document.getElementById('logs-count').textContent = fmt(data.length);
+  renderLogs(data);
+}
+
+function fmtLogTime(iso) {
+  if (!iso) return '<span style="color:var(--text2);">—</span>';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return esc(iso);
+  return d.toLocaleString('en-PH', { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+function renderLogs(data) {
+  const tbody = document.getElementById('logs-body');
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="5" class="empty">No activity logs yet</td></tr>'; return; }
+  tbody.innerHTML = data.map(r => {
+    const logout = r.logoutTime ? fmtLogTime(r.logoutTime) : '<span style="color:var(--yellow-light);">Active / No logout</span>';
+    const dur = r.duration ? r.duration : '<span style="color:var(--text2);">—</span>';
+    return '<tr>' +
+      '<td style="font-weight:600;">' + esc(r.user) + '</td>' +
+      '<td class="mono">' + fmtLogTime(r.loginTime) + '</td>' +
+      '<td class="mono">' + logout + '</td>' +
+      '<td class="mono">' + dur + '</td>' +
+      '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function exportLogs() {
+  if (logsData.length === 0) { alert('No logs to export'); return; }
+  const headers = ['User', 'Login Time', 'Logout Time', 'Duration', 'Area'];
+  const rows = logsData.map(r => [r.user, r.loginTime, r.logoutTime, r.duration, r.area]);
+  const csv = [headers.join(','), ...rows.map(row => row.map(c => '"' + (c || '').toString().replace(/"/g, '""') + '"').join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'activity_logs_' + new Date().toISOString().split('T')[0] + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function confirmClearLogs() {
+  if (!confirm('Delete ALL activity logs? This cannot be undone.')) return;
+  const r = await fetch('/api/logs/clear', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: authToken })
+  });
+  const d = await r.json();
+  if (d.ok) { alert('Logs cleared.'); loadLogs(); }
+  else alert('Failed to clear logs.');
 }
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
@@ -2009,6 +2238,9 @@ function applyUserRestrictions() {
   if (!currentUser.isAdmin && currentUser.area) {
     activeFilters.area = currentUser.area;
   }
+  // Show Activity Log tab only for admins
+  const logsTabBtn = document.getElementById('tab-btn-logs');
+  if (logsTabBtn) logsTabBtn.style.display = currentUser.isAdmin ? '' : 'none';
 }
 
 async function pollAndRefresh() {
@@ -2433,6 +2665,7 @@ async function loadTabData() {
   if (activeTab === 'stores') await loadStores();
   if (activeTab === 'suppliers') await loadSuppliers();
   if (activeTab === 'skus') await loadSKUs(1);
+  if (activeTab === 'logs') await loadLogs();
 }
 
 async function loadCritical() {
@@ -2787,12 +3020,16 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','deadstock','stores','suppliers','skus'].forEach(t => {
+  ['overview','outofstock','critical','overstock','deadstock','stores','suppliers','skus','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
-  document.querySelectorAll('.tab').forEach((el, i) => {
-    el.classList.toggle('active', ['overview','outofstock','critical','overstock','deadstock','stores','suppliers','skus'][i] === name);
+  document.querySelectorAll('.tab').forEach((el) => {
+    el.classList.remove('active');
+  });
+  // Mark the clicked tab active by matching its onclick target
+  document.querySelectorAll('.tab').forEach((el) => {
+    if (el.getAttribute('onclick') && el.getAttribute('onclick').includes("'" + name + "'")) el.classList.add('active');
   });
   activeTab = name;
   loadTabData();
