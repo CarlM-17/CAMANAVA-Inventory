@@ -323,6 +323,8 @@ function buildAnalytics(rawRows, storeMap) {
       onHandValue,
       avgCost,
       stdPack: num(row[COL.stdPack]),
+      // Pre-computed for sorting (numeric, null when "Per Piece")
+      qtyCasesNum: (num(row[COL.stdPack]) > 0 && num(row[COL.stdPack]) !== onHand) ? (onHand / num(row[COL.stdPack])) : null,
       ico: (row[COL.ico] || '').toString().trim(),
       totalPO,
       poValue,
@@ -847,9 +849,12 @@ app.get('/api/skus', (req, res) => {
     const dir = sortDir === 'desc' ? -1 : 1;
     rows = [...rows].sort((a, b) => {
       let av = a[sortBy], bv = b[sortBy];
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
+      // Nulls always at bottom regardless of direction
+      const aNull = (av == null || av === '');
+      const bNull = (bv == null || bv === '');
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
       if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
       return String(av).localeCompare(String(bv)) * dir;
     });
@@ -874,10 +879,16 @@ app.get('/api/skus', (req, res) => {
       supplierName: r.supplierName,
       onHand: r.onHand,
       qtyCases,
+      qtyCasesNum: r.qtyCasesNum,
       stdPack: r.stdPack,
+      invValue: r.onHandValue,
       weeksToSell: r.skuWTS,
+      skuWTS: r.skuWTS,
       daysCover: r.skuDaysCover,
+      skuDaysCover: r.skuDaysCover,
+      p8ave: r.p8ave,
       status: r.isCritical ? 'Critical' : r.isOutOfStock ? 'OOS' : r.isOverstock ? 'Overstock' : r.isDeadStock ? 'Dead Stock' : 'Normal',
+      lostSalesPerWeek: r.lostSalesPerWeek,
       ico: r.ico,
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
@@ -1698,10 +1709,13 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('skuDesc')">Description <span class="sort-ind" data-key="skuDesc"></span></th>
               <th onclick="sortSKUs('supplierName')">Supplier <span class="sort-ind" data-key="supplierName"></span></th>
               <th onclick="sortSKUs('onHand')">On Hand <span class="sort-ind" data-key="onHand"></span></th>
-              <th>Qty in Cases</th>
-              <th onclick="sortSKUs('weeksToSell')">WTS <span class="sort-ind" data-key="weeksToSell"></span></th>
-              <th onclick="sortSKUs('daysCover')">Days Cover <span class="sort-ind" data-key="daysCover"></span></th>
+              <th onclick="sortSKUs('qtyCasesNum')">Qty in Cases <span class="sort-ind" data-key="qtyCasesNum"></span></th>
+              <th onclick="sortSKUs('invValue')">Inv Value <span class="sort-ind" data-key="invValue"></span></th>
+              <th onclick="sortSKUs('skuWTS')">WTS <span class="sort-ind" data-key="skuWTS"></span></th>
+              <th onclick="sortSKUs('skuDaysCover')">Days Cover <span class="sort-ind" data-key="skuDaysCover"></span></th>
+              <th onclick="sortSKUs('p8ave')">P8 Ave/Wk <span class="sort-ind" data-key="p8ave"></span></th>
               <th onclick="sortSKUs('status')">Status <span class="sort-ind" data-key="status"></span></th>
+              <th onclick="sortSKUs('lostSalesPerWeek')">Lost Sales/Wk <span class="sort-ind" data-key="lostSalesPerWeek"></span></th>
               <th onclick="sortSKUs('ico')">ICO <span class="sort-ind" data-key="ico"></span></th>
               <th onclick="sortSKUs('poOrderGR')">PO On Order <span class="sort-ind" data-key="poOrderGR"></span></th>
               <th onclick="sortSKUs('trfOrderGR')">Trf On Order <span class="sort-ind" data-key="trfOrderGR"></span></th>
@@ -2237,7 +2251,7 @@ async function loadSKUs(page) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="14" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="17" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -2249,6 +2263,9 @@ function renderSKUTable(rows) {
     const qtyCasesDisplay = r.qtyCases === 'Per Piece'
       ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>'
       : r.qtyCases;
+    const lostSales = r.lostSalesPerWeek > 0
+      ? '<span style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.lostSalesPerWeek) + '</span>'
+      : '—';
     return '<tr>' +
       '<td>' + esc(r.storeName) + '</td>' +
       '<td class="mono">' + esc(r.skuCode) + '</td>' +
@@ -2256,9 +2273,12 @@ function renderSKUTable(rows) {
       '<td>' + esc(r.supplierName) + '</td>' +
       '<td class="mono">' + fmt(r.onHand) + '</td>' +
       '<td class="mono">' + qtyCasesDisplay + '</td>' +
+      '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.invValue) + '</td>' +
       '<td class="mono">' + wts + '</td>' +
       '<td class="mono">' + dc + '</td>' +
+      '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
       '<td><span class="' + statusClass + '">' + esc(r.status) + '</span></td>' +
+      '<td class="mono">' + lostSales + '</td>' +
       '<td class="mono">' + esc(r.ico || '—') + '</td>' +
       '<td class="mono">' + fmt(r.poOrderGR) + '</td>' +
       '<td class="mono">' + fmt(r.trfOrderGR) + '</td>' +
