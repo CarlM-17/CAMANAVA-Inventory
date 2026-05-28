@@ -846,9 +846,12 @@ app.get('/api/skus', (req, res) => {
 
   // Sort
   if (sortBy) {
+    // Map frontend sort keys to actual raw row fields where they differ
+    const sortFieldMap = { invValue: 'onHandValue', weeksToSell: 'skuWTS', daysCover: 'skuDaysCover' };
+    const field = sortFieldMap[sortBy] || sortBy;
     const dir = sortDir === 'desc' ? -1 : 1;
     rows = [...rows].sort((a, b) => {
-      let av = a[sortBy], bv = b[sortBy];
+      let av = a[field], bv = b[field];
       // Nulls always at bottom regardless of direction
       const aNull = (av == null || av === '');
       const bNull = (bv == null || bv === '');
