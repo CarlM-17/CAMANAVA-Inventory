@@ -831,7 +831,17 @@ app.get('/api/kpis', (req, res) => {
 
 app.get('/api/filters', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  res.json(cache.filterMeta);
+  // Determine area scope: locked area for non-admin, or area query param
+  const token = req.query.token || '';
+  const s = sessions[token];
+  let area = req.query.area || '';
+  if (s && !s.isAdmin && s.area) area = s.area; // force locked area
+
+  if (!area) return res.json(cache.filterMeta);
+
+  // Return stores filtered to the selected area
+  const storesInArea = cache.filterMeta.stores.filter(st => st.area === area);
+  res.json({ ...cache.filterMeta, stores: storesInArea });
 });
 
 app.get('/api/critical', (req, res) => {
@@ -2063,7 +2073,11 @@ async function updateStatus() {
 
 // ─── FILTERS ──────────────────────────────────────────────────────────────────
 async function loadFilters() {
-  const r = await fetch('/api/filters' + tokenParam('?'));
+  // Include current area scope so stores list is filtered
+  const params = new URLSearchParams();
+  if (authToken) params.set('token', authToken);
+  if (activeFilters.area) params.set('area', activeFilters.area);
+  const r = await fetch('/api/filters?' + params.toString());
   const d = await r.json();
   if (d.error) return;
 
@@ -2073,13 +2087,7 @@ async function loadFilters() {
   populateSelect('f-cls', d.classes, 'All Classes');
   populateSelect('f-supplier', d.suppliers, 'All Suppliers');
 
-  const storeSelect = document.getElementById('f-store');
-  storeSelect.innerHTML = '<option value="">All Stores</option>';
-  (d.stores || []).forEach(s => {
-    const o = document.createElement('option');
-    o.value = s.id; o.textContent = s.id + ' - ' + s.name;
-    storeSelect.appendChild(o);
-  });
+  populateStores(d.stores);
 
   // Lock area filter for non-admin users
   if (currentUser && !currentUser.isAdmin && currentUser.area) {
@@ -2092,6 +2100,28 @@ async function loadFilters() {
       areaSel.title = 'Locked to your assigned area';
     }
   }
+}
+
+function populateStores(stores) {
+  const storeSelect = document.getElementById('f-store');
+  if (!storeSelect) return;
+  storeSelect.innerHTML = '<option value="">All Stores</option>';
+  (stores || []).forEach(s => {
+    const o = document.createElement('option');
+    o.value = s.id; o.textContent = s.id + ' - ' + s.name;
+    storeSelect.appendChild(o);
+  });
+}
+
+// Reload only the store dropdown based on current area
+async function reloadStoresForArea() {
+  const params = new URLSearchParams();
+  if (authToken) params.set('token', authToken);
+  if (activeFilters.area) params.set('area', activeFilters.area);
+  const r = await fetch('/api/filters?' + params.toString());
+  const d = await r.json();
+  if (d.error) return;
+  populateStores(d.stores);
 }
 
 function populateSelect(id, items, defaultText) {
@@ -2107,6 +2137,13 @@ function populateSelect(id, items, defaultText) {
 function applyFilter(key, value) {
   if (value) activeFilters[key] = value;
   else delete activeFilters[key];
+  // When area changes, reset store selection and reload store list scoped to area
+  if (key === 'area') {
+    delete activeFilters.store;
+    const storeSel = document.getElementById('f-store');
+    if (storeSel) storeSel.value = '';
+    reloadStoresForArea();
+  }
   renderActiveTags();
   loadAll();
 }
@@ -2114,6 +2151,8 @@ function applyFilter(key, value) {
 function removeFilterTag(btn) {
   const key = btn.getAttribute('data-key');
   if (!key) return;
+  // Prevent non-admin from removing their locked area
+  if (key === 'area' && currentUser && !currentUser.isAdmin && currentUser.area) return;
   const idMap = { area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
   const sel = document.getElementById(idMap[key]);
   if (sel) sel.value = '';
@@ -2131,6 +2170,7 @@ function clearFilters() {
     const areaEl = document.getElementById('f-area');
     if (areaEl) areaEl.value = '';
   }
+  reloadStoresForArea();
   renderActiveTags();
   loadAll();
 }
