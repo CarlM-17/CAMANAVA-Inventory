@@ -29,6 +29,7 @@ let cache = {
   lastModifiedTime: null,
   rows: [],
   storeMap: {},       // storeId -> { area, storeName, region }
+  users: {},          // username -> { username, password, level, area }
   kpis: {},
   criticalItems: [],
   overstockItems: [],
@@ -117,6 +118,34 @@ function parseStoresXLSX(buffer) {
   const keys = Object.keys(storeMap).slice(0, 5);
   keys.forEach(k => console.log('[Stores] Sample: ' + k + ' -> ' + JSON.stringify(storeMap[k])));
   return storeMap;
+}
+
+// ─── PARSE USERS SHEET FROM XLSX ─────────────────────────────────────────────
+function parseUsersXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  // Find the "Users" sheet (case-insensitive)
+  const usersSheetName = wb.SheetNames.find(n => n.toLowerCase().trim() === 'users');
+  if (!usersSheetName) {
+    console.warn('[Users] No "Users" sheet found. Available sheets: ' + wb.SheetNames.join(', '));
+    return {};
+  }
+  const ws = wb.Sheets[usersSheetName];
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const users = {};
+  // Skip header row (row 0), data starts row 1
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row || row.length === 0) continue;
+    const username = (row[0] || '').toString().trim();
+    const password = (row[1] || '').toString().trim();
+    const level = (row[2] || '').toString().trim().toLowerCase();
+    const area = (row[3] || '').toString().trim();
+    if (username) {
+      users[username.toLowerCase()] = { username, password, level, area };
+    }
+  }
+  console.log('[Users] Loaded ' + Object.keys(users).length + ' users from "' + usersSheetName + '" sheet');
+  return users;
 }
 
 // ─── SAFE NUMBER ─────────────────────────────────────────────────────────────
@@ -619,6 +648,7 @@ async function refreshData(force = false) {
 
     // Find and parse ListOfStores.xlsx
     let storeMap = {};
+    let usersMap = {};
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
       const storesFile = await findFile(drive, STORES_FILE_NAME);
@@ -626,7 +656,8 @@ async function refreshData(force = false) {
         console.log('[Cache] Found stores file ID: ' + storesFile.id + ', downloading...');
         const storesBuffer = await downloadFileBuffer(drive, storesFile.id);
         storeMap = parseStoresXLSX(storesBuffer);
-        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores.`);
+        usersMap = parseUsersXLSX(storesBuffer);
+        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users.`);
       } else {
         console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
         // List all files in folder for debugging
@@ -653,6 +684,7 @@ async function refreshData(force = false) {
     // Atomic swap
     cache.rows = analytics.rows;
     cache.storeMap = storeMap;
+    if (Object.keys(usersMap).length > 0) cache.users = usersMap;
     cache.kpis = analytics.kpis;
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
@@ -698,7 +730,68 @@ function applyFilters(rows, filters = {}) {
   });
 }
 
+// Resolve filters with session area-lock enforced. Non-admin users are forced to their area.
+function resolveFilters(req) {
+  const filters = { ...req.query };
+  delete filters.token;
+  const token = req.query.token || (req.headers['x-auth-token']) || '';
+  const s = sessions[token];
+  if (s && !s.isAdmin && s.area) {
+    // Force area lock - override any area filter the client sent
+    filters.area = s.area;
+  }
+  return filters;
+}
+
 // ─── API ROUTES ───────────────────────────────────────────────────────────────
+
+// ─── SESSION / AUTH (Simple) ──────────────────────────────────────────────────
+const sessions = {}; // token -> { username, level, area, created }
+
+function makeToken() {
+  return crypto.randomBytes(24).toString('hex');
+}
+
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
+  if (Object.keys(cache.users).length === 0) {
+    return res.status(503).json({ error: 'User data not loaded yet. Please try again in a moment.' });
+  }
+  const user = cache.users[username.toLowerCase().trim()];
+  if (!user || user.password !== password) {
+    return res.status(401).json({ error: 'Invalid username or password' });
+  }
+  const token = makeToken();
+  const isAdmin = user.level === 'admin' || (user.area || '').toLowerCase() === 'all';
+  sessions[token] = {
+    username: user.username,
+    level: user.level,
+    area: isAdmin ? '' : user.area,  // empty = all access
+    isAdmin,
+    created: Date.now()
+  };
+  res.json({
+    token,
+    username: user.username,
+    level: user.level,
+    area: isAdmin ? '' : user.area,
+    isAdmin
+  });
+});
+
+app.post('/api/logout', (req, res) => {
+  const token = (req.body && req.body.token) || '';
+  if (token && sessions[token]) delete sessions[token];
+  res.json({ ok: true });
+});
+
+app.get('/api/me', (req, res) => {
+  const token = req.query.token || '';
+  const s = sessions[token];
+  if (!s) return res.status(401).json({ error: 'Not logged in' });
+  res.json({ username: s.username, level: s.level, area: s.area, isAdmin: s.isAdmin });
+});
 
 app.get('/api/status', (req, res) => {
   res.json({
@@ -712,7 +805,7 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/kpis', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.kpis);
   const filtered = applyFilters(cache.rows, filters);
   const totalOnHandValue = filtered.reduce((s, r) => s + r.onHandValue, 0);
@@ -743,7 +836,7 @@ app.get('/api/filters', (req, res) => {
 
 app.get('/api/critical', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.criticalItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isCritical)
     .sort((a, b) => a.wtsNet - b.wtsNet).slice(0, 500)
@@ -762,7 +855,7 @@ app.get('/api/critical', (req, res) => {
 
 app.get('/api/overstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.overstockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet).slice(0, 500)
@@ -780,7 +873,7 @@ app.get('/api/overstock', (req, res) => {
 
 app.get('/api/deadstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.deadStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue).slice(0, 300)
@@ -803,7 +896,7 @@ app.get('/api/deadstock', (req, res) => {
 
 app.get('/api/outofstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.outOfStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOutOfStock)
     .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).slice(0, 500)
@@ -823,7 +916,10 @@ app.get('/api/outofstock', (req, res) => {
 // SKU Analysis endpoint — server-side pagination/sorting/searching
 app.get('/api/skus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', ...filters } = req.query;
+  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', token, ...filters } = req.query;
+  // Enforce area lock for non-admin users
+  const s = sessions[token || ''];
+  if (s && !s.isAdmin && s.area) filters.area = s.area;
   let rows = applyFilters(cache.rows, filters);
 
   // Status filter
@@ -905,7 +1001,7 @@ app.get('/api/skus', (req, res) => {
 
 app.get('/api/stores', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.storeAnalysis);
   const filtered = applyFilters(cache.rows, filters);
   const storeGroups = {};
@@ -937,7 +1033,7 @@ app.get('/api/stores', (req, res) => {
 
 app.get('/api/suppliers', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const filters = req.query;
+  const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.supplierAnalysis);
   const filtered = applyFilters(cache.rows, filters);
   const supplierGroups = {};
@@ -977,8 +1073,24 @@ app.post('/api/refresh', async (req, res) => {
 app.get('/api/export/:type', (req, res) => {
   if (!cache.ready) return res.status(503).send('Cache not ready');
   const type = req.params.type;
-  const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
-  const data = dataMap[type];
+  // Enforce area lock for non-admin
+  const token = req.query.token || '';
+  const s = sessions[token];
+  const lockedArea = (s && !s.isAdmin && s.area) ? s.area : null;
+
+  let data;
+  if (lockedArea) {
+    // Recompute from filtered rows so users only export their area
+    const rows = applyFilters(cache.rows, { area: lockedArea });
+    if (type === 'critical') data = rows.filter(r => r.isCritical).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, wtsNet:r.wtsNet }));
+    else if (type === 'overstock') data = rows.filter(r => r.isOverstock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
+    else if (type === 'deadstock') data = rows.filter(r => r.isDeadStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
+    else if (type === 'outofstock') data = rows.filter(r => r.isOutOfStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, p8ave:r.p8ave, lostSalesPerWeek:r.lostSalesPerWeek }));
+    else data = [];
+  } else {
+    const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
+    data = dataMap[type];
+  }
   if (!data) return res.status(404).send('Not found');
   if (data.length === 0) return res.status(204).send('No data');
   const headers = Object.keys(data[0]);
@@ -1059,7 +1171,34 @@ a { color: var(--green-bright); }
 .btn-green:hover { background:var(--green-light); color:#fff; }
 .btn-sm { padding:4px 10px; font-size:11px; }
 
-/* LOADING OVERLAY */
+/* LOGIN SCREEN */
+#login-screen {
+  position:fixed; inset:0; background:var(--bg); z-index:10000;
+  display:flex; align-items:center; justify-content:center;
+}
+.login-box {
+  background:var(--bg2); border:1px solid var(--border); border-radius:12px;
+  padding:32px; width:340px; max-width:90vw;
+  display:flex; flex-direction:column; gap:14px;
+  box-shadow:0 8px 40px rgba(0,0,0,0.5);
+}
+.login-logo { display:flex; align-items:center; gap:10px; justify-content:center; }
+.login-logo span { font-family:'IBM Plex Mono',monospace; font-size:16px; font-weight:700; color:var(--text); letter-spacing:0.5px; }
+.login-subtitle { text-align:center; font-size:12px; color:var(--text2); margin-bottom:6px; }
+.login-input {
+  width:100%; padding:10px 12px; border-radius:var(--radius);
+  border:1px solid var(--border); background:var(--bg3); color:var(--text);
+  font-size:13px; font-family:'IBM Plex Sans',sans-serif;
+}
+.login-input:focus { outline:none; border-color:var(--green-bright); }
+.login-btn {
+  width:100%; padding:11px; border-radius:var(--radius); border:none;
+  background:var(--green); color:#fff; font-size:14px; font-weight:600; cursor:pointer;
+  font-family:'IBM Plex Sans',sans-serif; margin-top:4px; transition:background 0.2s;
+}
+.login-btn:hover { background:var(--green-light); }
+.login-btn:disabled { opacity:0.6; cursor:not-allowed; }
+.login-error { color:var(--red-light); font-size:12px; min-height:16px; text-align:center; }
 #loading-overlay {
   position:fixed; inset:0; background:var(--bg); z-index:9999;
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
@@ -1297,7 +1436,21 @@ canvas { max-height:260px; }
 </head>
 <body>
 
-<div id="loading-overlay">
+<div id="login-screen" style="display:none;">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="dot" style="width:12px;height:12px;border-radius:50%;background:#3fb950;box-shadow:0 0 10px #3fb950;"></div>
+      <span>CAMANAVA INVENTORY</span>
+    </div>
+    <div class="login-subtitle">Sign in to continue</div>
+    <input type="text" id="login-username" class="login-input" placeholder="Username" autocomplete="username"/>
+    <input type="password" id="login-password" class="login-input" placeholder="Password" autocomplete="current-password"/>
+    <div class="login-error" id="login-error"></div>
+    <button class="login-btn" id="login-btn" onclick="doLogin()">Sign In</button>
+  </div>
+</div>
+
+<div id="loading-overlay" style="display:none;">
   <div style="display:flex;align-items:center;gap:10px;">
     <div class="dot" style="width:10px;height:10px;border-radius:50%;background:#3fb950;box-shadow:0 0 8px #3fb950;animation:pulse 1s infinite;"></div>
     <span style="font-family:'IBM Plex Mono',monospace;font-size:14px;font-weight:600;color:#e6edf3;">CAMANAVA INVENTORY</span>
@@ -1317,8 +1470,10 @@ canvas { max-height:260px; }
     </div>
   </div>
   <div class="header-right">
+    <span id="user-info" style="font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace;"></span>
     <div class="refresh-info" id="refresh-info">–</div>
     <button class="btn btn-green" onclick="triggerRefresh()">↺ Refresh</button>
+    <button class="btn" onclick="doLogout()">Logout</button>
   </div>
 </header>
 
@@ -1744,8 +1899,74 @@ let charts = {};
 let tablePages = { critical:1, overstock:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
 const PAGE_SIZE = 50;
 
+// ─── AUTH STATE ───────────────────────────────────────────────────────────────
+let authToken = '';
+let currentUser = null;
+
+function tokenParam(prefix) {
+  if (!authToken) return '';
+  return (prefix || '?') + 'token=' + encodeURIComponent(authToken);
+}
+
+async function doLogin() {
+  const btn = document.getElementById('login-btn');
+  const errEl = document.getElementById('login-error');
+  const username = document.getElementById('login-username').value.trim();
+  const password = document.getElementById('login-password').value;
+  if (!username || !password) { errEl.textContent = 'Enter username and password'; return; }
+  btn.disabled = true; btn.textContent = 'Signing in...'; errEl.textContent = '';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const d = await r.json();
+    if (!r.ok) { errEl.textContent = d.error || 'Login failed'; btn.disabled = false; btn.textContent = 'Sign In'; return; }
+    authToken = d.token;
+    currentUser = d;
+    try { sessionStorage.setItem('camanava_token', authToken); sessionStorage.setItem('camanava_user', JSON.stringify(d)); } catch(e) {}
+    document.getElementById('login-screen').style.display = 'none';
+    startApp();
+  } catch(e) {
+    errEl.textContent = 'Connection error. Try again.';
+    btn.disabled = false; btn.textContent = 'Sign In';
+  }
+}
+
+async function doLogout() {
+  try { await fetch('/api/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: authToken }) }); } catch(e) {}
+  authToken = ''; currentUser = null;
+  try { sessionStorage.removeItem('camanava_token'); sessionStorage.removeItem('camanava_user'); } catch(e) {}
+  location.reload();
+}
+
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 async function init() {
+  // Check for existing session
+  try {
+    const savedToken = sessionStorage.getItem('camanava_token');
+    const savedUser = sessionStorage.getItem('camanava_user');
+    if (savedToken && savedUser) {
+      // Verify token still valid
+      const r = await fetch('/api/me?token=' + encodeURIComponent(savedToken));
+      if (r.ok) {
+        authToken = savedToken;
+        currentUser = JSON.parse(savedUser);
+        startApp();
+        return;
+      }
+    }
+  } catch(e) {}
+  // No valid session - show login
+  document.getElementById('login-screen').style.display = 'flex';
+  // Allow Enter key to submit
+  document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+}
+
+async function startApp() {
+  document.getElementById('loading-overlay').style.display = 'flex';
   setLoadingMsg('Checking server status...');
   let ready = false;
   for (let i = 0; i < 3; i++) {
@@ -1760,9 +1981,24 @@ async function init() {
   document.getElementById('loading-overlay').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('app').style.flexDirection = 'column';
+  // Show user info + lock area filter if needed
+  applyUserRestrictions();
   await loadFilters();
   await loadAll();
   if (!ready) { pollAndRefresh(); }
+}
+
+function applyUserRestrictions() {
+  if (!currentUser) return;
+  const info = document.getElementById('user-info');
+  if (info) {
+    const areaLabel = currentUser.isAdmin ? 'All Areas' : (currentUser.area || 'All Areas');
+    info.textContent = '👤 ' + currentUser.username + ' (' + (currentUser.level || 'user') + ' · ' + areaLabel + ')';
+  }
+  // If user is locked to an area, set it in filters and disable the area dropdown
+  if (!currentUser.isAdmin && currentUser.area) {
+    activeFilters.area = currentUser.area;
+  }
 }
 
 async function pollAndRefresh() {
@@ -1827,7 +2063,7 @@ async function updateStatus() {
 
 // ─── FILTERS ──────────────────────────────────────────────────────────────────
 async function loadFilters() {
-  const r = await fetch('/api/filters');
+  const r = await fetch('/api/filters' + tokenParam('?'));
   const d = await r.json();
   if (d.error) return;
 
@@ -1844,6 +2080,18 @@ async function loadFilters() {
     o.value = s.id; o.textContent = s.id + ' - ' + s.name;
     storeSelect.appendChild(o);
   });
+
+  // Lock area filter for non-admin users
+  if (currentUser && !currentUser.isAdmin && currentUser.area) {
+    const areaSel = document.getElementById('f-area');
+    if (areaSel) {
+      areaSel.value = currentUser.area;
+      areaSel.disabled = true;
+      areaSel.style.opacity = '0.6';
+      areaSel.style.cursor = 'not-allowed';
+      areaSel.title = 'Locked to your assigned area';
+    }
+  }
 }
 
 function populateSelect(id, items, defaultText) {
@@ -1874,8 +2122,15 @@ function removeFilterTag(btn) {
 
 function clearFilters() {
   activeFilters = {};
-  ['f-area','f-store','f-dept','f-subdept','f-cls','f-supplier']
+  ['f-store','f-dept','f-subdept','f-cls','f-supplier']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  // Non-admin: keep area locked
+  if (currentUser && !currentUser.isAdmin && currentUser.area) {
+    activeFilters.area = currentUser.area;
+  } else {
+    const areaEl = document.getElementById('f-area');
+    if (areaEl) areaEl.value = '';
+  }
   renderActiveTags();
   loadAll();
 }
@@ -1894,6 +2149,7 @@ function renderActiveTags() {
 
 function filterQuery() {
   const params = new URLSearchParams(activeFilters);
+  if (authToken) params.set('token', authToken);
   return params.toString() ? '?' + params.toString() : '';
 }
 
@@ -2241,6 +2497,7 @@ async function loadSKUs(page) {
     search,
     status
   });
+  if (authToken) params.set('token', authToken);
   const r = await fetch('/api/skus?' + params.toString());
   const d = await r.json();
   if (!d || d.error) return;
