@@ -2158,7 +2158,8 @@ function exportLogs() {
   if (logsData.length === 0) { alert('No logs to export'); return; }
   const headers = ['User', 'Login Time', 'Logout Time', 'Duration', 'Area'];
   const rows = logsData.map(r => [r.user, r.loginTime, r.logoutTime, r.duration, r.area]);
-  const csv = [headers.join(','), ...rows.map(row => row.map(c => '"' + (c || '').toString().replace(/"/g, '""') + '"').join(','))].join('\n');
+  const NL = String.fromCharCode(10);
+  const csv = [headers.join(',')].concat(rows.map(row => row.map(c => '"' + (c || '').toString().replace(/"/g, '""') + '"').join(','))).join(NL);
   const blob = new Blob([csv], { type: 'text/csv' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
