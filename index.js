@@ -2182,29 +2182,40 @@ async function confirmClearLogs() {
 
 // ─── INIT ─────────────────────────────────────────────────────────────────────
 async function init() {
-  // Check for existing session
-  // Hide loading overlay immediately — show login or dashboard after auth check
-  document.getElementById('loading-overlay').style.display = 'none';
+  console.log('[Init] Starting...');
+  // Hide loading overlay immediately
+  const loading = document.getElementById('loading-overlay');
+  const loginEl = document.getElementById('login-screen');
+  if (loading) loading.style.display = 'none';
+
+  // Try restoring session, but never block on it
+  let restored = false;
   try {
-    const savedToken = sessionStorage.getItem('camanava_token');
-    const savedUser = sessionStorage.getItem('camanava_user');
+    let savedToken = null, savedUser = null;
+    try { savedToken = sessionStorage.getItem('camanava_token'); } catch(e) {}
+    try { savedUser = sessionStorage.getItem('camanava_user'); } catch(e) {}
     if (savedToken && savedUser) {
-      // Verify token still valid
-      const r = await fetch('/api/me?token=' + encodeURIComponent(savedToken));
-      if (r.ok) {
+      console.log('[Init] Found saved session, verifying...');
+      const r = await Promise.race([
+        fetch('/api/me?token=' + encodeURIComponent(savedToken)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+      ]);
+      if (r && r.ok) {
         authToken = savedToken;
-        currentUser = JSON.parse(savedUser);
-        startApp();
-        return;
+        try { currentUser = JSON.parse(savedUser); } catch(e) { currentUser = null; }
+        if (currentUser) { restored = true; startApp(); return; }
       }
     }
-  } catch(e) { console.warn('Session check error:', e); }
-  // No valid session - show login
-  document.getElementById('login-screen').style.display = 'flex';
-  // Allow Enter key to submit
+  } catch(e) { console.warn('[Init] Session restore failed:', e && e.message); }
+
+  // Show login
+  console.log('[Init] Showing login screen');
+  if (loginEl) loginEl.style.display = 'flex';
   try {
-    document.getElementById('login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-    document.getElementById('login-username').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    const pwInput = document.getElementById('login-password');
+    const userInput = document.getElementById('login-username');
+    if (pwInput) pwInput.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+    if (userInput) userInput.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
   } catch(e) {}
 }
 
@@ -3095,26 +3106,37 @@ function esc(s) {
 }
 
 // ─── START ────────────────────────────────────────────────────────────────────
-// Show login screen immediately as fallback (in case JS errors occur)
-document.addEventListener('DOMContentLoaded', function() {
+function startInit() {
+  init().catch(function(e) {
+    console.error('Init error:', e);
+    const loading = document.getElementById('loading-overlay');
+    const login = document.getElementById('login-screen');
+    if (loading) loading.style.display = 'none';
+    if (login) login.style.display = 'flex';
+  });
+  // Fallback: if after 3s nothing is visible, force show login
   setTimeout(function() {
     const login = document.getElementById('login-screen');
     const app = document.getElementById('app');
     const loading = document.getElementById('loading-overlay');
-    // If after 500ms nothing is visible, force show login
     if (login && app && loading) {
-      const anyVisible = login.style.display !== 'none' || app.style.display !== 'none' || loading.style.display !== 'none';
-      if (!anyVisible) {
+      const anyVisible = (login.style.display && login.style.display !== 'none')
+        || (app.style.display && app.style.display !== 'none');
+      // If loading still showing OR nothing visible, force show login
+      if (!anyVisible && loading.style.display !== 'none') {
+        // still loading is OK
+      } else if (!anyVisible) {
         login.style.display = 'flex';
       }
     }
-  }, 500);
-});
-init().catch(function(e) {
-  console.error('Init error:', e);
-  const login = document.getElementById('login-screen');
-  if (login) login.style.display = 'flex';
-});
+  }, 3000);
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', startInit);
+} else {
+  startInit();
+}
 </script>
 </body>
 </html>`);
