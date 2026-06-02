@@ -95,7 +95,7 @@ async function logLoginEvent(username, area) {
 }
 
 // Updates the logout time + duration for a given row
-async function logLogoutEvent(rowNum, loginTimeISO) {
+async function logLogoutEvent(rowNum, loginTimeISO, reason) {
   if (!LOGS_SHEET_ID || !rowNum) return;
   try {
     const sheets = getSheetsClient();
@@ -105,7 +105,8 @@ async function logLogoutEvent(rowNum, loginTimeISO) {
     const mins = Math.floor(durationMs / 60000);
     const hrs = Math.floor(mins / 60);
     const remMins = mins % 60;
-    const durationStr = hrs > 0 ? (hrs + 'h ' + remMins + 'm') : (mins + 'm');
+    let durationStr = hrs > 0 ? (hrs + 'h ' + remMins + 'm') : (mins + 'm');
+    if (reason === 'auto-timeout') durationStr += ' (auto)';
     await sheets.spreadsheets.values.update({
       spreadsheetId: LOGS_SHEET_ID,
       range: 'C' + rowNum + ':D' + rowNum,
@@ -902,7 +903,8 @@ app.post('/api/login', (req, res) => {
     level: user.level,
     area: isAdmin ? '' : user.area,  // empty = all access
     isAdmin,
-    created: Date.now()
+    created: Date.now(),
+    lastActivity: Date.now()
   };
   // Log the login event (async, don't block response)
   logLoginEvent(user.username, areaLabel).then(result => {
@@ -922,15 +924,42 @@ app.post('/api/login', (req, res) => {
 
 app.post('/api/logout', (req, res) => {
   const token = (req.body && req.body.token) || '';
+  const reason = (req.body && req.body.reason) || 'manual';
   const s = sessions[token];
   if (s) {
     if (s.logRow && s.loginTimeISO) {
-      logLogoutEvent(s.logRow, s.loginTimeISO);
+      logLogoutEvent(s.logRow, s.loginTimeISO, reason);
     }
     delete sessions[token];
   }
   res.json({ ok: true });
 });
+
+// Heartbeat - client pings every minute to keep session alive
+app.post('/api/heartbeat', (req, res) => {
+  const token = (req.body && req.body.token) || '';
+  const s = sessions[token];
+  if (!s) return res.status(401).json({ error: 'Not logged in' });
+  s.lastActivity = Date.now();
+  res.json({ ok: true });
+});
+
+// Background task: check for inactive sessions every 60 seconds and auto-logout
+const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const token of Object.keys(sessions)) {
+    const s = sessions[token];
+    const lastActive = s.lastActivity || s.created;
+    if (now - lastActive > INACTIVITY_TIMEOUT_MS) {
+      console.log('[Session] Auto-logout for inactive user: ' + s.username);
+      if (s.logRow && s.loginTimeISO) {
+        logLogoutEvent(s.logRow, s.loginTimeISO, 'auto-timeout');
+      }
+      delete sessions[token];
+    }
+  }
+}, 60 * 1000);
 
 app.get('/api/me', (req, res) => {
   const token = req.query.token || '';
@@ -1398,6 +1427,23 @@ a { color: var(--green-bright); }
 .login-btn:hover { background:var(--green-light); }
 .login-btn:disabled { opacity:0.6; cursor:not-allowed; }
 .login-error { color:var(--red-light); font-size:12px; min-height:16px; text-align:center; }
+
+/* INACTIVITY MODAL */
+#inactivity-modal {
+  position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:10001;
+  display:flex; align-items:center; justify-content:center;
+  backdrop-filter:blur(4px);
+}
+.inactivity-box {
+  background:var(--bg2); border:1px solid var(--yellow); border-radius:12px;
+  padding:32px; width:380px; max-width:90vw; text-align:center;
+  display:flex; flex-direction:column; gap:14px;
+  box-shadow:0 8px 40px rgba(0,0,0,0.6);
+}
+.inactivity-icon { font-size:48px; }
+.inactivity-title { font-size:18px; font-weight:700; color:var(--yellow-light); }
+.inactivity-text { font-size:13px; color:var(--text); line-height:1.5; }
+.inactivity-text span { font-weight:700; color:var(--red-light); font-family:'IBM Plex Mono',monospace; font-size:16px; }
 #loading-overlay {
   position:fixed; inset:0; background:var(--bg); z-index:9999;
   display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px;
@@ -1634,6 +1680,15 @@ canvas { max-height:260px; }
 </style>
 </head>
 <body>
+
+<div id="inactivity-modal" style="display:none;">
+  <div class="inactivity-box">
+    <div class="inactivity-icon">⏰</div>
+    <div class="inactivity-title">Session expiring soon</div>
+    <div class="inactivity-text">You will be logged out in <span id="inactivity-countdown">60</span> seconds due to inactivity.</div>
+    <button class="login-btn" onclick="stayLoggedIn()">Stay Logged In</button>
+  </div>
+</div>
 
 <div id="login-screen" style="display:none;">
   <div class="login-box">
@@ -2170,10 +2225,119 @@ async function doLogin() {
 }
 
 async function doLogout() {
-  try { await fetch('/api/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: authToken }) }); } catch(e) {}
+  stopActivityTracking();
+  try { await fetch('/api/logout', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ token: authToken, reason: 'manual' }) }); } catch(e) {}
   authToken = ''; currentUser = null;
   try { sessionStorage.removeItem('camanava_token'); sessionStorage.removeItem('camanava_user'); } catch(e) {}
   location.reload();
+}
+
+// ─── INACTIVITY DETECTION & HEARTBEAT ──────────────────────────────────────────
+const INACTIVITY_LIMIT_MS = 10 * 60 * 1000;   // 10 minutes total
+const WARNING_BEFORE_MS = 60 * 1000;          // Show warning 60s before
+const HEARTBEAT_INTERVAL_MS = 60 * 1000;      // Ping server every 60s
+
+let lastActivityAt = Date.now();
+let inactivityTimer = null;
+let warningTimer = null;
+let countdownTimer = null;
+let heartbeatTimer = null;
+
+function recordActivity() {
+  lastActivityAt = Date.now();
+  // If warning is showing, hide it (user came back)
+  const modal = document.getElementById('inactivity-modal');
+  if (modal && modal.style.display !== 'none') {
+    modal.style.display = 'none';
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  }
+}
+
+function startActivityTracking() {
+  if (!authToken) return;
+  ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'].forEach(ev => {
+    document.addEventListener(ev, recordActivity, { passive: true });
+  });
+  // Main inactivity check every 10 seconds
+  if (inactivityTimer) clearInterval(inactivityTimer);
+  inactivityTimer = setInterval(checkInactivity, 10 * 1000);
+  // Heartbeat every 60 seconds (keeps server session alive)
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+}
+
+function stopActivityTracking() {
+  ['mousemove', 'mousedown', 'keydown', 'scroll', 'touchstart', 'click'].forEach(ev => {
+    document.removeEventListener(ev, recordActivity);
+  });
+  if (inactivityTimer) { clearInterval(inactivityTimer); inactivityTimer = null; }
+  if (warningTimer) { clearTimeout(warningTimer); warningTimer = null; }
+  if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+  if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+}
+
+function checkInactivity() {
+  const elapsed = Date.now() - lastActivityAt;
+  const modal = document.getElementById('inactivity-modal');
+  if (elapsed >= INACTIVITY_LIMIT_MS) {
+    // Time's up - auto logout
+    autoLogout();
+  } else if (elapsed >= (INACTIVITY_LIMIT_MS - WARNING_BEFORE_MS)) {
+    // Show warning if not already shown
+    if (modal && modal.style.display === 'none') {
+      showInactivityWarning();
+    }
+  }
+}
+
+function showInactivityWarning() {
+  const modal = document.getElementById('inactivity-modal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  let remaining = Math.ceil((INACTIVITY_LIMIT_MS - (Date.now() - lastActivityAt)) / 1000);
+  const cd = document.getElementById('inactivity-countdown');
+  if (cd) cd.textContent = remaining;
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = setInterval(() => {
+    remaining = Math.ceil((INACTIVITY_LIMIT_MS - (Date.now() - lastActivityAt)) / 1000);
+    if (remaining <= 0) {
+      clearInterval(countdownTimer);
+      autoLogout();
+    } else if (cd) {
+      cd.textContent = remaining;
+    }
+  }, 1000);
+}
+
+function stayLoggedIn() {
+  recordActivity();
+  sendHeartbeat();
+}
+
+async function autoLogout() {
+  stopActivityTracking();
+  try {
+    await fetch('/api/logout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: authToken, reason: 'auto-timeout' })
+    });
+  } catch(e) {}
+  authToken = ''; currentUser = null;
+  try { sessionStorage.removeItem('camanava_token'); sessionStorage.removeItem('camanava_user'); } catch(e) {}
+  alert('You have been logged out due to inactivity.');
+  location.reload();
+}
+
+async function sendHeartbeat() {
+  if (!authToken) return;
+  try {
+    await fetch('/api/heartbeat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: authToken })
+    });
+  } catch(e) {}
 }
 
 // ─── ACTIVITY LOG ─────────────────────────────────────────────────────────────
@@ -2295,6 +2459,9 @@ async function startApp() {
   document.getElementById('app').style.flexDirection = 'column';
   // Show user info + lock area filter if needed
   applyUserRestrictions();
+  // Start inactivity detection & heartbeat
+  lastActivityAt = Date.now();
+  startActivityTracking();
   await loadFilters();
   await loadAll();
   if (!ready) { pollAndRefresh(); }
@@ -3205,4 +3372,3 @@ app.listen(PORT, () => {
     refreshData(true);
   }
 });
-
