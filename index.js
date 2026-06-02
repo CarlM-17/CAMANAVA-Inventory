@@ -31,6 +31,7 @@ let cache = {
   rows: [],
   storeMap: {},       // storeId -> { area, storeName, region }
   users: {},          // username -> { username, password, level, area }
+  catMap: {},         // deptName (uppercase) -> catName
   kpis: {},
   criticalItems: [],
   overstockItems: [],
@@ -250,7 +251,30 @@ function parseUsersXLSX(buffer) {
   return users;
 }
 
-// ─── SAFE NUMBER ─────────────────────────────────────────────────────────────
+// ─── PARSE CATCODE SHEET FROM XLSX ───────────────────────────────────────────
+function parseCatCodeXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = wb.SheetNames.find(n => n.toLowerCase().trim() === 'catcode');
+  if (!sheetName) {
+    console.warn('[CatCode] No "CatCode" sheet found. Available sheets: ' + wb.SheetNames.join(', '));
+    return {};
+  }
+  const ws = wb.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const catMap = {};
+  // Skip header row (row 0)
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row || row.length < 2) continue;
+    const deptName = (row[0] || '').toString().trim().toUpperCase();
+    const catName = (row[1] || '').toString().trim();
+    if (deptName && catName) catMap[deptName] = catName;
+  }
+  console.log('[CatCode] Loaded ' + Object.keys(catMap).length + ' category mappings');
+  return catMap;
+}
+
+
 function num(val) {
   const n = parseFloat((val || '').toString().replace(/,/g, ''));
   return isNaN(n) ? 0 : n;
@@ -293,7 +317,7 @@ function daysSince(d) {
 }
 
 // ─── BUILD ANALYTICS FROM ROWS ────────────────────────────────────────────────
-function buildAnalytics(rawRows, storeMap) {
+function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // rawRows[0] = header
   if (rawRows.length < 2) return null;
 
@@ -440,6 +464,7 @@ function buildAnalytics(rawRows, storeMap) {
       area: storeInfo.area || '',
       dept: row[COL.dept] || '',
       deptName: row[COL.deptName] || '',
+      catName: catMap[(row[COL.deptName] || '').toString().trim().toUpperCase()] || '',
       subDept: row[COL.subDept] || '',
       subDeptName: row[COL.subDeptName] || '',
       cls: row[COL.cls] || '',
@@ -700,7 +725,8 @@ function buildAnalytics(rawRows, storeMap) {
     classes: uniq(enriched.map(r => r.clsName)).filter(d => d.length > 0),
     suppliers: uniq(enriched.map(r => r.supplierName)).filter(d => d.length > 0),
     brands: uniq(enriched.map(r => r.brand)).filter(d => d.length > 0),
-    skuStatuses: uniq(enriched.map(r => r.skuStatus))
+    skuStatuses: uniq(enriched.map(r => r.skuStatus)),
+    categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0)
   };
 
   return { kpis, criticalItems, overstockItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
@@ -751,6 +777,7 @@ async function refreshData(force = false) {
     // Find and parse ListOfStores.xlsx
     let storeMap = {};
     let usersMap = {};
+    let catMap = {};
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
       const storesFile = await findFile(drive, STORES_FILE_NAME);
@@ -759,7 +786,8 @@ async function refreshData(force = false) {
         const storesBuffer = await downloadFileBuffer(drive, storesFile.id);
         storeMap = parseStoresXLSX(storesBuffer);
         usersMap = parseUsersXLSX(storesBuffer);
-        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users.`);
+        catMap = parseCatCodeXLSX(storesBuffer);
+        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users, ${Object.keys(catMap).length} categories.`);
       } else {
         console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
         // List all files in folder for debugging
@@ -780,13 +808,14 @@ async function refreshData(force = false) {
     console.log(`[Cache] Parsed ${rawRows.length} rows.`);
 
     console.log('[Cache] Building analytics...');
-    const analytics = buildAnalytics(rawRows, storeMap);
+    const analytics = buildAnalytics(rawRows, storeMap, catMap);
     if (!analytics) throw new Error('Analytics build failed - no data.');
 
     // Atomic swap
     cache.rows = analytics.rows;
     cache.storeMap = storeMap;
     if (Object.keys(usersMap).length > 0) cache.users = usersMap;
+    if (Object.keys(catMap).length > 0) cache.catMap = catMap;
     cache.kpis = analytics.kpis;
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
@@ -822,6 +851,7 @@ function applyFilters(rows, filters = {}) {
     if (filters.region && r.regionName !== filters.region) return false;
     if (filters.area && r.area !== filters.area) return false;
     if (filters.store && r.storeNumber !== filters.store) return false;
+    if (filters.category && r.catName !== filters.category) return false;
     if (filters.dept && r.deptName !== filters.dept) return false;
     if (filters.subDept && r.subDeptName !== filters.subDept) return false;
     if (filters.cls && r.clsName !== filters.cls) return false;
@@ -1069,7 +1099,6 @@ app.get('/api/skus', (req, res) => {
   const s = sessions[token || ''];
   if (s && !s.isAdmin && s.area) filters.area = s.area;
   let rows = applyFilters(cache.rows, filters);
-
   // Status filter
   if (status === 'critical') rows = rows.filter(r => r.isCritical);
   else if (status === 'oos') rows = rows.filter(r => r.isOutOfStock);
@@ -1210,6 +1239,28 @@ app.get('/api/suppliers', (req, res) => {
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100);
   res.json(result);
+});
+
+// Category aggregates for the Overview chart
+app.get('/api/categories', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  // Don't filter by category for this endpoint (it would zero out other categories)
+  delete filters.category;
+  const rows = applyFilters(cache.rows, filters);
+  const catGroups = {};
+  for (const r of rows) {
+    if (!r.catName) continue;
+    if (!catGroups[r.catName]) catGroups[r.catName] = { catName: r.catName, totalValue: 0, totalSKUs: 0, criticalCount: 0, oosCount: 0, overstockCount: 0, deadCount: 0 };
+    const g = catGroups[r.catName];
+    g.totalValue += r.onHandValue;
+    g.totalSKUs++;
+    if (r.isCritical) g.criticalCount++;
+    if (r.isOutOfStock) g.oosCount++;
+    if (r.isOverstock) g.overstockCount++;
+    if (r.isDeadStock) g.deadCount++;
+  }
+  res.json(Object.values(catGroups).sort((a, b) => b.totalValue - a.totalValue));
 });
 
 app.post('/api/refresh', async (req, res) => {
@@ -1640,6 +1691,12 @@ canvas { max-height:260px; }
         </select>
       </div>
       <div class="fb-group">
+        <label>Category</label>
+        <select class="filter-select" id="f-category" onchange="applyFilter('category',this.value)">
+          <option value="">All Categories</option>
+        </select>
+      </div>
+      <div class="fb-group">
         <label>Store</label>
         <select class="filter-select" id="f-store" onchange="applyFilter('store',this.value)">
           <option value="">All Stores</option>
@@ -1745,8 +1802,8 @@ canvas { max-height:260px; }
           <canvas id="chart-suppliers"></canvas>
         </div>
         <div class="chart-card">
-          <div class="chart-title">Inventory Health by Area</div>
-          <canvas id="chart-areas"></canvas>
+          <div class="chart-title">Inventory Value by Category</div>
+          <canvas id="chart-categories"></canvas>
         </div>
         <div class="chart-card">
           <div class="chart-title">Inventory Risk Distribution</div>
@@ -2329,6 +2386,7 @@ async function loadFilters() {
   const d = await r.json();
   if (d.error) return;
 
+  populateSelect('f-category', d.categories, 'All Categories');
   populateSelect('f-area', d.areas, 'All Areas');
   populateSelect('f-dept', d.depts, 'All Departments');
   populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
@@ -2401,7 +2459,7 @@ function removeFilterTag(btn) {
   if (!key) return;
   // Prevent non-admin from removing their locked area
   if (key === 'area' && currentUser && !currentUser.isAdmin && currentUser.area) return;
-  const idMap = { area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
+  const idMap = { category: 'f-category', area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
   const sel = document.getElementById(idMap[key]);
   if (sel) sel.value = '';
   applyFilter(key, '');
@@ -2409,7 +2467,7 @@ function removeFilterTag(btn) {
 
 function clearFilters() {
   activeFilters = {};
-  ['f-store','f-dept','f-subdept','f-cls','f-supplier']
+  ['f-category','f-store','f-dept','f-subdept','f-cls','f-supplier']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   // Non-admin: keep area locked
   if (currentUser && !currentUser.isAdmin && currentUser.area) {
@@ -2470,12 +2528,14 @@ function kpiCard(label, value, sub, type) {
 
 // ─── CHARTS ───────────────────────────────────────────────────────────────────
 async function loadCharts() {
-  const [storesRes, suppliersRes] = await Promise.all([
+  const [storesRes, suppliersRes, categoriesRes] = await Promise.all([
     fetch('/api/stores' + filterQuery()),
-    fetch('/api/suppliers' + filterQuery())
+    fetch('/api/suppliers' + filterQuery()),
+    fetch('/api/categories' + filterQuery())
   ]);
   const stores = await storesRes.json();
   const suppliers = await suppliersRes.json();
+  const categories = await categoriesRes.json();
   if (!Array.isArray(stores) || !Array.isArray(suppliers)) return;
 
   // Register datalabels plugin globally (once)
@@ -2526,32 +2586,24 @@ async function loadCharts() {
     }
   });
 
-  // Inventory Health by Area
-  const areaMap = {};
-  stores.forEach(s => {
-    if (!s.area) return;
-    if (!areaMap[s.area]) areaMap[s.area] = { value:0, critical:0, overstock:0 };
-    areaMap[s.area].value += s.totalValue;
-    areaMap[s.area].critical += s.criticalCount;
-    areaMap[s.area].overstock += s.overstockCount;
-  });
-  const areas = Object.keys(areaMap);
-  charts.areas = new Chart(document.getElementById('chart-areas'), {
+  // Inventory Value by Category
+  const cats = Array.isArray(categories) ? categories : [];
+  const catNames = cats.map(c => c.catName);
+  const catColors = ['#2ea043','#1f6feb','#e3b341','#f85149','#8b949e','#c084fc','#38bdf8','#fb923c','#a3e635'];
+  charts.categories = new Chart(document.getElementById('chart-categories'), {
     type: 'bar',
     data: {
-      labels: areas,
-      datasets: [
-        { label: 'Inv Value', data: areas.map(a => areaMap[a].value), backgroundColor: '#2ea043', borderRadius: 4, yAxisID: 'y',
-          datalabels: { anchor:'end', align:'top', color:'#3fb950', font:{size:9,weight:'600'}, formatter: v => '₱'+fmtM(v) } },
-        { label: 'Critical', data: areas.map(a => areaMap[a].critical), backgroundColor: '#f85149', borderRadius: 4, yAxisID: 'y1',
-          datalabels: { anchor:'end', align:'top', color:'#f85149', font:{size:9,weight:'600'}, formatter: v => fmt(v) } }
-      ]
+      labels: catNames,
+      datasets: [{ label: 'Inv Value', data: cats.map(c => c.totalValue), backgroundColor: catColors.slice(0, catNames.length), borderRadius: 4 }]
     },
     options: {
-      responsive:true,
-      plugins:{ legend:{labels:{color:'#8b949e',font:{size:10}}} },
-      layout:{ padding:{top:20} },
-      scales:{ y:{ ticks:{color:'#8b949e',callback: v=>'₱'+fmtM(v)}, grid:{color:'#30363d'} }, y1:{position:'right',ticks:{color:'#8b949e'},grid:{display:false}}, x:{ticks:{color:'#8b949e',font:{size:9}},grid:{display:false}} }
+      responsive: true,
+      plugins: {
+        legend: { display: false },
+        datalabels: { anchor:'end', align:'top', color:'#e6edf3', font:{size:10,weight:'600'}, formatter: v => '₱'+fmtM(v) }
+      },
+      layout: { padding: { top: 20 } },
+      scales: { y: { ticks: { color:'#8b949e', callback: v => '₱'+fmtM(v) }, grid: { color:'#30363d' } }, x: { ticks: { color:'#8b949e', font:{size:9} }, grid: { display: false } } }
     }
   });
 
@@ -3153,3 +3205,4 @@ app.listen(PORT, () => {
     refreshData(true);
   }
 });
+
