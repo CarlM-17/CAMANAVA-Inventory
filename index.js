@@ -2903,10 +2903,14 @@ async function loadTabData() {
   if (activeTab === 'logs') await loadLogs();
 }
 
+// Stores the full unpaginated dataset for each table — used by sortTable to sort across all pages
+const tableData = {};
+
 async function loadCritical() {
   const r = await fetch('/api/critical' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  tableData.critical = data;
   document.getElementById('critical-count').textContent = fmt(data.length);
   renderTable('critical-body', data, renderCriticalRow, 'critical-pagination', 'critical', tablePages.critical);
 }
@@ -2914,6 +2918,7 @@ async function loadOverstock() {
   const r = await fetch('/api/overstock' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  tableData.overstock = data;
   document.getElementById('overstock-count').textContent = fmt(data.length);
   renderTable('overstock-body', data, renderOverstockRow, 'overstock-pagination', 'overstock', tablePages.overstock);
 }
@@ -2921,6 +2926,7 @@ async function loadDeadstock() {
   const r = await fetch('/api/deadstock' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  tableData.deadstock = data;
   document.getElementById('deadstock-count').textContent = fmt(data.length);
   renderTable('deadstock-body', data, renderDeadstockRow, 'deadstock-pagination', 'deadstock', tablePages.deadstock);
 }
@@ -2928,6 +2934,7 @@ async function loadOutOfStock() {
   const r = await fetch('/api/outofstock' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  tableData.outofstock = data;
   document.getElementById('outofstock-count').textContent = fmt(data.length);
   renderTable('outofstock-body', data, renderOutOfStockRow, 'outofstock-pagination', 'outofstock', tablePages.outofstock);
 }
@@ -2935,6 +2942,7 @@ async function loadStores() {
   const r = await fetch('/api/stores' + filterQuery());
   const data = await r.json();
   if (!Array.isArray(data)) return;
+  tableData.stores = data;
   renderTable('stores-body', data, renderStoreRow, 'stores-pagination', 'stores', tablePages.stores);
 }
 async function loadSuppliers() {
@@ -2942,6 +2950,7 @@ async function loadSuppliers() {
   const data = await r.json();
   if (!Array.isArray(data)) return;
   supplierRiskData = data;
+  tableData.suppliers = data;
   renderSupplierRisk(data);
   renderTable('suppliers-body', data, renderSupplierRow, 'suppliers-pagination', 'suppliers', tablePages.suppliers);
 }
@@ -3280,22 +3289,61 @@ function searchTable(tableId, query) {
 
 // ─── TABLE SORT ───────────────────────────────────────────────────────────────
 let sortState = {};
+// Maps tableId -> { key (matches tableData / pagination key), columns: [field,...], renderFn, paginationId }
+// Field == '' means that column is not sortable. Column order MUST match the <th> order in the table.
+function getTableConfig(tableId) {
+  const configs = {
+    'critical-table':   { key: 'critical',   render: renderCriticalRow,   pagination: 'critical-pagination',
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived'] },
+    'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived'] },
+    'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived'] },
+    'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
+      cols: ['store','area','skuCode','skuDesc','supplier','p8ave','avgCost','lostSalesPerWeek','totalPO','daysNoSales','dateLastSold','dateLastReceived'] },
+    'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
+      cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
+    'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
+      cols: ['supplierCode','supplierName','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] }
+  };
+  return configs[tableId];
+}
+
 function sortTable(tableId, colIndex) {
-  const table = document.getElementById(tableId);
-  const tbody = table.querySelector('tbody');
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  const key = tableId + '_' + colIndex;
-  const asc = sortState[key] !== true;
-  sortState[key] = asc;
-  rows.sort((a, b) => {
-    const av = a.cells[colIndex]?.textContent?.trim() || '';
-    const bv = b.cells[colIndex]?.textContent?.trim() || '';
-    const an = parseFloat(av.replace(/[₱,]/g, ''));
-    const bn = parseFloat(bv.replace(/[₱,]/g, ''));
-    if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
-    return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+  const cfg = getTableConfig(tableId);
+  if (!cfg) return;
+  const field = cfg.cols[colIndex];
+  if (!field) return;
+  const data = tableData[cfg.key];
+  if (!Array.isArray(data) || data.length === 0) return;
+  const stateKey = tableId + '_' + colIndex;
+  const asc = sortState[stateKey] !== true;
+  sortState[stateKey] = asc;
+  // Reset other column states for this table so only one column shows sorted
+  Object.keys(sortState).forEach(k => { if (k.startsWith(tableId + '_') && k !== stateKey) delete sortState[k]; });
+  // Sort full dataset
+  data.sort((a, b) => {
+    let av = a[field], bv = b[field];
+    // Handle wtsNet "Dead Stock" string for overstock — treat as Infinity so it goes to extremes
+    if (av === 'Dead Stock') av = Infinity;
+    if (bv === 'Dead Stock') bv = Infinity;
+    // Nulls always at bottom regardless of direction
+    const aNull = (av == null || av === '');
+    const bNull = (bv == null || bv === '');
+    if (aNull && bNull) return 0;
+    if (aNull) return 1;
+    if (bNull) return -1;
+    // Try numeric first
+    const an = (typeof av === 'number') ? av : parseFloat(String(av).replace(/[₱,]/g, ''));
+    const bn = (typeof bv === 'number') ? bv : parseFloat(String(bv).replace(/[₱,]/g, ''));
+    if (!isNaN(an) && !isNaN(bn) && (typeof av === 'number' || typeof bv === 'number' || /^[\d.,₱\-]+$/.test(String(av).trim()))) {
+      return asc ? an - bn : bn - an;
+    }
+    return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   });
-  rows.forEach(r => tbody.appendChild(r));
+  // Reset to page 1 and re-render
+  tablePages[cfg.key] = 1;
+  renderTable(cfg.pagination.replace('-pagination','-body'), data, cfg.render, cfg.pagination, cfg.key, 1);
 }
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
