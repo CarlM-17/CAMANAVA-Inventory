@@ -549,7 +549,6 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const criticalItems = enriched
     .filter(r => r.isCritical)
     .sort((a, b) => a.wtsNet - b.wtsNet)
-    .slice(0, 500)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
@@ -571,7 +570,6 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const overstockItems = enriched
     .filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet)
-    .slice(0, 500)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
@@ -591,7 +589,6 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const deadStockItems = enriched
     .filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue)
-    .slice(0, 300)
     .map(r => {
       const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
       const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
@@ -615,7 +612,6 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const outOfStockItems = enriched
     .filter(r => r.isOutOfStock)
     .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
-    .slice(0, 500)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
@@ -1046,7 +1042,7 @@ app.get('/api/critical', (req, res) => {
   const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.criticalItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isCritical)
-    .sort((a, b) => a.wtsNet - b.wtsNet).slice(0, 500)
+    .sort((a, b) => a.wtsNet - b.wtsNet)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
@@ -1065,7 +1061,7 @@ app.get('/api/overstock', (req, res) => {
   const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.overstockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOverstock)
-    .sort((a, b) => b.wtsNet - a.wtsNet).slice(0, 500)
+    .sort((a, b) => b.wtsNet - a.wtsNet)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
@@ -1083,7 +1079,7 @@ app.get('/api/deadstock', (req, res) => {
   const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.deadStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isDeadStock)
-    .sort((a, b) => b.onHandValue - a.onHandValue).slice(0, 300)
+    .sort((a, b) => b.onHandValue - a.onHandValue)
     .map(r => {
       const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
       const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
@@ -1106,7 +1102,7 @@ app.get('/api/outofstock', (req, res) => {
   const filters = resolveFilters(req);
   if (Object.keys(filters).length === 0) return res.json(cache.outOfStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOutOfStock)
-    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).slice(0, 500)
+    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
     .map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
