@@ -457,12 +457,14 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const dateLastSold = row[COL.dateLastSold] || '';
     const dateLastReceived = row[COL.dateLastReceived] || '';
     const daysNoSales = daysSince(dateLastSold);
+    const daysSinceReceived = daysSince(dateLastReceived);
     // Per-SKU days cover (matches existing formula)
     const skuDaysCover = (wkAveNet > 0 && avgCost > 0) ? (onHandValue * 7) / (wkAveNet * avgCost) : null;
-    // Aging: stock projected to last 180+ days AND last sold < 180 days ago (still has activity)
+    // Aging: stock projected to last 180+ days AND last received 180+ days ago
+    // (excludes recent deliveries which would otherwise look like aging due to high stock)
     const isAging = onHand > 0
       && skuDaysCover != null && skuDaysCover >= 180
-      && daysNoSales != null && daysNoSales < 180;
+      && daysSinceReceived != null && daysSinceReceived >= 180;
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
