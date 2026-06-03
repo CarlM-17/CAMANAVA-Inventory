@@ -3141,6 +3141,9 @@ function pageBtnClick(btn) {
 
 function goPage(key, page) {
   tablePages[key] = page;
+  // If we have cached data for this table, just re-render (preserves search/sort)
+  if (Array.isArray(tableData[key]) && renderFromCache(key)) return;
+  // Fallback for tables without cache
   loadTabData();
 }
 
@@ -3280,8 +3283,53 @@ function showTab(name) {
 }
 
 // ─── TABLE SEARCH ─────────────────────────────────────────────────────────────
+// Stores current search query per table key (preserved across sort/pagination)
+const tableSearch = {};
+const tableKeyToId = {
+  critical: 'critical-table',
+  overstock: 'overstock-table',
+  deadstock: 'deadstock-table',
+  outofstock: 'outofstock-table',
+  stores: 'stores-table',
+  suppliers: 'suppliers-table'
+};
+
+// Re-render a table from cached data, applying current search filter
+function renderFromCache(key) {
+  const tableId = tableKeyToId[key];
+  if (!tableId) return false;
+  const cfg = getTableConfig(tableId);
+  if (!cfg) return false;
+  const fullData = tableData[key];
+  if (!Array.isArray(fullData)) return false;
+  const q = (tableSearch[key] || '').toLowerCase().trim();
+  let view = fullData;
+  if (q) {
+    view = fullData.filter(r => cfg.cols.some(field => {
+      if (!field) return false;
+      const v = r[field];
+      if (v == null) return false;
+      return String(v).toLowerCase().includes(q);
+    }));
+  }
+  const bodyId = cfg.pagination.replace('-pagination', '-body');
+  renderTable(bodyId, view, cfg.render, cfg.pagination, key, tablePages[key] || 1);
+  // Update count badge if exists
+  const countEl = document.getElementById(key + '-count');
+  if (countEl) countEl.textContent = fmt(view.length);
+  return true;
+}
+
 function searchTable(tableId, query) {
-  const q = query.toLowerCase();
+  const cfg = getTableConfig(tableId);
+  if (cfg && Array.isArray(tableData[cfg.key])) {
+    tableSearch[cfg.key] = query || '';
+    tablePages[cfg.key] = 1;
+    renderFromCache(cfg.key);
+    return;
+  }
+  // Fallback for tables without config (Risk Matrix, Supplier Risk, Activity Log)
+  const q = (query || '').toLowerCase();
   document.querySelectorAll('#' + tableId + ' tbody tr').forEach(row => {
     row.style.display = row.textContent.toLowerCase().includes(q) ? '' : 'none';
   });
@@ -3341,9 +3389,9 @@ function sortTable(tableId, colIndex) {
     }
     return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   });
-  // Reset to page 1 and re-render
+  // Reset to page 1 and re-render (renderFromCache will reapply current search)
   tablePages[cfg.key] = 1;
-  renderTable(cfg.pagination.replace('-pagination','-body'), data, cfg.render, cfg.pagination, cfg.key, 1);
+  renderFromCache(cfg.key);
 }
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
