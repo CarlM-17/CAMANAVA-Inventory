@@ -539,6 +539,11 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const agingCount = enriched.filter(r => r.isAging).length;
   const blackInventoryCount = enriched.filter(r => r.isBlackInventory).length;
   const outOfStockCount = enriched.filter(r => r.isOutOfStock).length;
+  // Value totals per category
+  const overstockValue = enriched.filter(r => r.isOverstock).reduce((s, r) => s + r.onHandValue, 0);
+  const agingValue = enriched.filter(r => r.isAging).reduce((s, r) => s + r.onHandValue, 0);
+  const blackInventoryValue = enriched.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
+  const deadStockValue = enriched.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
   const totalLostSalesPerWeek = enriched.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const activeStores = new Set(enriched.map(r => r.storeNumber)).size;
   const activeSuppliers = new Set(enriched.map(r => r.supplierCode).filter(Boolean)).size;
@@ -552,9 +557,13 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     totalOnHand,
     criticalCount,
     overstockCount,
+    overstockValue,
     deadStockCount,
+    deadStockValue,
     agingCount,
+    agingValue,
     blackInventoryCount,
+    blackInventoryValue,
     outOfStockCount,
     totalLostSalesPerWeek,
     activeStores,
@@ -1068,12 +1077,20 @@ app.get('/api/kpis', (req, res) => {
   const criticalCount = filtered.filter(r => r.isCritical).length;
   const overstockCount = filtered.filter(r => r.isOverstock).length;
   const deadStockCount = filtered.filter(r => r.isDeadStock).length;
+  const agingCount = filtered.filter(r => r.isAging).length;
+  const blackInventoryCount = filtered.filter(r => r.isBlackInventory).length;
   const outOfStockCount = filtered.filter(r => r.isOutOfStock).length;
+  const overstockValue = filtered.filter(r => r.isOverstock).reduce((s, r) => s + r.onHandValue, 0);
+  const agingValue = filtered.filter(r => r.isAging).reduce((s, r) => s + r.onHandValue, 0);
+  const blackInventoryValue = filtered.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
+  const deadStockValue = filtered.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
   const totalLostSalesPerWeek = filtered.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const validWts = filtered.filter(r => r.wtsNet > 0 && r.wtsNet < 999);
   const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
   res.json({
     totalOnHandValue, totalOnHand, criticalCount, overstockCount, deadStockCount,
+    agingCount, blackInventoryCount,
+    overstockValue, agingValue, blackInventoryValue, deadStockValue,
     outOfStockCount, totalLostSalesPerWeek,
     activeStores: new Set(filtered.map(r => r.storeNumber)).size,
     activeSuppliers: new Set(filtered.map(r => r.supplierCode).filter(Boolean)).size,
@@ -1704,6 +1721,16 @@ tbody td.mono { font-family:'IBM Plex Mono',monospace; font-size:11px; }
 .action-markdown { background:#3a1a4a; color:#c084fc; }
 
 /* RISK PILLS */
+.totals-pill {
+  display:inline-flex; align-items:center; gap:10px;
+  margin-left:12px; padding:4px 12px;
+  background:var(--bg3); border:1px solid var(--border); border-radius:6px;
+  font-size:11px; font-weight:500; color:var(--text2);
+  font-family:'IBM Plex Mono',monospace;
+}
+.totals-pill .tp-label { color:var(--text2); }
+.totals-pill .tp-value { color:var(--text); font-weight:700; }
+.totals-pill .tp-value.green { color:var(--green-bright); }
 .risk-pill {
   display:inline-flex; align-items:center; gap:4px;
   padding:3px 8px; border-radius:12px; font-size:11px; font-weight:600;
@@ -2004,7 +2031,9 @@ canvas { max-height:260px; }
     <div id="tab-overstock" style="display:none;">
       <div class="section">
         <div class="section-header">
-          <div class="section-title">📦 Overstock Items <span class="badge badge-yellow" id="overstock-count">0</span></div>
+          <div class="section-title">📦 Overstock Items <span class="badge badge-yellow" id="overstock-count">0</span>
+            <span class="totals-pill" id="overstock-totals"></span>
+          </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('overstock-table',this.value)"/>
             <button class="btn btn-sm" onclick="exportData('overstock')">⬇ Export CSV</button>
@@ -2037,7 +2066,9 @@ canvas { max-height:260px; }
     <div id="tab-aging" style="display:none;">
       <div class="section">
         <div class="section-header">
-          <div class="section-title">📅 Aging Items <span class="badge badge-yellow" id="aging-count">0</span></div>
+          <div class="section-title">📅 Aging Items <span class="badge badge-yellow" id="aging-count">0</span>
+            <span class="totals-pill" id="aging-totals"></span>
+          </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('aging-table',this.value)"/>
             <button class="btn btn-sm" onclick="exportData('aging')">⬇ Export CSV</button>
@@ -2070,7 +2101,9 @@ canvas { max-height:260px; }
     <div id="tab-blackinv" style="display:none;">
       <div class="section">
         <div class="section-header">
-          <div class="section-title">⬛ Black Inventory <span class="badge badge-red" id="blackinv-count">0</span></div>
+          <div class="section-title">⬛ Black Inventory <span class="badge badge-red" id="blackinv-count">0</span>
+            <span class="totals-pill" id="blackinv-totals"></span>
+          </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('blackinv-table',this.value)"/>
             <button class="btn btn-sm" onclick="exportData('blackinventory')">⬇ Export CSV</button>
@@ -2103,7 +2136,9 @@ canvas { max-height:260px; }
     <div id="tab-deadstock" style="display:none;">
       <div class="section">
         <div class="section-header">
-          <div class="section-title">💀 Dead Stock <span class="badge badge-red" id="deadstock-count">0</span></div>
+          <div class="section-title">💀 P8 Weeks No Sales <span class="badge badge-red" id="deadstock-count">0</span>
+            <span class="totals-pill" id="deadstock-totals"></span>
+          </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('deadstock-table',this.value)"/>
             <button class="btn btn-sm" onclick="exportData('deadstock')">⬇ Export CSV</button>
@@ -2844,6 +2879,10 @@ async function loadKPIs() {
     kpiCard('Critical SKUs', fmt(d.criticalCount), 'WTS < 2 weeks', 'red'),
     kpiCard('Overstock SKUs', fmt(d.overstockCount), 'WTS > 12 weeks', 'yellow'),
     kpiCard('Dead Stock SKUs', fmt(d.deadStockCount), 'No sales 8 wks', 'red'),
+    kpiCard('Overstock Value', '₱' + fmtM(d.overstockValue || 0), fmt(d.overstockCount || 0) + ' SKUs', 'yellow'),
+    kpiCard('Aging Value', '₱' + fmtM(d.agingValue || 0), fmt(d.agingCount || 0) + ' SKUs, 180+ days', 'yellow'),
+    kpiCard('Black Inv Value', '₱' + fmtM(d.blackInventoryValue || 0), fmt(d.blackInventoryCount || 0) + ' SKUs, stagnant', 'red'),
+    kpiCard('P8 Wks No Sales Val', '₱' + fmtM(d.deadStockValue || 0), fmt(d.deadStockCount || 0) + ' SKUs', 'red'),
     kpiCard('Active Stores', fmt(d.activeStores), 'stores', 'green'),
     kpiCard('Suppliers', fmt(d.activeSuppliers), 'active', 'blue'),
     kpiCard('PO Value', '₱' + fmtM(d.totalPOValue), 'incoming', 'blue'),
@@ -3086,6 +3125,7 @@ async function loadOverstock() {
   if (!Array.isArray(data)) return;
   tableData.overstock = data;
   document.getElementById('overstock-count').textContent = fmt(data.length);
+  setTotalsPill('overstock-totals', data);
   renderTable('overstock-body', data, renderOverstockRow, 'overstock-pagination', 'overstock', tablePages.overstock);
 }
 async function loadAging() {
@@ -3094,6 +3134,7 @@ async function loadAging() {
   if (!Array.isArray(data)) return;
   tableData.aging = data;
   document.getElementById('aging-count').textContent = fmt(data.length);
+  setTotalsPill('aging-totals', data);
   renderTable('aging-body', data, renderAgingRow, 'aging-pagination', 'aging', tablePages.aging);
 }
 async function loadBlackInventory() {
@@ -3102,7 +3143,21 @@ async function loadBlackInventory() {
   if (!Array.isArray(data)) return;
   tableData.blackinv = data;
   document.getElementById('blackinv-count').textContent = fmt(data.length);
+  setTotalsPill('blackinv-totals', data);
   renderTable('blackinv-body', data, renderBlackInventoryRow, 'blackinv-pagination', 'blackinv', tablePages.blackinv);
+}
+
+// Sums onHand & onHandValue and shows them in the section header
+function setTotalsPill(elId, data) {
+  const el = document.getElementById(elId);
+  if (!el || !Array.isArray(data)) return;
+  let totalOnHand = 0, totalValue = 0;
+  for (const r of data) {
+    totalOnHand += Number(r.onHand) || 0;
+    totalValue += Number(r.onHandValue) || 0;
+  }
+  el.innerHTML = '<span class="tp-label">Total On Hand:</span> <span class="tp-value">' + fmt(totalOnHand) +
+                 '</span> &nbsp;|&nbsp; <span class="tp-label">Total Value:</span> <span class="tp-value green">₱' + fmtN(totalValue) + '</span>';
 }
 async function loadDeadstock() {
   const r = await fetch('/api/deadstock' + filterQuery());
@@ -3110,6 +3165,7 @@ async function loadDeadstock() {
   if (!Array.isArray(data)) return;
   tableData.deadstock = data;
   document.getElementById('deadstock-count').textContent = fmt(data.length);
+  setTotalsPill('deadstock-totals', data);
   renderTable('deadstock-body', data, renderDeadstockRow, 'deadstock-pagination', 'deadstock', tablePages.deadstock);
 }
 async function loadOutOfStock() {
