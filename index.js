@@ -36,6 +36,7 @@ let cache = {
   criticalItems: [],
   overstockItems: [],
   agingItems: [],
+  blackInventoryItems: [],
   deadStockItems: [],
   outOfStockItems: [],
   storeAnalysis: [],
@@ -465,6 +466,10 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const isAging = onHand > 0
       && skuDaysCover != null && skuDaysCover >= 180
       && daysSinceReceived != null && daysSinceReceived >= 180;
+    // Black Inventory: on hand AND no sales 180+ days (or never sold) AND last received 180+ days ago
+    const isBlackInventory = onHand > 0
+      && (daysNoSales == null || daysNoSales >= 180)
+      && daysSinceReceived != null && daysSinceReceived >= 180;
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
@@ -518,6 +523,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       isOverstock,
       isDeadStock,
       isAging,
+      isBlackInventory,
       isZeroStock,
       isOutOfStock
     });
@@ -531,6 +537,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const overstockCount = enriched.filter(r => r.isOverstock).length;
   const deadStockCount = enriched.filter(r => r.isDeadStock).length;
   const agingCount = enriched.filter(r => r.isAging).length;
+  const blackInventoryCount = enriched.filter(r => r.isBlackInventory).length;
   const outOfStockCount = enriched.filter(r => r.isOutOfStock).length;
   const totalLostSalesPerWeek = enriched.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const activeStores = new Set(enriched.map(r => r.storeNumber)).size;
@@ -547,6 +554,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     overstockCount,
     deadStockCount,
     agingCount,
+    blackInventoryCount,
     outOfStockCount,
     totalLostSalesPerWeek,
     activeStores,
@@ -615,6 +623,26 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       action: 'For Stop Booking'
+    }));
+
+  // ── BLACK INVENTORY ───────────────────────────────────────────────────────
+  // OnHand > 0, no sales 180+ days (or never sold), and last received 180+ days ago
+  const blackInventoryItems = enriched
+    .filter(r => r.isBlackInventory)
+    .sort((a, b) => b.onHandValue - a.onHandValue)
+    .map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`,
+      area: r.area,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      onHand: r.onHand,
+      onHandValue: r.onHandValue,
+      p8ave: r.p8ave,
+      daysCover: r.skuDaysCover,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
+      action: 'Investigate / Liquidate'
     }));
 
   // ── DEAD STOCK ────────────────────────────────────────────────────────────
@@ -758,7 +786,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0)
   };
 
-  return { kpis, criticalItems, overstockItems, agingItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
+  return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
 }
 
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
@@ -849,6 +877,7 @@ async function refreshData(force = false) {
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
     cache.agingItems = analytics.agingItems;
+    cache.blackInventoryItems = analytics.blackInventoryItems;
     cache.deadStockItems = analytics.deadStockItems;
     cache.outOfStockItems = analytics.outOfStockItems;
     cache.storeAnalysis = analytics.storeAnalysis;
@@ -1125,6 +1154,24 @@ app.get('/api/aging', (req, res) => {
   res.json(filtered);
 });
 
+app.get('/api/blackinventory', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  if (Object.keys(filters).length === 0) return res.json(cache.blackInventoryItems);
+  const filtered = applyFilters(cache.rows, filters).filter(r => r.isBlackInventory)
+    .sort((a, b) => b.onHandValue - a.onHandValue)
+    .map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
+      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      daysCover: r.skuDaysCover,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived),
+      action: 'Investigate / Liquidate'
+    }));
+  res.json(filtered);
+});
+
 app.get('/api/deadstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
@@ -1361,10 +1408,11 @@ app.get('/api/export/:type', (req, res) => {
     else if (type === 'overstock') data = rows.filter(r => r.isOverstock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
     else if (type === 'deadstock') data = rows.filter(r => r.isDeadStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
     else if (type === 'aging') data = rows.filter(r => r.isAging).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, p8ave:r.p8ave, daysCover:r.skuDaysCover }));
+    else if (type === 'blackinventory') data = rows.filter(r => r.isBlackInventory).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, p8ave:r.p8ave, daysCover:r.skuDaysCover }));
     else if (type === 'outofstock') data = rows.filter(r => r.isOutOfStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, p8ave:r.p8ave, lostSalesPerWeek:r.lostSalesPerWeek }));
     else data = [];
   } else {
-    const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, aging: cache.agingItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
+    const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, aging: cache.agingItems, blackinventory: cache.blackInventoryItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
     data = dataMap[type];
   }
   if (!data) return res.status(404).send('Not found');
@@ -1849,7 +1897,8 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('critical')">⚠ Critical</div>
       <div class="tab" onclick="showTab('overstock')">📦 Overstock</div>
       <div class="tab" onclick="showTab('aging')">📅 Aging</div>
-      <div class="tab" onclick="showTab('deadstock')">💀 Dead Stock</div>
+      <div class="tab" onclick="showTab('blackinv')">⬛ Black Inventory</div>
+      <div class="tab" onclick="showTab('deadstock')">💀 P8 Weeks No Sales</div>
       <div class="tab" onclick="showTab('stores')">🏪 Stores</div>
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
@@ -2014,6 +2063,39 @@ canvas { max-height:260px; }
           </table>
         </div>
         <div class="pagination" id="aging-pagination"></div>
+      </div>
+    </div>
+
+    <!-- BLACK INVENTORY TAB -->
+    <div id="tab-blackinv" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">⬛ Black Inventory <span class="badge badge-red" id="blackinv-count">0</span></div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('blackinv-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportData('blackinventory')">⬇ Export CSV</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="blackinv-table">
+            <thead><tr>
+              <th onclick="sortTable('blackinv-table',0)">Store</th>
+              <th onclick="sortTable('blackinv-table',1)">Area</th>
+              <th onclick="sortTable('blackinv-table',2)">SKU Code</th>
+              <th onclick="sortTable('blackinv-table',3)">Description</th>
+              <th onclick="sortTable('blackinv-table',4)">Supplier</th>
+              <th onclick="sortTable('blackinv-table',5)">On Hand</th>
+              <th onclick="sortTable('blackinv-table',6)">Value</th>
+              <th onclick="sortTable('blackinv-table',7)">P8 Ave</th>
+              <th onclick="sortTable('blackinv-table',8)">Days Cover</th>
+              <th onclick="sortTable('blackinv-table',9)">Last Sold</th>
+              <th onclick="sortTable('blackinv-table',10)">Last Received</th>
+              <th>Action</th>
+            </tr></thead>
+            <tbody id="blackinv-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="blackinv-pagination"></div>
       </div>
     </div>
 
@@ -2268,7 +2350,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -2978,6 +3060,7 @@ async function loadTabData() {
   if (activeTab === 'critical') await loadCritical();
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'aging') await loadAging();
+  if (activeTab === 'blackinv') await loadBlackInventory();
   if (activeTab === 'deadstock') await loadDeadstock();
   if (activeTab === 'outofstock') await loadOutOfStock();
   if (activeTab === 'stores') await loadStores();
@@ -3012,6 +3095,14 @@ async function loadAging() {
   tableData.aging = data;
   document.getElementById('aging-count').textContent = fmt(data.length);
   renderTable('aging-body', data, renderAgingRow, 'aging-pagination', 'aging', tablePages.aging);
+}
+async function loadBlackInventory() {
+  const r = await fetch('/api/blackinventory' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  tableData.blackinv = data;
+  document.getElementById('blackinv-count').textContent = fmt(data.length);
+  renderTable('blackinv-body', data, renderBlackInventoryRow, 'blackinv-pagination', 'blackinv', tablePages.blackinv);
 }
 async function loadDeadstock() {
   const r = await fetch('/api/deadstock' + filterQuery());
@@ -3292,6 +3383,24 @@ function renderAgingRow(r) {
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
+function renderBlackInventoryRow(r) {
+  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
+  const lastSold = r.dateLastSold || '<span style="color:var(--text2);font-style:italic;">Never</span>';
+  return '<tr>' +
+    '<td>' + esc(r.store) + '</td>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td class="mono">' + esc(r.skuCode) + '</td>' +
+    '<td>' + esc(r.skuDesc) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+    '<td class="mono" style="color:var(--red-light);font-weight:600;">' + dc + '</td>' +
+    '<td class="mono">' + lastSold + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td><span class="action-badge action-urgent">' + esc(r.action) + '</span></td>' +
+    '</tr>';
+}
 function renderDeadstockRow(r) {
   const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : 'No Sales';
   const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : 'No Sales';
@@ -3375,7 +3484,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','deadstock','stores','suppliers','skus','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','deadstock','stores','suppliers','skus','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -3397,6 +3506,7 @@ const tableKeyToId = {
   critical: 'critical-table',
   overstock: 'overstock-table',
   aging: 'aging-table',
+  blackinv: 'blackinv-table',
   deadstock: 'deadstock-table',
   outofstock: 'outofstock-table',
   stores: 'stores-table',
@@ -3455,6 +3565,8 @@ function getTableConfig(tableId) {
     'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived'] },
     'aging-table':      { key: 'aging',      render: renderAgingRow,      pagination: 'aging-pagination',
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
+    'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived'] },
