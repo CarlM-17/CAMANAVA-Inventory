@@ -1847,29 +1847,34 @@ canvas { max-height:260px; }
   .content { padding: 10px; gap: 12px; }
   .main { height: calc(100vh - 90px); }
 
-  /* TABS: horizontal scroll - force display + overflow */
+  /* TABS: WRAP to multiple rows on mobile so all tabs are always visible */
   .tabs {
     display: flex !important;
-    overflow-x: auto !important;
-    overflow-y: hidden;
-    flex-wrap: nowrap !important;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: thin;
-    width: 100%;
-    min-width: 0;
-    /* Subtle right-edge gradient hints there's more to scroll */
-    -webkit-mask-image: linear-gradient(to right, black 92%, transparent 100%);
-    mask-image: linear-gradient(to right, black 92%, transparent 100%);
+    flex-wrap: wrap !important;
+    gap: 4px !important;
+    overflow: visible !important;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+    /* Remove any mask/gradient */
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
   }
-  .tabs::-webkit-scrollbar { height: 4px; }
-  .tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
   .tab {
     white-space: nowrap;
-    padding: 10px 14px;
+    padding: 8px 12px;
     font-size: 12px;
-    flex-shrink: 0;
-    flex-grow: 0;
-    min-height: 40px;
+    min-height: 36px;
+    border: 1px solid var(--border);
+    border-bottom: 1px solid var(--border) !important;
+    border-radius: 6px;
+    background: var(--bg3);
+    flex: 0 0 auto;
+  }
+  .tab.active {
+    background: var(--green);
+    border-color: var(--green-light);
+    color: #fff !important;
+    border-bottom: 1px solid var(--green-light) !important;
   }
 
   /* FILTER BAR: stack as 2-column grid */
