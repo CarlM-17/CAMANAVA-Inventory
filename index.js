@@ -3394,6 +3394,7 @@ async function openCameraScan() {
 function onCameraScanSuccess(decodedText, decodedResult) {
   if (!camScanning) return;
   camScanning = false; // prevent re-fire while we process
+  playBeep();
   const status = document.getElementById('camera-status');
   status.innerHTML = '<span style="color:var(--green-bright);">✓ Detected: ' + esc(decodedText) + '</span>';
   // Put scanned code into UPC field and run lookup
@@ -3404,6 +3405,29 @@ function onCameraScanSuccess(decodedText, decodedResult) {
     closeCameraScan();
     lookupUPC();
   }, 400);
+}
+
+// Short scanner-style beep using Web Audio API (no external audio file needed)
+let beepCtx = null;
+function playBeep() {
+  try {
+    if (!beepCtx) beepCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // Resume context if it was suspended (browser autoplay policy)
+    if (beepCtx.state === 'suspended') beepCtx.resume();
+    const osc = beepCtx.createOscillator();
+    const gain = beepCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = 1000; // 1kHz — classic scanner beep
+    gain.gain.setValueAtTime(0.0001, beepCtx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.3, beepCtx.currentTime + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, beepCtx.currentTime + 0.15);
+    osc.connect(gain);
+    gain.connect(beepCtx.destination);
+    osc.start();
+    osc.stop(beepCtx.currentTime + 0.15);
+  } catch (e) {
+    // Silently fail if audio not supported
+  }
 }
 
 async function closeCameraScan() {
