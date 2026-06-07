@@ -32,6 +32,7 @@ let cache = {
   storeMap: {},       // storeId -> { area, storeName, region }
   users: {},          // username -> { username, password, level, area }
   catMap: {},         // deptName (uppercase) -> catName
+  upcMap: {},         // upc -> { sku, desc }
   kpis: {},
   criticalItems: [],
   overstockItems: [],
@@ -275,6 +276,30 @@ function parseCatCodeXLSX(buffer) {
   }
   console.log('[CatCode] Loaded ' + Object.keys(catMap).length + ' category mappings');
   return catMap;
+}
+
+// ─── PARSE UPC17 SHEET FROM XLSX ──────────────────────────────────────────────
+function parseUPCXLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = wb.SheetNames.find(n => n.toLowerCase().trim() === 'upc17');
+  if (!sheetName) {
+    console.warn('[UPC] No "UPC17" sheet found. Available sheets: ' + wb.SheetNames.join(', '));
+    return {};
+  }
+  const ws = wb.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const upcMap = {};
+  // Skip header row (row 0). One row per UPC (multiple UPCs per SKU possible).
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row || row.length < 2) continue;
+    const upc = (row[0] || '').toString().trim();
+    const sku = (row[1] || '').toString().trim();
+    const desc = (row[2] || '').toString().trim();
+    if (upc && sku) upcMap[upc] = { sku, desc };
+  }
+  console.log('[UPC] Loaded ' + Object.keys(upcMap).length + ' UPC mappings');
+  return upcMap;
 }
 
 
@@ -844,6 +869,7 @@ async function refreshData(force = false) {
     let storeMap = {};
     let usersMap = {};
     let catMap = {};
+    let upcMap = {};
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
       const storesFile = await findFile(drive, STORES_FILE_NAME);
@@ -853,7 +879,8 @@ async function refreshData(force = false) {
         storeMap = parseStoresXLSX(storesBuffer);
         usersMap = parseUsersXLSX(storesBuffer);
         catMap = parseCatCodeXLSX(storesBuffer);
-        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users, ${Object.keys(catMap).length} categories.`);
+        upcMap = parseUPCXLSX(storesBuffer);
+        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users, ${Object.keys(catMap).length} categories, ${Object.keys(upcMap).length} UPCs.`);
       } else {
         console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
         // List all files in folder for debugging
@@ -882,6 +909,7 @@ async function refreshData(force = false) {
     cache.storeMap = storeMap;
     if (Object.keys(usersMap).length > 0) cache.users = usersMap;
     if (Object.keys(catMap).length > 0) cache.catMap = catMap;
+    if (Object.keys(upcMap).length > 0) cache.upcMap = upcMap;
     cache.kpis = analytics.kpis;
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
@@ -1033,6 +1061,18 @@ app.get('/api/me', (req, res) => {
   const s = sessions[token];
   if (!s) return res.status(401).json({ error: 'Not logged in' });
   res.json({ username: s.username, level: s.level, area: s.area, isAdmin: s.isAdmin });
+});
+
+// UPC barcode lookup — returns the matching SKU & description
+app.get('/api/upc-lookup', (req, res) => {
+  const upc = (req.query.upc || '').toString().trim();
+  if (!upc) return res.status(400).json({ error: 'UPC required' });
+  if (!cache.upcMap || Object.keys(cache.upcMap).length === 0) {
+    return res.status(503).json({ error: 'UPC database not loaded yet' });
+  }
+  const entry = cache.upcMap[upc];
+  if (!entry) return res.status(404).json({ error: 'UPC not found', upc });
+  res.json({ upc, sku: entry.sku, desc: entry.desc });
 });
 
 // Activity logs — admin only
@@ -2317,6 +2357,9 @@ canvas { max-height:260px; }
               <option value="normal">Normal</option>
             </select>
             <input type="text" class="table-search" id="sku-search-input" placeholder="Search SKU / Store / Supplier..." oninput="debouncedSKUSearch()"/>
+            <input type="text" class="table-search" id="sku-upc-input" placeholder="📷 Scan/enter UPC" onkeydown="if(event.key==='Enter')lookupUPC()" style="width:180px;"/>
+            <button class="btn btn-sm" onclick="lookupUPC()">Find</button>
+            <span id="sku-upc-msg" style="font-size:11px;font-family:'IBM Plex Mono',monospace;"></span>
           </div>
         </div>
         <div class="table-wrap" style="max-height:600px;">
@@ -3236,6 +3279,40 @@ let skuSearchTimer = null;
 function debouncedSKUSearch() {
   clearTimeout(skuSearchTimer);
   skuSearchTimer = setTimeout(() => loadSKUs(1), 350);
+}
+
+async function lookupUPC() {
+  const input = document.getElementById('sku-upc-input');
+  const msgEl = document.getElementById('sku-upc-msg');
+  const upc = (input.value || '').trim();
+  if (!upc) { msgEl.innerHTML = ''; return; }
+  msgEl.innerHTML = '<span style="color:var(--text2);">Looking up...</span>';
+  try {
+    const r = await fetch('/api/upc-lookup?upc=' + encodeURIComponent(upc));
+    if (!r.ok) {
+      if (r.status === 404) {
+        msgEl.innerHTML = '<span style="color:var(--red-light);">UPC ' + upc + ' not found</span>';
+      } else if (r.status === 503) {
+        msgEl.innerHTML = '<span style="color:var(--yellow-light);">UPC database not ready</span>';
+      } else {
+        msgEl.innerHTML = '<span style="color:var(--red-light);">Lookup error</span>';
+      }
+      return;
+    }
+    const d = await r.json();
+    // Found - put SKU into the regular search box and trigger search
+    const searchBox = document.getElementById('sku-search-input');
+    searchBox.value = d.sku;
+    msgEl.innerHTML = '<span style="color:var(--green-bright);">✓ ' + esc(d.sku) + (d.desc ? ' — ' + esc(d.desc) : '') + '</span>';
+    input.value = '';
+    // Clear status filter to ensure SKU shows regardless of status
+    const statusEl = document.getElementById('sku-status-filter');
+    if (statusEl) statusEl.value = '';
+    loadSKUs(1);
+    input.focus();
+  } catch (e) {
+    msgEl.innerHTML = '<span style="color:var(--red-light);">Connection error</span>';
+  }
 }
 
 async function loadSKUs(page) {
