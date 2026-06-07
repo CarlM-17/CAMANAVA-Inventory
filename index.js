@@ -1825,6 +1825,96 @@ tbody td.mono { font-family:'IBM Plex Mono',monospace; font-size:11px; }
 .chart-title { font-size:12px; font-weight:600; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:12px; }
 canvas { max-height:260px; }
 
+/* ============ MOBILE / TABLET RESPONSIVE ============ */
+@media (max-width: 900px) {
+  /* Header: compact and stack-friendly */
+  .header { padding: 8px 10px; flex-wrap: wrap; gap: 8px; }
+  .header-logo h1 { font-size: 13px; }
+  .header-logo span { font-size: 10px; }
+  .header-right { gap: 6px; flex-wrap: wrap; }
+  .refresh-info { font-size: 10px; }
+  #user-info { font-size: 10px; max-width: 100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* Buttons bigger touch target */
+  .btn { padding: 8px 12px; font-size: 12px; min-height: 36px; }
+  .btn-sm { padding: 6px 10px; font-size: 11px; min-height: 32px; }
+
+  /* Content padding */
+  .content { padding: 10px; gap: 12px; }
+  .main { height: calc(100vh - 90px); }
+
+  /* TABS: horizontal scroll instead of wrap */
+  .tabs {
+    overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+  }
+  .tabs::-webkit-scrollbar { height: 4px; }
+  .tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .tab { white-space: nowrap; padding: 10px 12px; font-size: 12px; flex-shrink: 0; min-height: 40px; }
+
+  /* FILTER BAR: stack as 2-column grid */
+  .filter-bar { padding: 10px; gap: 8px; }
+  .fb-group { flex: 1 1 calc(50% - 4px); min-width: 0; max-width: none; }
+  .fb-actions { width: 100%; margin-left: 0; justify-content: space-between; }
+  .filter-select { font-size: 13px; padding: 8px 10px; min-height: 38px; }
+
+  /* KPI GRID: 2 columns on mobile */
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .kpi-card { padding: 10px; }
+  .kpi-label { font-size: 10px; }
+  .kpi-value { font-size: 18px; }
+  .kpi-sub { font-size: 9px; }
+
+  /* SECTION HEADER: stack title + actions */
+  .section-header {
+    flex-direction: column; align-items: stretch; gap: 8px;
+  }
+  .section-title { font-size: 13px; flex-wrap: wrap; }
+  .section-actions { flex-wrap: wrap; gap: 6px; }
+  .section-actions .table-search { width: 100%; min-height: 38px; }
+  .totals-pill { margin-left: 0; margin-top: 4px; font-size: 10px; padding: 4px 8px; }
+
+  /* TABLES: smaller font, allow horizontal scroll */
+  table { font-size: 11px; }
+  table th, table td { padding: 6px 8px; }
+  .table-wrap { -webkit-overflow-scrolling: touch; max-height: 70vh; }
+
+  /* PAGINATION: bigger taps, wrap */
+  .pagination { flex-wrap: wrap; gap: 4px; padding: 8px 0; }
+  .page-btn { min-width: 36px; min-height: 36px; font-size: 12px; }
+  .page-info { width: 100%; text-align: center; font-size: 11px; padding: 4px 0; }
+
+  /* MODALS: full-width on small screens */
+  .login-box, .inactivity-box { width: min(360px, 95vw); padding: 24px; }
+  .camera-box { width: 95vw; padding: 12px; }
+  #camera-reader { min-height: 60vw; max-height: 70vh; }
+
+  /* SKU Analysis controls stack better */
+  #sku-status-filter { width: 100% !important; }
+  #sku-upc-input { width: 100% !important; }
+  #sku-upc-msg { display: block; width: 100%; }
+}
+
+/* Phone (narrow) — extra tightening */
+@media (max-width: 480px) {
+  .header-logo h1 { font-size: 12px; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .kpi-value { font-size: 16px; }
+  .fb-group { flex: 1 1 100%; } /* one filter per row */
+  table { font-size: 10px; }
+  table th, table td { padding: 5px 6px; }
+  .tab { padding: 10px 10px; font-size: 11px; }
+  .charts-grid canvas { max-height: 220px; }
+  .login-input { font-size: 16px; } /* avoid iOS zoom-on-focus */
+  .filter-select, .table-search { font-size: 16px; } /* iOS no-zoom */
+}
+
+/* TOUCH DEVICE: remove hover-only effects */
+@media (hover: none) {
+  .kpi-card:hover { border-color: var(--border); } /* don't latch hover state */
+  .btn:hover { border-color: var(--border); color: var(--text); }
+}
+
 /* STATUS BAR */
 .status-bar {
   background:var(--bg3); border:1px solid var(--border); border-radius:var(--radius);
@@ -3366,11 +3456,12 @@ async function openCameraScan() {
       {
         fps: 10,
         qrbox: function(w, h) {
-          // Wide rectangle for barcodes (most are wider than tall)
+          // Wide rectangle for barcodes; sized for both landscape and portrait
           const minEdge = Math.min(w, h);
-          return { width: Math.floor(minEdge * 0.9), height: Math.floor(minEdge * 0.45) };
-        },
-        aspectRatio: 1.333
+          const boxW = Math.floor(Math.min(w * 0.9, 320));
+          const boxH = Math.floor(Math.min(boxW * 0.5, 160));
+          return { width: boxW, height: boxH };
+        }
       },
       onCameraScanSuccess,
       // onScanFailure - called every frame when nothing found; ignore quietly
