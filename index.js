@@ -1491,6 +1491,7 @@ app.get('*', (req, res) => {
 <title>CAMANAVA Inventory Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
 :root {
@@ -1580,6 +1581,22 @@ a { color: var(--green-bright); }
 .login-btn:hover { background:var(--green-light); }
 .login-btn:disabled { opacity:0.6; cursor:not-allowed; }
 .login-error { color:var(--red-light); font-size:12px; min-height:16px; text-align:center; }
+
+/* CAMERA MODAL */
+#camera-modal {
+  position:fixed; inset:0; background:rgba(0,0,0,0.85); z-index:10002;
+  display:flex; align-items:center; justify-content:center;
+}
+.camera-box {
+  background:var(--bg2); border:1px solid var(--border); border-radius:12px;
+  padding:16px; width:min(400px, 95vw);
+  display:flex; flex-direction:column; gap:10px;
+}
+.camera-header { display:flex; justify-content:space-between; align-items:center; }
+#camera-reader { border-radius:8px; overflow:hidden; background:#000; min-height:240px; }
+#camera-reader video { width:100% !important; border-radius:8px; }
+.camera-status { font-size:12px; color:var(--text2); text-align:center; font-family:'IBM Plex Mono',monospace; }
+.camera-hint { font-size:11px; color:var(--text2); text-align:center; }
 
 /* INACTIVITY MODAL */
 #inactivity-modal {
@@ -1843,6 +1860,18 @@ canvas { max-height:260px; }
 </style>
 </head>
 <body>
+
+<div id="camera-modal" style="display:none;">
+  <div class="camera-box">
+    <div class="camera-header">
+      <div style="font-size:14px;font-weight:600;">📷 Scan Barcode</div>
+      <button onclick="closeCameraScan()" style="background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;line-height:1;">×</button>
+    </div>
+    <div id="camera-reader" style="width:100%;"></div>
+    <div class="camera-status" id="camera-status">Initializing camera...</div>
+    <div class="camera-hint">Point your camera at the barcode</div>
+  </div>
+</div>
 
 <div id="inactivity-modal" style="display:none;">
   <div class="inactivity-box">
@@ -2359,6 +2388,7 @@ canvas { max-height:260px; }
             <input type="text" class="table-search" id="sku-search-input" placeholder="Search SKU / Store / Supplier..." oninput="debouncedSKUSearch()"/>
             <input type="text" class="table-search" id="sku-upc-input" placeholder="📷 Scan/enter UPC" onkeydown="if(event.key==='Enter')lookupUPC()" style="width:180px;"/>
             <button class="btn btn-sm" onclick="lookupUPC()">Find</button>
+            <button class="btn btn-sm btn-green" onclick="openCameraScan()">📷 Camera</button>
             <span id="sku-upc-msg" style="font-size:11px;font-family:'IBM Plex Mono',monospace;"></span>
           </div>
         </div>
@@ -3313,6 +3343,77 @@ async function lookupUPC() {
   } catch (e) {
     msgEl.innerHTML = '<span style="color:var(--red-light);">Connection error</span>';
   }
+}
+
+// ─── CAMERA BARCODE SCAN ──────────────────────────────────────────────────────
+let camScanner = null;
+let camScanning = false;
+
+async function openCameraScan() {
+  if (typeof Html5Qrcode === 'undefined') {
+    alert('Camera scanner library not loaded. Check your internet connection.');
+    return;
+  }
+  const modal = document.getElementById('camera-modal');
+  const status = document.getElementById('camera-status');
+  modal.style.display = 'flex';
+  status.textContent = 'Initializing camera...';
+  try {
+    if (!camScanner) camScanner = new Html5Qrcode('camera-reader');
+    camScanning = true;
+    await camScanner.start(
+      { facingMode: 'environment' }, // rear camera
+      {
+        fps: 10,
+        qrbox: function(w, h) {
+          // Wide rectangle for barcodes (most are wider than tall)
+          const minEdge = Math.min(w, h);
+          return { width: Math.floor(minEdge * 0.9), height: Math.floor(minEdge * 0.45) };
+        },
+        aspectRatio: 1.333
+      },
+      onCameraScanSuccess,
+      // onScanFailure - called every frame when nothing found; ignore quietly
+      function() {}
+    );
+    status.textContent = '📷 Ready — point at barcode';
+  } catch (e) {
+    console.error('Camera start error:', e);
+    let msg = 'Cannot open camera.';
+    if (e && (e.toString().toLowerCase().includes('permission') || e.toString().toLowerCase().includes('notallowed'))) {
+      msg = 'Camera permission denied. Allow camera access in browser settings.';
+    } else if (e && e.toString().toLowerCase().includes('notfound')) {
+      msg = 'No camera found on this device.';
+    } else if (location.protocol !== 'https:') {
+      msg = 'Camera requires HTTPS. Use the https:// URL.';
+    }
+    status.innerHTML = '<span style="color:var(--red-light);">' + msg + '</span>';
+  }
+}
+
+function onCameraScanSuccess(decodedText, decodedResult) {
+  if (!camScanning) return;
+  camScanning = false; // prevent re-fire while we process
+  const status = document.getElementById('camera-status');
+  status.innerHTML = '<span style="color:var(--green-bright);">✓ Detected: ' + esc(decodedText) + '</span>';
+  // Put scanned code into UPC field and run lookup
+  const upcInput = document.getElementById('sku-upc-input');
+  if (upcInput) upcInput.value = decodedText;
+  // Brief delay so user sees the "Detected" feedback
+  setTimeout(() => {
+    closeCameraScan();
+    lookupUPC();
+  }, 400);
+}
+
+async function closeCameraScan() {
+  const modal = document.getElementById('camera-modal');
+  camScanning = false;
+  if (camScanner) {
+    try { await camScanner.stop(); } catch(e) {}
+    try { await camScanner.clear(); } catch(e) {}
+  }
+  modal.style.display = 'none';
 }
 
 async function loadSKUs(page) {
