@@ -1827,6 +1827,10 @@ canvas { max-height:260px; }
 
 /* ============ MOBILE / TABLET RESPONSIVE ============ */
 @media (max-width: 900px) {
+  /* Prevent content area from scrolling horizontally; tabs handle their own */
+  .content { overflow-x: hidden; min-width: 0; }
+  .main { overflow-x: hidden; }
+
   /* Header: compact and stack-friendly */
   .header { padding: 8px 10px; flex-wrap: wrap; gap: 8px; }
   .header-logo h1 { font-size: 13px; }
@@ -1843,14 +1847,30 @@ canvas { max-height:260px; }
   .content { padding: 10px; gap: 12px; }
   .main { height: calc(100vh - 90px); }
 
-  /* TABS: horizontal scroll instead of wrap */
+  /* TABS: horizontal scroll - force display + overflow */
   .tabs {
-    overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch;
+    display: flex !important;
+    overflow-x: auto !important;
+    overflow-y: hidden;
+    flex-wrap: nowrap !important;
+    -webkit-overflow-scrolling: touch;
     scrollbar-width: thin;
+    width: 100%;
+    min-width: 0;
+    /* Subtle right-edge gradient hints there's more to scroll */
+    -webkit-mask-image: linear-gradient(to right, black 92%, transparent 100%);
+    mask-image: linear-gradient(to right, black 92%, transparent 100%);
   }
   .tabs::-webkit-scrollbar { height: 4px; }
   .tabs::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-  .tab { white-space: nowrap; padding: 10px 12px; font-size: 12px; flex-shrink: 0; min-height: 40px; }
+  .tab {
+    white-space: nowrap;
+    padding: 10px 14px;
+    font-size: 12px;
+    flex-shrink: 0;
+    flex-grow: 0;
+    min-height: 40px;
+  }
 
   /* FILTER BAR: stack as 2-column grid */
   .filter-bar { padding: 10px; gap: 8px; }
