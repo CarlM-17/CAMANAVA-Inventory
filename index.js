@@ -4,6 +4,7 @@ const express = require('express');
 const { google } = require('googleapis');
 const { parse } = require('csv-parse');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const cron = require('node-cron');
 const { Readable } = require('stream');
 const crypto = require('crypto');
@@ -1481,6 +1482,152 @@ app.get('/api/export/:type', (req, res) => {
   res.send(csv);
 });
 
+// SKU Analysis Excel export — respects all filters, sort, search, and status
+app.get('/api/export-skus-xlsx', async (req, res) => {
+  if (!cache.ready) return res.status(503).send('Cache not ready');
+  const { sortBy = '', sortDir = 'asc', search = '', status = '', token, ...filters } = req.query;
+  const s = sessions[token || ''];
+  if (s && !s.isAdmin && s.area) filters.area = s.area;
+
+  let rows = applyFilters(cache.rows, filters);
+  if (status === 'critical') rows = rows.filter(r => r.isCritical);
+  else if (status === 'oos') rows = rows.filter(r => r.isOutOfStock);
+  else if (status === 'overstock') rows = rows.filter(r => r.isOverstock);
+  else if (status === 'deadstock') rows = rows.filter(r => r.isDeadStock);
+  else if (status === 'normal') rows = rows.filter(r => !r.isCritical && !r.isOutOfStock && !r.isOverstock && !r.isDeadStock);
+
+  if (search) {
+    const q = search.toLowerCase();
+    rows = rows.filter(r =>
+      (r.skuCode || '').toLowerCase().includes(q) ||
+      (r.skuDesc || '').toLowerCase().includes(q) ||
+      (r.supplierName || '').toLowerCase().includes(q) ||
+      (r.storeName || '').toLowerCase().includes(q)
+    );
+  }
+
+  if (sortBy) {
+    const sortFieldMap = { invValue: 'onHandValue', weeksToSell: 'skuWTS', daysCover: 'skuDaysCover' };
+    const field = sortFieldMap[sortBy] || sortBy;
+    const dir = sortDir === 'desc' ? -1 : 1;
+    rows = [...rows].sort((a, b) => {
+      let av = a[field], bv = b[field];
+      const aNull = (av == null || av === '');
+      const bNull = (bv == null || bv === '');
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  }
+
+  // Build workbook
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CAMANAVA Inventory Dashboard';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('SKU Analysis');
+
+  // Dark green brand color #1B5E20, white font for title + header
+  const DARK_GREEN = 'FF1B5E20';
+  const headers = [
+    { header: 'Store #', key: 'storeNumber', width: 10 },
+    { header: 'Store Name', key: 'storeName', width: 24 },
+    { header: 'Area', key: 'area', width: 18 },
+    { header: 'SKU Code', key: 'skuCode', width: 14 },
+    { header: 'Description', key: 'skuDesc', width: 36 },
+    { header: 'Supplier', key: 'supplierName', width: 28 },
+    { header: 'On Hand', key: 'onHand', width: 10 },
+    { header: 'Std Pack', key: 'stdPack', width: 10 },
+    { header: 'Qty Cases', key: 'qtyCases', width: 10 },
+    { header: 'Inv Value', key: 'invValue', width: 14 },
+    { header: 'P8 Ave/Wk', key: 'p8ave', width: 12 },
+    { header: 'WTS', key: 'weeksToSell', width: 10 },
+    { header: 'Days Cover', key: 'daysCover', width: 12 },
+    { header: 'Status', key: 'status', width: 12 },
+    { header: 'Lost Sales/Wk', key: 'lostSalesPerWeek', width: 14 },
+    { header: 'ICO', key: 'ico', width: 8 },
+    { header: 'PO On Order', key: 'poOrderGR', width: 14 },
+    { header: 'Trf On Order', key: 'trfOrderGR', width: 14 },
+    { header: 'Last Sold', key: 'dateLastSold', width: 14 },
+    { header: 'Last Received', key: 'dateLastReceived', width: 14 }
+  ];
+
+  // ── Title row (merged) ──
+  const titleText = 'SKU Analysis — CAMANAVA Inventory  |  Exported: ' + new Date().toLocaleString();
+  ws.mergeCells(1, 1, 1, headers.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = titleText;
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13, name: 'Calibri' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 26;
+
+  // ── Header row ──
+  ws.columns = headers;
+  const headerRow = ws.getRow(2);
+  headers.forEach((h, i) => { headerRow.getCell(i + 1).value = h.header; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+  });
+  headerRow.height = 20;
+
+  // ── Data rows ──
+  for (const r of rows) {
+    let qtyCases;
+    if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+    else if (r.stdPack > 0 && r.onHand > 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+    else if (r.onHand === 0) qtyCases = 0;
+    else qtyCases = 'Per Piece';
+    ws.addRow({
+      storeNumber: r.storeNumber,
+      storeName: r.storeName,
+      area: r.area,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplierName: r.supplierName,
+      onHand: r.onHand,
+      stdPack: r.stdPack,
+      qtyCases,
+      invValue: +(r.onHandValue || 0).toFixed(2),
+      p8ave: +(r.p8ave || 0).toFixed(2),
+      weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
+      daysCover: r.skuDaysCover != null ? +r.skuDaysCover.toFixed(0) : null,
+      status: r.isCritical ? 'Critical' : r.isOutOfStock ? 'OOS' : r.isOverstock ? 'Overstock' : r.isDeadStock ? 'Dead Stock' : 'Normal',
+      lostSalesPerWeek: +(r.lostSalesPerWeek || 0).toFixed(2),
+      ico: r.ico,
+      poOrderGR: r.poOrderGR,
+      trfOrderGR: r.trfOrderGR,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived)
+    });
+  }
+
+  // Freeze the title + header rows
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2 }];
+  // AutoFilter on the header row
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: headers.length } };
+
+  // Number formats on currency/qty columns
+  const formatMap = { invValue: '#,##0.00', p8ave: '#,##0.00', lostSalesPerWeek: '#,##0.00', weeksToSell: '#,##0.00', daysCover: '#,##0', onHand: '#,##0', poOrderGR: '#,##0', trfOrderGR: '#,##0' };
+  ws.columns.forEach(col => { if (formatMap[col.key]) col.numFmt = formatMap[col.key]; });
+
+  // Stream the workbook
+  const filename = `SKU_Analysis_${new Date().toISOString().split('T')[0]}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+});
+
 // ─── FRONTEND HTML ────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   res.send(`<!DOCTYPE html>
@@ -2504,6 +2651,7 @@ canvas { max-height:260px; }
             <input type="text" class="table-search" id="sku-upc-input" placeholder="📷 Scan/enter UPC" onkeydown="if(event.key==='Enter')lookupUPC()" style="width:180px;"/>
             <button class="btn btn-sm" onclick="lookupUPC()">Find</button>
             <button class="btn btn-sm btn-green" onclick="openCameraScan()">📷 Camera</button>
+            <button class="btn btn-sm" onclick="exportSKUsExcel()" id="sku-export-btn">⬇ Export Excel</button>
             <span id="sku-upc-msg" style="font-size:11px;font-family:'IBM Plex Mono',monospace;"></span>
           </div>
         </div>
@@ -3994,6 +4142,35 @@ function sortTable(tableId, colIndex) {
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 function exportData(type) {
   window.open('/api/export/' + type + filterQuery(), '_blank');
+}
+
+async function exportSKUsExcel() {
+  const btn = document.getElementById('sku-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    // Merge all params: top filter bar + search + status + sort + token
+    const params = new URLSearchParams(activeFilters);
+    if (authToken) params.set('token', authToken);
+    const search = document.getElementById('sku-search-input').value || '';
+    const status = document.getElementById('sku-status-filter').value || '';
+    if (search) params.set('search', search);
+    if (status) params.set('status', status);
+    if (skuState && skuState.sortBy) params.set('sortBy', skuState.sortBy);
+    if (skuState && skuState.sortDir) params.set('sortDir', skuState.sortDir);
+    const url = '/api/export-skus-xlsx?' + params.toString();
+    // Trigger download via hidden link (handles browser pop-up blockers better than window.open)
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
+  }
 }
 
 // ─── REFRESH ──────────────────────────────────────────────────────────────────
