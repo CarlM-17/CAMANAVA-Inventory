@@ -39,6 +39,7 @@ let cache = {
   overstockItems: [],
   agingItems: [],
   blackInventoryItems: [],
+  negativeSkuItems: [],
   deadStockItems: [],
   outOfStockItems: [],
   storeAnalysis: [],
@@ -496,6 +497,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const isBlackInventory = onHand > 0
       && (daysNoSales == null || daysNoSales >= 180)
       && daysSinceReceived != null && daysSinceReceived >= 180;
+    // Negative SKU: on hand is negative (system error or data sync issue)
+    const isNegativeStock = onHand < 0;
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
@@ -550,6 +553,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       isDeadStock,
       isAging,
       isBlackInventory,
+      isNegativeStock,
       isZeroStock,
       isOutOfStock
     });
@@ -564,6 +568,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const deadStockCount = enriched.filter(r => r.isDeadStock).length;
   const agingCount = enriched.filter(r => r.isAging).length;
   const blackInventoryCount = enriched.filter(r => r.isBlackInventory).length;
+  const negativeSkuCount = enriched.filter(r => r.isNegativeStock).length;
   const outOfStockCount = enriched.filter(r => r.isOutOfStock).length;
   // Value totals per category
   const overstockValue = enriched.filter(r => r.isOverstock).reduce((s, r) => s + r.onHandValue, 0);
@@ -590,6 +595,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     agingValue,
     blackInventoryCount,
     blackInventoryValue,
+    negativeSkuCount,
     outOfStockCount,
     totalLostSalesPerWeek,
     activeStores,
@@ -679,6 +685,31 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       dateLastReceived: formatDate(r.dateLastReceived),
       action: 'Investigate / Liquidate'
     }));
+
+  // ── NEGATIVE SKU ──────────────────────────────────────────────────────────
+  // On hand is negative (system error or data sync issue) — needs investigation
+  const negativeSkuItems = enriched
+    .filter(r => r.isNegativeStock)
+    .sort((a, b) => a.onHand - b.onHand)  // most negative first
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
+        storeName: `${r.storeNumber} - ${r.storeName}`,
+        area: r.area,
+        skuCode: r.skuCode,
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        onHand: r.onHand,
+        qtyCases,
+        onHandValue: r.onHandValue,
+        p8ave: r.p8ave,
+        dateLastSold: formatDate(r.dateLastSold),
+        dateLastReceived: formatDate(r.dateLastReceived)
+      };
+    });
 
   // ── DEAD STOCK ────────────────────────────────────────────────────────────
   const deadStockItems = enriched
@@ -821,7 +852,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0)
   };
 
-  return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
+  return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
 }
 
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
@@ -916,6 +947,7 @@ async function refreshData(force = false) {
     cache.overstockItems = analytics.overstockItems;
     cache.agingItems = analytics.agingItems;
     cache.blackInventoryItems = analytics.blackInventoryItems;
+    cache.negativeSkuItems = analytics.negativeSkuItems;
     cache.deadStockItems = analytics.deadStockItems;
     cache.outOfStockItems = analytics.outOfStockItems;
     cache.storeAnalysis = analytics.storeAnalysis;
@@ -1227,6 +1259,34 @@ app.get('/api/blackinventory', (req, res) => {
       dateLastReceived: formatDate(r.dateLastReceived),
       action: 'Investigate / Liquidate'
     }));
+  res.json(filtered);
+});
+
+app.get('/api/negativeskus', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  if (Object.keys(filters).length === 0) return res.json(cache.negativeSkuItems);
+  const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativeStock)
+    .sort((a, b) => a.onHand - b.onHand)
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
+        storeName: `${r.storeNumber} - ${r.storeName}`,
+        area: r.area,
+        skuCode: r.skuCode,
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        onHand: r.onHand,
+        qtyCases,
+        onHandValue: r.onHandValue,
+        p8ave: r.p8ave,
+        dateLastSold: formatDate(r.dateLastSold),
+        dateLastReceived: formatDate(r.dateLastReceived)
+      };
+    });
   res.json(filtered);
 });
 
@@ -1622,6 +1682,88 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
 
   // Stream the workbook
   const filename = `SKU_Analysis_${new Date().toISOString().split('T')[0]}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+// Negative SKU Excel export — items with onHand < 0
+app.get('/api/export-negativeskus-xlsx', async (req, res) => {
+  if (!cache.ready) return res.status(503).send('Cache not ready');
+  const filters = resolveFilters(req);
+  let rows = applyFilters(cache.rows, filters).filter(r => r.isNegativeStock);
+  rows.sort((a, b) => a.onHand - b.onHand);
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CAMANAVA Inventory Dashboard';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Negative SKU');
+  const DARK_GREEN = 'FF1B5E20';
+
+  const headers = [
+    { header: 'Store Name', key: 'storeName', width: 26 },
+    { header: 'SKU', key: 'skuCode', width: 14 },
+    { header: 'Description', key: 'skuDesc', width: 36 },
+    { header: 'Supplier', key: 'supplier', width: 28 },
+    { header: 'On Hand', key: 'onHand', width: 12 },
+    { header: 'Qty in Cases', key: 'qtyCases', width: 14 },
+    { header: 'Inv Value', key: 'onHandValue', width: 14 },
+    { header: 'P8 Ave/Wk', key: 'p8ave', width: 12 },
+    { header: 'Last Sold', key: 'dateLastSold', width: 14 },
+    { header: 'Last Received', key: 'dateLastReceived', width: 14 }
+  ];
+
+  ws.mergeCells(1, 1, 1, headers.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = 'Negative SKU — CAMANAVA Inventory  |  Exported: ' + new Date().toLocaleString();
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13, name: 'Calibri' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 26;
+
+  ws.columns = headers;
+  const headerRow = ws.getRow(2);
+  headers.forEach((h, i) => { headerRow.getCell(i + 1).value = h.header; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+  });
+  headerRow.height = 20;
+
+  for (const r of rows) {
+    let qtyCases;
+    if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+    else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+    else qtyCases = 'Per Piece';
+    ws.addRow({
+      storeName: `${r.storeNumber} - ${r.storeName}`,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      onHand: r.onHand,
+      qtyCases,
+      onHandValue: +(r.onHandValue || 0).toFixed(2),
+      p8ave: +(r.p8ave || 0).toFixed(2),
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived)
+    });
+  }
+
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2 }];
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: headers.length } };
+
+  const formatMap = { onHand: '#,##0', onHandValue: '#,##0.00', p8ave: '#,##0.00' };
+  ws.columns.forEach(col => { if (formatMap[col.key]) col.numFmt = formatMap[col.key]; });
+
+  const filename = `Negative_SKU_${new Date().toISOString().split('T')[0]}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   await wb.xlsx.write(res);
@@ -2256,6 +2398,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('overstock')">📦 Overstock</div>
       <div class="tab" onclick="showTab('aging')">📅 Aging</div>
       <div class="tab" onclick="showTab('blackinv')">⬛ Black Inventory</div>
+      <div class="tab" onclick="showTab('negsku')">⚠️ Negative SKU</div>
       <div class="tab" onclick="showTab('deadstock')">💀 P8 Weeks No Sales</div>
       <div class="tab" onclick="showTab('stores')">🏪 Stores</div>
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
@@ -2460,6 +2603,39 @@ canvas { max-height:260px; }
           </table>
         </div>
         <div class="pagination" id="blackinv-pagination"></div>
+      </div>
+    </div>
+
+    <!-- NEGATIVE SKU TAB -->
+    <div id="tab-negsku" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">⚠️ Negative SKU <span class="badge badge-red" id="negsku-count">0</span>
+            <span class="totals-pill" id="negsku-totals"></span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('negsku-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportNegativeSKUsExcel()" id="negsku-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="negsku-table">
+            <thead><tr>
+              <th onclick="sortTable('negsku-table',0)">Store Name</th>
+              <th onclick="sortTable('negsku-table',1)">SKU</th>
+              <th onclick="sortTable('negsku-table',2)">Description</th>
+              <th onclick="sortTable('negsku-table',3)">Supplier</th>
+              <th onclick="sortTable('negsku-table',4)">On Hand</th>
+              <th onclick="sortTable('negsku-table',5)">Qty in Cases</th>
+              <th onclick="sortTable('negsku-table',6)">Inv Value</th>
+              <th onclick="sortTable('negsku-table',7)">P8 Ave/Wk</th>
+              <th onclick="sortTable('negsku-table',8)">Last Sold</th>
+              <th onclick="sortTable('negsku-table',9)">Last Received</th>
+            </tr></thead>
+            <tbody id="negsku-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="negsku-pagination"></div>
       </div>
     </div>
 
@@ -2721,7 +2897,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -3436,6 +3612,7 @@ async function loadTabData() {
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'aging') await loadAging();
   if (activeTab === 'blackinv') await loadBlackInventory();
+  if (activeTab === 'negsku') await loadNegativeSKUs();
   if (activeTab === 'deadstock') await loadDeadstock();
   if (activeTab === 'outofstock') await loadOutOfStock();
   if (activeTab === 'stores') await loadStores();
@@ -3481,6 +3658,15 @@ async function loadBlackInventory() {
   document.getElementById('blackinv-count').textContent = fmt(data.length);
   setTotalsPill('blackinv-totals', data);
   renderTable('blackinv-body', data, renderBlackInventoryRow, 'blackinv-pagination', 'blackinv', tablePages.blackinv);
+}
+async function loadNegativeSKUs() {
+  const r = await fetch('/api/negativeskus' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  tableData.negsku = data;
+  document.getElementById('negsku-count').textContent = fmt(data.length);
+  setTotalsPill('negsku-totals', data);
+  renderTable('negsku-body', data, renderNegativeSKURow, 'negsku-pagination', 'negsku', tablePages.negsku);
 }
 
 // Sums onHand & onHandValue and shows them in the section header
@@ -3923,6 +4109,20 @@ function renderBlackInventoryRow(r) {
     '<td><span class="action-badge action-urgent">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
+function renderNegativeSKURow(r) {
+  return '<tr>' +
+    '<td>' + esc(r.storeName) + '</td>' +
+    '<td class="mono">' + esc(r.skuCode) + '</td>' +
+    '<td>' + esc(r.skuDesc) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + esc(r.qtyCases) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '</tr>';
+}
 function renderDeadstockRow(r) {
   const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : 'No Sales';
   const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : 'No Sales';
@@ -4006,7 +4206,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','deadstock','stores','suppliers','skus','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -4029,6 +4229,7 @@ const tableKeyToId = {
   overstock: 'overstock-table',
   aging: 'aging-table',
   blackinv: 'blackinv-table',
+  negsku: 'negsku-table',
   deadstock: 'deadstock-table',
   outofstock: 'outofstock-table',
   stores: 'stores-table',
@@ -4090,6 +4291,8 @@ function getTableConfig(tableId) {
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
     'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
+    'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
+      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','dateLastSold','dateLastReceived'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived'] },
     'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
@@ -4160,6 +4363,25 @@ async function exportSKUsExcel() {
     if (skuState && skuState.sortDir) params.set('sortDir', skuState.sortDir);
     const url = '/api/export-skus-xlsx?' + params.toString();
     // Trigger download via hidden link (handles browser pop-up blockers better than window.open)
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
+  }
+}
+
+async function exportNegativeSKUsExcel() {
+  const btn = document.getElementById('negsku-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const url = '/api/export-negativeskus-xlsx' + filterQuery();
     const a = document.createElement('a');
     a.href = url;
     a.download = '';
