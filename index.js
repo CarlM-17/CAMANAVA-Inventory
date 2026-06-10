@@ -699,6 +699,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       return {
         storeName: `${r.storeNumber} - ${r.storeName}`,
         area: r.area,
+        catName: r.catName || 'Uncategorized',
         skuCode: r.skuCode,
         skuDesc: r.skuDesc,
         supplier: r.supplierName,
@@ -1276,6 +1277,7 @@ app.get('/api/negativeskus', (req, res) => {
       return {
         storeName: `${r.storeNumber} - ${r.storeName}`,
         area: r.area,
+        catName: r.catName || 'Uncategorized',
         skuCode: r.skuCode,
         skuDesc: r.skuDesc,
         supplier: r.supplierName,
@@ -2066,6 +2068,42 @@ tbody td.mono { font-family:'IBM Plex Mono',monospace; font-size:11px; }
 .action-review { background:var(--bg3); color:var(--text2); }
 .action-markdown { background:#3a1a4a; color:#c084fc; }
 
+/* SUMMARY PANELS (Negative SKU) */
+.summary-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  margin-bottom: 14px;
+}
+.summary-card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.summary-card-title {
+  background: var(--bg3); padding: 8px 12px; font-size: 12px; font-weight: 600;
+  color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border);
+}
+.summary-card-body { max-height: 240px; overflow-y: auto; overflow-x: auto; }
+.summary-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.summary-table th {
+  background: var(--bg3); color: var(--text2); text-align: left;
+  padding: 6px 10px; font-weight: 600; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.3px; cursor: pointer; user-select: none;
+  border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 1;
+}
+.summary-table th:hover { color: var(--text); }
+.summary-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.summary-table tbody tr:hover { background: var(--bg3); }
+.summary-table .num { font-family: 'IBM Plex Mono', monospace; text-align: right; }
+.summary-table .neg { color: var(--red-light); font-weight: 600; }
+.summary-table tfoot td {
+  background: var(--bg3); font-weight: 700; border-top: 2px solid var(--green-bright);
+  color: var(--text);
+}
+@media (max-width: 900px) {
+  .summary-grid { grid-template-columns: 1fr; gap: 10px; }
+  .summary-card-body { max-height: 200px; }
+}
+
 /* RISK PILLS */
 .totals-pill {
   display:inline-flex; align-items:center; gap:10px;
@@ -2616,6 +2654,37 @@ canvas { max-height:260px; }
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('negsku-table',this.value)"/>
             <button class="btn btn-sm" onclick="exportNegativeSKUsExcel()" id="negsku-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <!-- Summary panels: Store + Category -->
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="summary-card-title">📍 Summary by Store</div>
+            <div class="summary-card-body">
+              <table class="summary-table">
+                <thead><tr>
+                  <th onclick="sortSummary('store',0)">Store</th>
+                  <th onclick="sortSummary('store',1)">On Hand</th>
+                  <th onclick="sortSummary('store',2)">Inv Value</th>
+                  <th onclick="sortSummary('store',3)">Count</th>
+                </tr></thead>
+                <tbody id="negsku-summary-store"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card-title">🗂 Summary by Category</div>
+            <div class="summary-card-body">
+              <table class="summary-table">
+                <thead><tr>
+                  <th onclick="sortSummary('category',0)">Category</th>
+                  <th onclick="sortSummary('category',1)">On Hand</th>
+                  <th onclick="sortSummary('category',2)">Inv Value</th>
+                  <th onclick="sortSummary('category',3)">Count</th>
+                </tr></thead>
+                <tbody id="negsku-summary-cat"></tbody>
+              </table>
+            </div>
           </div>
         </div>
         <div class="table-wrap">
@@ -3667,6 +3736,75 @@ async function loadNegativeSKUs() {
   document.getElementById('negsku-count').textContent = fmt(data.length);
   setTotalsPill('negsku-totals', data);
   renderTable('negsku-body', data, renderNegativeSKURow, 'negsku-pagination', 'negsku', tablePages.negsku);
+  // Build summaries
+  buildNegSkuSummaries(data);
+}
+
+// Aggregates the Negative SKU data by store & category, renders both summary tables
+let negSkuSummary = { store: [], category: [], sort: { store: { col:2, dir:'asc' }, category: { col:2, dir:'asc' } } };
+function buildNegSkuSummaries(data) {
+  const byStore = {}, byCat = {};
+  for (const r of data) {
+    if (!byStore[r.storeName]) byStore[r.storeName] = { key: r.storeName, onHand: 0, value: 0, count: 0 };
+    byStore[r.storeName].onHand += Number(r.onHand) || 0;
+    byStore[r.storeName].value += Number(r.onHandValue) || 0;
+    byStore[r.storeName].count++;
+    const cat = r.catName || 'Uncategorized';
+    if (!byCat[cat]) byCat[cat] = { key: cat, onHand: 0, value: 0, count: 0 };
+    byCat[cat].onHand += Number(r.onHand) || 0;
+    byCat[cat].value += Number(r.onHandValue) || 0;
+    byCat[cat].count++;
+  }
+  negSkuSummary.store = Object.values(byStore);
+  negSkuSummary.category = Object.values(byCat);
+  renderNegSkuSummary('store');
+  renderNegSkuSummary('category');
+}
+
+function renderNegSkuSummary(which) {
+  const tbodyId = which === 'store' ? 'negsku-summary-store' : 'negsku-summary-cat';
+  const tbody = document.getElementById(tbodyId);
+  if (!tbody) return;
+  const rows = negSkuSummary[which] || [];
+  // Apply current sort
+  const sort = negSkuSummary.sort[which];
+  const fields = ['key', 'onHand', 'value', 'count'];
+  const f = fields[sort.col];
+  const sorted = [...rows].sort((a, b) => {
+    let av = a[f], bv = b[f];
+    if (typeof av === 'number' && typeof bv === 'number') return sort.dir === 'asc' ? av - bv : bv - av;
+    return sort.dir === 'asc' ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  let html = sorted.map(r =>
+    '<tr>' +
+      '<td>' + esc(r.key) + '</td>' +
+      '<td class="num neg">' + fmt(r.onHand) + '</td>' +
+      '<td class="num">₱' + fmtN(r.value) + '</td>' +
+      '<td class="num">' + fmt(r.count) + '</td>' +
+    '</tr>'
+  ).join('');
+  // Footer totals
+  if (sorted.length > 0) {
+    const tOnHand = sorted.reduce((s,r) => s + r.onHand, 0);
+    const tValue = sorted.reduce((s,r) => s + r.value, 0);
+    const tCount = sorted.reduce((s,r) => s + r.count, 0);
+    html += '<tr style="font-weight:700;background:var(--bg3);border-top:2px solid var(--green-bright);">' +
+      '<td>TOTAL</td>' +
+      '<td class="num neg">' + fmt(tOnHand) + '</td>' +
+      '<td class="num">₱' + fmtN(tValue) + '</td>' +
+      '<td class="num">' + fmt(tCount) + '</td>' +
+      '</tr>';
+  } else {
+    html = '<tr><td colspan="4" style="text-align:center;color:var(--text2);padding:12px;">No data</td></tr>';
+  }
+  tbody.innerHTML = html;
+}
+
+function sortSummary(which, colIdx) {
+  const sort = negSkuSummary.sort[which];
+  if (sort.col === colIdx) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
+  else { sort.col = colIdx; sort.dir = colIdx === 0 ? 'asc' : 'desc'; }
+  renderNegSkuSummary(which);
 }
 
 // Sums onHand & onHandValue and shows them in the section header
