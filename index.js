@@ -416,9 +416,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     setCode: 69,          // BR
     dateLastAdjusted: 70, // BS
     dateLastSold: 71,     // BT
-    lastTransferIn: 72,   // BU
-    lastXfer2: 73,        // BV
-    lastTransferOut: 74   // BW
+    lastTransferOut: 72,  // BU = Transfer Out
+    lastTransferIn: 73    // BV = Transfer In
   };
 
   // PRE-PASS: Build SKU price lookup (avg cost by SKU code, from rows that have stock/cost)
@@ -1647,8 +1646,8 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'Trf On Order', key: 'trfOrderGR', width: 14 },
     { header: 'Last Sold', key: 'dateLastSold', width: 14 },
     { header: 'Last Received', key: 'dateLastReceived', width: 14 },
-    { header: 'Last Transfer In', key: 'lastTransferIn', width: 16 },
-    { header: 'Last Transfer Out', key: 'lastTransferOut', width: 16 }
+    { header: 'Transfer In', key: 'lastTransferIn', width: 16 },
+    { header: 'Transfer Out', key: 'lastTransferOut', width: 16 }
   ];
 
   // ── Title row (merged) ──
@@ -2570,8 +2569,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('critical-table',10)">Total PO</th>
               <th onclick="sortTable('critical-table',11)">Last Sold</th>
               <th onclick="sortTable('critical-table',12)">Last Received</th>
-              <th onclick="sortTable('critical-table',13)">Last Transfer In</th>
-              <th onclick="sortTable('critical-table',14)">Last Transfer Out</th>
+              <th onclick="sortTable('critical-table',13)">Transfer In</th>
+              <th onclick="sortTable('critical-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="critical-body"></tbody>
@@ -2607,8 +2606,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('overstock-table',8)">WTS Net</th>
               <th onclick="sortTable('overstock-table',9)">Last Sold</th>
               <th onclick="sortTable('overstock-table',10)">Last Received</th>
-              <th onclick="sortTable('overstock-table',11)">Last Transfer In</th>
-              <th onclick="sortTable('overstock-table',12)">Last Transfer Out</th>
+              <th onclick="sortTable('overstock-table',11)">Transfer In</th>
+              <th onclick="sortTable('overstock-table',12)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -2644,8 +2643,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('aging-table',8)">Days Cover</th>
               <th onclick="sortTable('aging-table',9)">Last Sold</th>
               <th onclick="sortTable('aging-table',10)">Last Received</th>
-              <th onclick="sortTable('aging-table',11)">Last Transfer In</th>
-              <th onclick="sortTable('aging-table',12)">Last Transfer Out</th>
+              <th onclick="sortTable('aging-table',11)">Transfer In</th>
+              <th onclick="sortTable('aging-table',12)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="aging-body"></tbody>
@@ -2681,8 +2680,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('blackinv-table',8)">Days Cover</th>
               <th onclick="sortTable('blackinv-table',9)">Last Sold</th>
               <th onclick="sortTable('blackinv-table',10)">Last Received</th>
-              <th onclick="sortTable('blackinv-table',11)">Last Transfer In</th>
-              <th onclick="sortTable('blackinv-table',12)">Last Transfer Out</th>
+              <th onclick="sortTable('blackinv-table',11)">Transfer In</th>
+              <th onclick="sortTable('blackinv-table',12)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="blackinv-body"></tbody>
@@ -2782,8 +2781,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('deadstock-table',8)">Days Cover</th>
               <th onclick="sortTable('deadstock-table',9)">Last Sold</th>
               <th onclick="sortTable('deadstock-table',10)">Last Received</th>
-              <th onclick="sortTable('deadstock-table',11)">Last Transfer In</th>
-              <th onclick="sortTable('deadstock-table',12)">Last Transfer Out</th>
+              <th onclick="sortTable('deadstock-table',11)">Transfer In</th>
+              <th onclick="sortTable('deadstock-table',12)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -2818,8 +2817,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('outofstock-table',9)">Days No Sales</th>
               <th onclick="sortTable('outofstock-table',10)">Last Sold</th>
               <th onclick="sortTable('outofstock-table',11)">Last Received</th>
-              <th onclick="sortTable('outofstock-table',12)">Last Transfer In</th>
-              <th onclick="sortTable('outofstock-table',13)">Last Transfer Out</th>
+              <th onclick="sortTable('outofstock-table',12)">Transfer In</th>
+              <th onclick="sortTable('outofstock-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="outofstock-body"></tbody>
@@ -2972,8 +2971,8 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('trfOrderGR')">Trf On Order <span class="sort-ind" data-key="trfOrderGR"></span></th>
               <th onclick="sortSKUs('dateLastSold')">Last Sold <span class="sort-ind" data-key="dateLastSold"></span></th>
               <th onclick="sortSKUs('dateLastReceived')">Last Received <span class="sort-ind" data-key="dateLastReceived"></span></th>
-              <th onclick="sortSKUs('lastTransferIn')">Last Transfer In <span class="sort-ind" data-key="lastTransferIn"></span></th>
-              <th onclick="sortSKUs('lastTransferOut')">Last Transfer Out <span class="sort-ind" data-key="lastTransferOut"></span></th>
+              <th onclick="sortSKUs('lastTransferIn')">Transfer In <span class="sort-ind" data-key="lastTransferIn"></span></th>
+              <th onclick="sortSKUs('lastTransferOut')">Transfer Out <span class="sort-ind" data-key="lastTransferOut"></span></th>
             </tr></thead>
             <tbody id="skus-body"></tbody>
           </table>
