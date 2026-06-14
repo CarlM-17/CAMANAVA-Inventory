@@ -416,9 +416,9 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     setCode: 69,          // BR
     dateLastAdjusted: 70, // BS
     dateLastSold: 71,     // BT
-    lastXfer1: 72,        // BU
+    lastTransferIn: 72,   // BU
     lastXfer2: 73,        // BV
-    replenishment: 74 // BW
+    lastTransferOut: 74   // BW
   };
 
   // PRE-PASS: Build SKU price lookup (avg cost by SKU code, from rows that have stock/cost)
@@ -484,6 +484,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
     const dateLastSold = row[COL.dateLastSold] || '';
     const dateLastReceived = row[COL.dateLastReceived] || '';
+    const lastTransferIn = row[COL.lastTransferIn] || '';
+    const lastTransferOut = row[COL.lastTransferOut] || '';
     const daysNoSales = daysSince(dateLastSold);
     const daysSinceReceived = daysSince(dateLastReceived);
     // Per-SKU days cover (matches existing formula)
@@ -546,6 +548,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       delivMode: row[COL.delivMode] || '',
       dateLastSold,
       dateLastReceived,
+      lastTransferIn,
+      lastTransferOut,
       daysNoSales,
       lostSalesPerWeek,
       isCritical,
@@ -624,6 +628,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       totalPO: r.totalPO,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
     }));
 
@@ -643,6 +649,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
     }));
 
@@ -663,6 +671,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
     }));
 
@@ -683,6 +693,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
     }));
 
@@ -708,7 +720,9 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
         onHandValue: r.onHandValue,
         p8ave: r.p8ave,
         dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived)
+        dateLastReceived: formatDate(r.dateLastReceived),
+        lastTransferIn: formatDate(r.lastTransferIn),
+        lastTransferOut: formatDate(r.lastTransferOut)
       };
     });
 
@@ -731,6 +745,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
         daysCover: dcItem,
         dateLastSold: formatDate(r.dateLastSold),
         dateLastReceived: formatDate(r.dateLastReceived),
+        lastTransferIn: formatDate(r.lastTransferIn),
+        lastTransferOut: formatDate(r.lastTransferOut),
         action: 'No Sales 8 Wks - Review/Markdown'
       };
     });
@@ -752,6 +768,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       daysNoSales: r.daysNoSales != null ? r.daysNoSales : '',
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
     }));
 
@@ -1204,6 +1222,8 @@ app.get('/api/critical', (req, res) => {
       wtsNet: r.wtsNet, totalPO: r.totalPO,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
     }));
   res.json(filtered);
@@ -1222,6 +1242,8 @@ app.get('/api/overstock', (req, res) => {
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
     }));
   res.json(filtered);
@@ -1240,6 +1262,8 @@ app.get('/api/aging', (req, res) => {
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
     }));
   res.json(filtered);
@@ -1258,6 +1282,8 @@ app.get('/api/blackinventory', (req, res) => {
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
     }));
   res.json(filtered);
@@ -1286,7 +1312,9 @@ app.get('/api/negativeskus', (req, res) => {
         onHandValue: r.onHandValue,
         p8ave: r.p8ave,
         dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived)
+        dateLastReceived: formatDate(r.dateLastReceived),
+        lastTransferIn: formatDate(r.lastTransferIn),
+        lastTransferOut: formatDate(r.lastTransferOut)
       };
     });
   res.json(filtered);
@@ -1309,6 +1337,8 @@ app.get('/api/deadstock', (req, res) => {
         daysCover: dcItem,
         dateLastSold: formatDate(r.dateLastSold),
         dateLastReceived: formatDate(r.dateLastReceived),
+        lastTransferIn: formatDate(r.lastTransferIn),
+        lastTransferOut: formatDate(r.lastTransferOut),
         action: 'No Sales 8 Wks - Review/Markdown'
       };
     });
@@ -1329,6 +1359,8 @@ app.get('/api/outofstock', (req, res) => {
       daysNoSales: r.daysNoSales != null ? r.daysNoSales : '',
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO Now'
     }));
   res.json(filtered);
@@ -1412,7 +1444,9 @@ app.get('/api/skus', (req, res) => {
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
       dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived)
+      dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut)
     };
   });
 
@@ -1612,7 +1646,9 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'PO On Order', key: 'poOrderGR', width: 14 },
     { header: 'Trf On Order', key: 'trfOrderGR', width: 14 },
     { header: 'Last Sold', key: 'dateLastSold', width: 14 },
-    { header: 'Last Received', key: 'dateLastReceived', width: 14 }
+    { header: 'Last Received', key: 'dateLastReceived', width: 14 },
+    { header: 'Last Transfer In', key: 'lastTransferIn', width: 16 },
+    { header: 'Last Transfer Out', key: 'lastTransferOut', width: 16 }
   ];
 
   // ── Title row (merged) ──
@@ -1669,7 +1705,9 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
       dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived)
+      dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut)
     });
   }
 
@@ -1755,7 +1793,9 @@ app.get('/api/export-negativeskus-xlsx', async (req, res) => {
       onHandValue: +(r.onHandValue || 0).toFixed(2),
       p8ave: +(r.p8ave || 0).toFixed(2),
       dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived)
+      dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn),
+      lastTransferOut: formatDate(r.lastTransferOut)
     });
   }
 
@@ -2530,6 +2570,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('critical-table',10)">Total PO</th>
               <th onclick="sortTable('critical-table',11)">Last Sold</th>
               <th onclick="sortTable('critical-table',12)">Last Received</th>
+              <th onclick="sortTable('critical-table',13)">Last Transfer In</th>
+              <th onclick="sortTable('critical-table',14)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="critical-body"></tbody>
@@ -2565,6 +2607,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('overstock-table',8)">WTS Net</th>
               <th onclick="sortTable('overstock-table',9)">Last Sold</th>
               <th onclick="sortTable('overstock-table',10)">Last Received</th>
+              <th onclick="sortTable('overstock-table',11)">Last Transfer In</th>
+              <th onclick="sortTable('overstock-table',12)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -2600,6 +2644,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('aging-table',8)">Days Cover</th>
               <th onclick="sortTable('aging-table',9)">Last Sold</th>
               <th onclick="sortTable('aging-table',10)">Last Received</th>
+              <th onclick="sortTable('aging-table',11)">Last Transfer In</th>
+              <th onclick="sortTable('aging-table',12)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="aging-body"></tbody>
@@ -2635,6 +2681,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('blackinv-table',8)">Days Cover</th>
               <th onclick="sortTable('blackinv-table',9)">Last Sold</th>
               <th onclick="sortTable('blackinv-table',10)">Last Received</th>
+              <th onclick="sortTable('blackinv-table',11)">Last Transfer In</th>
+              <th onclick="sortTable('blackinv-table',12)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="blackinv-body"></tbody>
@@ -2734,6 +2782,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('deadstock-table',8)">Days Cover</th>
               <th onclick="sortTable('deadstock-table',9)">Last Sold</th>
               <th onclick="sortTable('deadstock-table',10)">Last Received</th>
+              <th onclick="sortTable('deadstock-table',11)">Last Transfer In</th>
+              <th onclick="sortTable('deadstock-table',12)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -2768,6 +2818,8 @@ canvas { max-height:260px; }
               <th onclick="sortTable('outofstock-table',9)">Days No Sales</th>
               <th onclick="sortTable('outofstock-table',10)">Last Sold</th>
               <th onclick="sortTable('outofstock-table',11)">Last Received</th>
+              <th onclick="sortTable('outofstock-table',12)">Last Transfer In</th>
+              <th onclick="sortTable('outofstock-table',13)">Last Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="outofstock-body"></tbody>
@@ -2920,6 +2972,8 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('trfOrderGR')">Trf On Order <span class="sort-ind" data-key="trfOrderGR"></span></th>
               <th onclick="sortSKUs('dateLastSold')">Last Sold <span class="sort-ind" data-key="dateLastSold"></span></th>
               <th onclick="sortSKUs('dateLastReceived')">Last Received <span class="sort-ind" data-key="dateLastReceived"></span></th>
+              <th onclick="sortSKUs('lastTransferIn')">Last Transfer In <span class="sort-ind" data-key="lastTransferIn"></span></th>
+              <th onclick="sortSKUs('lastTransferOut')">Last Transfer Out <span class="sort-ind" data-key="lastTransferOut"></span></th>
             </tr></thead>
             <tbody id="skus-body"></tbody>
           </table>
@@ -4056,7 +4110,7 @@ async function loadSKUs(page) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="17" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="19" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -4089,6 +4143,8 @@ function renderSKUTable(rows) {
       '<td class="mono">' + fmt(r.trfOrderGR) + '</td>' +
       '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
       '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+      '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+      '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
       '</tr>';
   }).join('');
 }
@@ -4192,6 +4248,8 @@ function renderCriticalRow(r) {
     '<td class="mono">' + fmt(r.totalPO) + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4209,6 +4267,8 @@ function renderOverstockRow(r) {
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + r.wtsNet + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4226,6 +4286,8 @@ function renderAgingRow(r) {
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + dc + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4244,6 +4306,8 @@ function renderBlackInventoryRow(r) {
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + dc + '</td>' +
     '<td class="mono">' + lastSold + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge action-urgent">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4276,6 +4340,8 @@ function renderDeadstockRow(r) {
     '<td class="mono" style="color:var(--text2);">' + dc + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4296,6 +4362,8 @@ function renderOutOfStockRow(r) {
     '<td class="mono" style="color:' + daysColor + ';font-weight:600;">' + days + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
     '</tr>';
 }
@@ -4422,19 +4490,19 @@ let sortState = {};
 function getTableConfig(tableId) {
   const configs = {
     'critical-table':   { key: 'critical',   render: renderCriticalRow,   pagination: 'critical-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'aging-table':      { key: 'aging',      render: renderAgingRow,      pagination: 'aging-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
-      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','dateLastSold','dateLastReceived'] },
+      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','p8ave','avgCost','lostSalesPerWeek','totalPO','daysNoSales','dateLastSold','dateLastReceived'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','p8ave','avgCost','lostSalesPerWeek','totalPO','daysNoSales','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
