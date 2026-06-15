@@ -34,6 +34,8 @@ let cache = {
   users: {},          // username -> { username, password, level, area }
   catMap: {},         // deptName (uppercase) -> catName
   upcMap: {},         // upc -> { sku, desc }
+  top300: [],         // [{ area, storeNumber, storeName, rank, sku, desc }]
+  storeSkuIndex: {},  // "storeNum_skuCode" -> enriched row (for fast lookup)
   kpis: {},
   criticalItems: [],
   overstockItems: [],
@@ -302,6 +304,35 @@ function parseUPCXLSX(buffer) {
   }
   console.log('[UPC] Loaded ' + Object.keys(upcMap).length + ' UPC mappings');
   return upcMap;
+}
+
+// ─── PARSE TOP300 SHEET FROM XLSX ─────────────────────────────────────────────
+// Columns: A=Area, B=Store Number, C=Store Name, D=Rank, E=SKU, F=Item_Description
+function parseTop300XLSX(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' });
+  const sheetName = wb.SheetNames.find(n => n.toLowerCase().trim() === 'top300');
+  if (!sheetName) {
+    console.warn('[Top300] No "Top300" sheet found. Available sheets: ' + wb.SheetNames.join(', '));
+    return [];
+  }
+  const ws = wb.Sheets[sheetName];
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+  const items = [];
+  // Skip header row (row 0)
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row || row.length < 5) continue;
+    const area = (row[0] || '').toString().trim();
+    const storeNumber = (row[1] || '').toString().trim();
+    const storeName = (row[2] || '').toString().trim();
+    const rankRaw = row[3];
+    const rank = (rankRaw === '' || rankRaw == null) ? null : parseInt(rankRaw, 10);
+    const sku = (row[4] || '').toString().trim();
+    const desc = (row[5] || '').toString().trim();
+    if (storeNumber && sku) items.push({ area, storeNumber, storeName, rank, sku, desc });
+  }
+  console.log('[Top300] Loaded ' + items.length + ' Top 300 entries');
+  return items;
 }
 
 
@@ -920,6 +951,7 @@ async function refreshData(force = false) {
     let usersMap = {};
     let catMap = {};
     let upcMap = {};
+    let top300 = [];
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
       const storesFile = await findFile(drive, STORES_FILE_NAME);
@@ -930,7 +962,8 @@ async function refreshData(force = false) {
         usersMap = parseUsersXLSX(storesBuffer);
         catMap = parseCatCodeXLSX(storesBuffer);
         upcMap = parseUPCXLSX(storesBuffer);
-        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users, ${Object.keys(catMap).length} categories, ${Object.keys(upcMap).length} UPCs.`);
+        top300 = parseTop300XLSX(storesBuffer);
+        console.log(`[Cache] Loaded ${Object.keys(storeMap).length} stores, ${Object.keys(usersMap).length} users, ${Object.keys(catMap).length} categories, ${Object.keys(upcMap).length} UPCs, ${top300.length} Top300 entries.`);
       } else {
         console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
         // List all files in folder for debugging
@@ -960,6 +993,14 @@ async function refreshData(force = false) {
     if (Object.keys(usersMap).length > 0) cache.users = usersMap;
     if (Object.keys(catMap).length > 0) cache.catMap = catMap;
     if (Object.keys(upcMap).length > 0) cache.upcMap = upcMap;
+    if (top300.length > 0) cache.top300 = top300;
+    // Build fast store_sku lookup index for Top 300 join (and any future cross-references)
+    const storeSkuIndex = {};
+    for (const r of analytics.rows) {
+      const key = (r.storeNumber || '').toString().trim() + '_' + (r.skuCode || '').toString().trim();
+      storeSkuIndex[key] = r;
+    }
+    cache.storeSkuIndex = storeSkuIndex;
     cache.kpis = analytics.kpis;
     cache.criticalItems = analytics.criticalItems;
     cache.overstockItems = analytics.overstockItems;
@@ -1317,6 +1358,64 @@ app.get('/api/negativeskus', (req, res) => {
       };
     });
   res.json(filtered);
+});
+
+// Top 300 SKUs — joined with InvData via storeNumber + skuCode
+app.get('/api/top300skus', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const top300 = cache.top300 || [];
+  const idx = cache.storeSkuIndex || {};
+
+  // Enforce area lock at the top300 level (since filters.area might be locked)
+  const out = [];
+  for (const t of top300) {
+    // Apply area filter against the top300 entry's own area
+    if (filters.area && t.area !== filters.area) continue;
+    if (filters.store && t.storeNumber !== filters.store) continue;
+    const key = (t.storeNumber || '').trim() + '_' + (t.sku || '').trim();
+    const inv = idx[key];
+    // Apply remaining filters against the joined InvData row
+    if (filters.category) {
+      if (!inv || inv.catName !== filters.category) continue;
+    }
+    if (filters.dept && (!inv || inv.deptName !== filters.dept)) continue;
+    if (filters.subDept && (!inv || inv.subDeptName !== filters.subDept)) continue;
+    if (filters.cls && (!inv || inv.clsName !== filters.cls)) continue;
+    if (filters.supplier && (!inv || inv.supplierName !== filters.supplier)) continue;
+
+    // Compute status
+    let status = 'Normal';
+    if (inv) {
+      if (inv.isCritical) status = 'Critical';
+      else if (inv.isOutOfStock) status = 'OOS';
+      else if (inv.isOverstock) status = 'Overstock';
+      else if (inv.isDeadStock) status = 'Dead Stock';
+    } else {
+      status = 'Not Found';
+    }
+
+    out.push({
+      area: t.area,
+      storeName: t.storeName ? (t.storeNumber + ' - ' + t.storeName) : (inv ? `${inv.storeNumber} - ${inv.storeName}` : t.storeNumber),
+      rank: t.rank,
+      sku: t.sku,
+      itemDescription: t.desc || (inv ? inv.skuDesc : ''),
+      supplier: inv ? inv.supplierName : '',
+      onHand: inv ? inv.onHand : null,
+      p8ave: inv ? inv.p8ave : null,
+      daysCover: inv ? inv.skuDaysCover : null,
+      status,
+      incomingPO: inv ? inv.poOrderGR : null,
+      lostSalesPerWeek: inv ? inv.lostSalesPerWeek : null,
+      ico: inv ? inv.ico : '',
+      dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
+      dateLastReceived: inv ? formatDate(inv.dateLastReceived) : '',
+      lastTransferIn: inv ? formatDate(inv.lastTransferIn) : '',
+      lastTransferOut: inv ? formatDate(inv.lastTransferOut) : ''
+    });
+  }
+  res.json(out);
 });
 
 app.get('/api/deadstock', (req, res) => {
@@ -1805,6 +1904,111 @@ app.get('/api/export-negativeskus-xlsx', async (req, res) => {
   ws.columns.forEach(col => { if (formatMap[col.key]) col.numFmt = formatMap[col.key]; });
 
   const filename = `Negative_SKU_${new Date().toISOString().split('T')[0]}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+// Top 300 SKU Excel export — joined data, dark green styled
+app.get('/api/export-top300-xlsx', async (req, res) => {
+  if (!cache.ready) return res.status(503).send('Cache not ready');
+  const filters = resolveFilters(req);
+  const top300 = cache.top300 || [];
+  const idx = cache.storeSkuIndex || {};
+  const rows = [];
+  for (const t of top300) {
+    if (filters.area && t.area !== filters.area) continue;
+    if (filters.store && t.storeNumber !== filters.store) continue;
+    const key = (t.storeNumber || '').trim() + '_' + (t.sku || '').trim();
+    const inv = idx[key];
+    if (filters.category && (!inv || inv.catName !== filters.category)) continue;
+    if (filters.supplier && (!inv || inv.supplierName !== filters.supplier)) continue;
+    let status = 'Not Found';
+    if (inv) {
+      if (inv.isCritical) status = 'Critical';
+      else if (inv.isOutOfStock) status = 'OOS';
+      else if (inv.isOverstock) status = 'Overstock';
+      else if (inv.isDeadStock) status = 'Dead Stock';
+      else status = 'Normal';
+    }
+    rows.push({
+      area: t.area,
+      storeName: t.storeName ? (t.storeNumber + ' - ' + t.storeName) : (inv ? `${inv.storeNumber} - ${inv.storeName}` : t.storeNumber),
+      rank: t.rank,
+      sku: t.sku,
+      itemDescription: t.desc || (inv ? inv.skuDesc : ''),
+      supplier: inv ? inv.supplierName : '',
+      onHand: inv ? inv.onHand : null,
+      p8ave: inv ? +(inv.p8ave || 0).toFixed(2) : null,
+      daysCover: inv && inv.skuDaysCover != null ? +inv.skuDaysCover.toFixed(0) : null,
+      status,
+      incomingPO: inv ? inv.poOrderGR : null,
+      lostSalesPerWeek: inv ? +(inv.lostSalesPerWeek || 0).toFixed(2) : null,
+      ico: inv ? inv.ico : '',
+      dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
+      dateLastReceived: inv ? formatDate(inv.dateLastReceived) : '',
+      lastTransferIn: inv ? formatDate(inv.lastTransferIn) : '',
+      lastTransferOut: inv ? formatDate(inv.lastTransferOut) : ''
+    });
+  }
+
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CAMANAVA Inventory Dashboard';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Top 300 SKU');
+  const DARK_GREEN = 'FF1B5E20';
+  const headers = [
+    { header: 'Area', key: 'area', width: 18 },
+    { header: 'Store Name', key: 'storeName', width: 24 },
+    { header: 'Rank', key: 'rank', width: 8 },
+    { header: 'SKU', key: 'sku', width: 14 },
+    { header: 'Item Description', key: 'itemDescription', width: 36 },
+    { header: 'Supplier', key: 'supplier', width: 28 },
+    { header: 'On Hand', key: 'onHand', width: 10 },
+    { header: 'P8 Ave', key: 'p8ave', width: 12 },
+    { header: 'Days Cover', key: 'daysCover', width: 12 },
+    { header: 'Status', key: 'status', width: 12 },
+    { header: 'Incoming PO', key: 'incomingPO', width: 12 },
+    { header: 'Lost Sales/Wk', key: 'lostSalesPerWeek', width: 14 },
+    { header: 'ICO', key: 'ico', width: 8 },
+    { header: 'Last Sold', key: 'dateLastSold', width: 14 },
+    { header: 'Last Received', key: 'dateLastReceived', width: 14 },
+    { header: 'Transfer In', key: 'lastTransferIn', width: 14 },
+    { header: 'Transfer Out', key: 'lastTransferOut', width: 14 }
+  ];
+  ws.mergeCells(1, 1, 1, headers.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = 'Top 300 SKU — CAMANAVA Inventory  |  Exported: ' + new Date().toLocaleString();
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13, name: 'Calibri' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 26;
+
+  ws.columns = headers;
+  const headerRow = ws.getRow(2);
+  headers.forEach((h, i) => { headerRow.getCell(i + 1).value = h.header; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+  });
+  headerRow.height = 20;
+
+  for (const r of rows) ws.addRow(r);
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2 }];
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: headers.length } };
+
+  const formatMap = { onHand: '#,##0', p8ave: '#,##0.00', daysCover: '#,##0', incomingPO: '#,##0', lostSalesPerWeek: '#,##0.00', rank: '#,##0' };
+  ws.columns.forEach(col => { if (formatMap[col.key]) col.numFmt = formatMap[col.key]; });
+
+  const filename = `Top_300_SKU_${new Date().toISOString().split('T')[0]}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   await wb.xlsx.write(res);
@@ -2480,6 +2684,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('stores')">🏪 Stores</div>
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
+      <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
 
@@ -2981,6 +3186,46 @@ canvas { max-height:260px; }
       </div>
     </div>
 
+    <!-- TOP 300 SKU TAB -->
+    <div id="tab-top300" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">⭐ Top 300 SKU <span class="badge badge-green" id="top300-count">0</span>
+            <span class="totals-pill" id="top300-totals"></span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('top300-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportTop300Excel()" id="top300-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="top300-table">
+            <thead><tr>
+              <th onclick="sortTable('top300-table',0)">Area</th>
+              <th onclick="sortTable('top300-table',1)">Store Name</th>
+              <th onclick="sortTable('top300-table',2)">Rank</th>
+              <th onclick="sortTable('top300-table',3)">SKU</th>
+              <th onclick="sortTable('top300-table',4)">Item Description</th>
+              <th onclick="sortTable('top300-table',5)">Supplier</th>
+              <th onclick="sortTable('top300-table',6)">On Hand</th>
+              <th onclick="sortTable('top300-table',7)">P8 Ave</th>
+              <th onclick="sortTable('top300-table',8)">Days Cover</th>
+              <th onclick="sortTable('top300-table',9)">Status</th>
+              <th onclick="sortTable('top300-table',10)">Incoming PO</th>
+              <th onclick="sortTable('top300-table',11)">Lost Sales/Wk</th>
+              <th onclick="sortTable('top300-table',12)">ICO</th>
+              <th onclick="sortTable('top300-table',13)">Last Sold</th>
+              <th onclick="sortTable('top300-table',14)">Last Received</th>
+              <th onclick="sortTable('top300-table',15)">Transfer In</th>
+              <th onclick="sortTable('top300-table',16)">Transfer Out</th>
+            </tr></thead>
+            <tbody id="top300-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="top300-pagination"></div>
+      </div>
+    </div>
+
     <!-- ACTIVITY LOG TAB (admin only) -->
     <div id="tab-logs" style="display:none;">
       <div class="section">
@@ -3019,7 +3264,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -3740,6 +3985,7 @@ async function loadTabData() {
   if (activeTab === 'stores') await loadStores();
   if (activeTab === 'suppliers') await loadSuppliers();
   if (activeTab === 'skus') await loadSKUs(1);
+  if (activeTab === 'top300') await loadTop300();
   if (activeTab === 'logs') await loadLogs();
 }
 
@@ -3858,6 +4104,24 @@ function sortSummary(which, colIdx) {
   if (sort.col === colIdx) sort.dir = sort.dir === 'asc' ? 'desc' : 'asc';
   else { sort.col = colIdx; sort.dir = colIdx === 0 ? 'asc' : 'desc'; }
   renderNegSkuSummary(which);
+}
+
+async function loadTop300() {
+  const r = await fetch('/api/top300skus' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  tableData.top300 = data;
+  document.getElementById('top300-count').textContent = fmt(data.length);
+  // Custom totals pill for Top 300 (uses onHand + invValue derived from onHand × no value)
+  // We'll show On Hand total + a rough Inv Value if available
+  const totals = document.getElementById('top300-totals');
+  if (totals) {
+    const tOnHand = data.reduce((s, x) => s + (Number(x.onHand) || 0), 0);
+    const tIncomingPO = data.reduce((s, x) => s + (Number(x.incomingPO) || 0), 0);
+    totals.innerHTML = '<span class="tp-label">Total On Hand:</span> <span class="tp-value">' + fmt(tOnHand) +
+                       '</span> &nbsp;|&nbsp; <span class="tp-label">Total Incoming PO:</span> <span class="tp-value">' + fmt(tIncomingPO) + '</span>';
+  }
+  renderTable('top300-body', data, renderTop300Row, 'top300-pagination', 'top300', tablePages.top300);
 }
 
 // Sums onHand & onHandValue and shows them in the section header
@@ -4324,6 +4588,42 @@ function renderNegativeSKURow(r) {
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
     '</tr>';
 }
+function renderTop300Row(r) {
+  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
+  const p8 = r.p8ave != null ? fmtN(r.p8ave) : '—';
+  const onHand = r.onHand != null ? fmt(r.onHand) : '—';
+  const incPO = r.incomingPO != null ? fmt(r.incomingPO) : '—';
+  const lostSales = r.lostSalesPerWeek != null ? '₱' + fmtN(r.lostSalesPerWeek) : '—';
+  let statusClass = '';
+  if (r.status === 'Critical') statusClass = 'status-critical';
+  else if (r.status === 'OOS') statusClass = 'status-oos';
+  else if (r.status === 'Overstock') statusClass = 'status-overstock';
+  else if (r.status === 'Dead Stock') statusClass = 'status-dead';
+  else if (r.status === 'Not Found') statusClass = 'status-oos';
+  else statusClass = 'status-normal';
+  const onHandStyle = (r.onHand !== null && r.onHand < 0) ? ' style="color:var(--red-light);font-weight:600;"' : '';
+  const dcColor = r.daysCover != null && r.daysCover < 7 ? 'color:var(--red-light);' :
+                  r.daysCover != null && r.daysCover > 90 ? 'color:var(--yellow-light);' : '';
+  return '<tr>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td>' + esc(r.storeName) + '</td>' +
+    '<td class="mono" style="font-weight:700;color:var(--green-bright);">' + (r.rank != null ? '#' + r.rank : '—') + '</td>' +
+    '<td class="mono">' + esc(r.sku) + '</td>' +
+    '<td>' + esc(r.itemDescription) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono"' + onHandStyle + '>' + onHand + '</td>' +
+    '<td class="mono">' + p8 + '</td>' +
+    '<td class="mono" style="' + dcColor + '">' + dc + '</td>' +
+    '<td><span class="' + statusClass + '">' + esc(r.status) + '</span></td>' +
+    '<td class="mono">' + incPO + '</td>' +
+    '<td class="mono">' + lostSales + '</td>' +
+    '<td class="mono">' + esc(r.ico || '—') + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
+    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
+    '</tr>';
+}
 function renderDeadstockRow(r) {
   const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : 'No Sales';
   const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : 'No Sales';
@@ -4411,7 +4711,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -4438,7 +4738,8 @@ const tableKeyToId = {
   deadstock: 'deadstock-table',
   outofstock: 'outofstock-table',
   stores: 'stores-table',
-  suppliers: 'suppliers-table'
+  suppliers: 'suppliers-table',
+  top300: 'top300-table'
 };
 
 // Re-render a table from cached data, applying current search filter
@@ -4505,7 +4806,9 @@ function getTableConfig(tableId) {
     'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
-      cols: ['supplierCode','supplierName','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] }
+      cols: ['supplierCode','supplierName','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
+    'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
+      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] }
   };
   return configs[tableId];
 }
@@ -4587,6 +4890,25 @@ async function exportNegativeSKUsExcel() {
   if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
   try {
     const url = '/api/export-negativeskus-xlsx' + filterQuery();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
+  }
+}
+
+async function exportTop300Excel() {
+  const btn = document.getElementById('top300-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const url = '/api/export-top300-xlsx' + filterQuery();
     const a = document.createElement('a');
     a.href = url;
     a.download = '';
