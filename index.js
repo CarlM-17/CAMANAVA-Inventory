@@ -1418,6 +1418,59 @@ app.get('/api/top300skus', (req, res) => {
   res.json(out);
 });
 
+// Top 300 SKU Store Metrics — KPI per store ranked best to worst
+// Score formula: (OOS% × 0.6) + (Critical% × 0.4). Lower is better.
+app.get('/api/top300-store-metrics', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const top300 = cache.top300 || [];
+  const idx = cache.storeSkuIndex || {};
+
+  // Group by store
+  const byStore = {};
+  for (const t of top300) {
+    if (filters.area && t.area !== filters.area) continue;
+    if (filters.store && t.storeNumber !== filters.store) continue;
+    const key = (t.storeNumber || '').trim() + '_' + (t.sku || '').trim();
+    const inv = idx[key];
+    if (filters.category && (!inv || inv.catName !== filters.category)) continue;
+    if (filters.supplier && (!inv || inv.supplierName !== filters.supplier)) continue;
+
+    const storeKey = t.storeNumber;
+    if (!byStore[storeKey]) {
+      byStore[storeKey] = {
+        storeNumber: t.storeNumber,
+        storeName: t.storeName || (inv ? inv.storeName : ''),
+        area: t.area || (inv ? inv.area : ''),
+        total: 0, oos: 0, critical: 0, overstock: 0, deadStock: 0, notFound: 0, healthy: 0
+      };
+    }
+    const s = byStore[storeKey];
+    s.total++;
+    if (!inv) s.notFound++;
+    else if (inv.isOutOfStock) s.oos++;
+    else if (inv.isCritical) s.critical++;
+    else if (inv.isDeadStock) s.deadStock++;
+    else if (inv.isOverstock) s.overstock++;
+    else s.healthy++;
+  }
+
+  // Calculate percentages and combined score (lower = better)
+  const result = Object.values(byStore).map(s => {
+    const oosPct = s.total > 0 ? (s.oos / s.total) * 100 : 0;
+    const criticalPct = s.total > 0 ? (s.critical / s.total) * 100 : 0;
+    const healthyPct = s.total > 0 ? (s.healthy / s.total) * 100 : 0;
+    // Treat Not Found as missing data (not a stockout) — counts toward total but excluded from problem score
+    const score = (oosPct * 0.6) + (criticalPct * 0.4);
+    return { ...s, oosPct, criticalPct, healthyPct, score };
+  });
+
+  // Sort ascending (best stores first)
+  result.sort((a, b) => a.score - b.score);
+  result.forEach((r, i) => r.rank = i + 1);
+  res.json(result);
+});
+
 app.get('/api/deadstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
@@ -2728,6 +2781,39 @@ canvas { max-height:260px; }
         </div>
       </div>
 
+      <!-- TOP 300 SKU STORE PERFORMANCE -->
+      <div class="section" style="margin-top:4px;">
+        <div class="section-header">
+          <div class="section-title">🎯 Top 300 SKU Store Performance
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;">
+              Score = (OOS% × 0.6) + (Critical% × 0.4) &nbsp;|&nbsp;
+              <span style="color:#3fb950;">🟢 Best</span> &nbsp;
+              <span style="color:#e3b341;">🟡 Watch</span> &nbsp;
+              <span style="color:#f85149;">🔴 Worst</span>
+            </span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('top300-perf-table',this.value)"/>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:520px;">
+          <table id="top300-perf-table">
+            <thead><tr>
+              <th onclick="sortTop300Perf(0)">Rank</th>
+              <th onclick="sortTop300Perf(1)">Store #</th>
+              <th onclick="sortTop300Perf(2)">Store Name</th>
+              <th onclick="sortTop300Perf(3)">Area</th>
+              <th onclick="sortTop300Perf(4)" title="Top 300 entries matched against InvData for this store">SKUs</th>
+              <th onclick="sortTop300Perf(5)" title="Out of Stock in Top 300 / Total">OOS %</th>
+              <th onclick="sortTop300Perf(6)" title="Critical (WTS < 2 wks) in Top 300 / Total">Critical %</th>
+              <th onclick="sortTop300Perf(7)" title="Healthy in Top 300 / Total">Healthy %</th>
+              <th onclick="sortTop300Perf(8)" title="(OOS% × 0.6) + (Critical% × 0.4)">Score</th>
+            </tr></thead>
+            <tbody id="top300-perf-body"></tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="charts-grid" style="margin-top:4px;">
         <div class="chart-card">
           <div class="chart-title">Top 10 Stores by Inventory Value</div>
@@ -3972,9 +4058,64 @@ function sortRiskTable(colIndex) {
   renderRiskMatrix(sorted);
 }
 
+// ─── TOP 300 SKU STORE PERFORMANCE (Overview) ─────────────────────────────────
+let top300PerfData = [];
+async function loadTop300Performance() {
+  const r = await fetch('/api/top300-store-metrics' + filterQuery());
+  const data = await r.json();
+  if (!Array.isArray(data)) return;
+  top300PerfData = data;
+  renderTop300Perf(data);
+}
+
+function renderTop300Perf(data) {
+  const tbody = document.getElementById('top300-perf-body');
+  if (!tbody) return;
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No data</td></tr>'; return; }
+  const totalStores = data.length;
+  const topThird = Math.ceil(totalStores / 3);
+  const bottomThird = totalStores - topThird;
+  tbody.innerHTML = data.map((s, i) => {
+    // Color the rank based on position: top third green, mid yellow, bottom third red
+    let rankColor = '#3fb950';      // green (best)
+    if (i >= topThird && i < bottomThird) rankColor = '#e3b341'; // yellow (middle)
+    if (i >= bottomThird) rankColor = '#f85149';                  // red (worst)
+    // Score pill color follows the same scheme
+    const scoreColor = s.score < 5 ? '#3fb950' : s.score < 15 ? '#e3b341' : '#f85149';
+    return '<tr>' +
+      '<td class="mono" style="font-weight:700;color:' + rankColor + ';font-size:14px;">#' + s.rank + '</td>' +
+      '<td class="mono" style="font-weight:600;">' + esc(s.storeNumber) + '</td>' +
+      '<td>' + esc(s.storeName) + '</td>' +
+      '<td><span class="badge badge-blue">' + esc(s.area) + '</span></td>' +
+      '<td class="mono">' + fmt(s.total) + '</td>' +
+      '<td class="mono"><span style="color:#f85149;font-weight:600;">' + s.oosPct.toFixed(1) + '%</span> <span style="color:var(--text2);font-size:10px;">(' + fmt(s.oos) + ')</span></td>' +
+      '<td class="mono"><span style="color:#e3b341;font-weight:600;">' + s.criticalPct.toFixed(1) + '%</span> <span style="color:var(--text2);font-size:10px;">(' + fmt(s.critical) + ')</span></td>' +
+      '<td class="mono"><span style="color:#3fb950;font-weight:600;">' + s.healthyPct.toFixed(1) + '%</span> <span style="color:var(--text2);font-size:10px;">(' + fmt(s.healthy) + ')</span></td>' +
+      '<td class="mono"><span style="background:rgba(' + (scoreColor === '#3fb950' ? '63,185,80' : scoreColor === '#e3b341' ? '227,179,65' : '248,81,73') + ',0.15);color:' + scoreColor + ';padding:3px 10px;border-radius:4px;font-weight:700;">' + s.score.toFixed(2) + '</span></td>' +
+      '</tr>';
+  }).join('');
+}
+
+let top300PerfSortState = {};
+function sortTop300Perf(colIndex) {
+  const keys = ['rank','storeNumber','storeName','area','total','oosPct','criticalPct','healthyPct','score'];
+  const key = keys[colIndex];
+  const asc = top300PerfSortState[colIndex] !== true;
+  top300PerfSortState[colIndex] = asc;
+  const sorted = [...top300PerfData].sort((a, b) => {
+    const av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return asc ? 1 : -1;
+    if (bv == null) return asc ? -1 : 1;
+    if (typeof av === 'number' && typeof bv === 'number') return asc ? av - bv : bv - av;
+    return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
+  });
+  renderTop300Perf(sorted);
+}
+
 // ─── TABLE LOADING ────────────────────────────────────────────────────────────
 async function loadTabData() {
-  if (activeTab === 'overview') { await loadCharts(); await loadRiskMatrix(); return; }
+  if (activeTab === 'overview') { await loadCharts(); await loadRiskMatrix(); await loadTop300Performance(); return; }
   if (activeTab === 'critical') await loadCritical();
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'aging') await loadAging();
