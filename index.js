@@ -558,6 +558,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       // Pre-computed for sorting (numeric, null when "Per Piece")
       qtyCasesNum: (num(row[COL.stdPack]) > 0 && num(row[COL.stdPack]) !== onHand) ? (onHand / num(row[COL.stdPack])) : null,
       ico: (row[COL.ico] || '').toString().trim(),
+      merchGro: (row[COL.merchGro] || '').toString().trim().toUpperCase(),
       totalPO,
       poValue,
       trfValue,
@@ -826,17 +827,21 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    if (r.isCritical) g.criticalCount++;
+    // Track non-P (excluded from OOS/Critical) SKU count for accurate percentages
+    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
+    // OOS & Critical exclude items with Merchandise Gro = 'P' (per business rule)
+    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock) g.oosCount++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
   }
   // Compute risk percentages and days cover
   // Days Cover = OnHand Value / (Weekly Sales Net WS × Avg Cost / 7) = BC / (AU × AX / 7)
   const storeAnalysis = Object.values(storeGroups).map(g => {
     const total = g.totalSKUs || 1;
-    g.criticalPct = (g.criticalCount / total) * 100;
-    g.oosPct = (g.oosCount / total) * 100;
+    const nonP = g.nonPCount || 1; // for OOS/Critical %
+    g.criticalPct = (g.criticalCount / nonP) * 100;
+    g.oosPct = (g.oosCount / nonP) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
@@ -866,15 +871,18 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    if (r.isCritical) g.criticalCount++;
+    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
+    // OOS & Critical exclude items with Merchandise Gro = 'P'
+    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock) g.oosCount++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
   }
   const supplierAnalysis = Object.values(supplierGroups).map(g => {
     const total = g.totalSKUs || 1;
-    g.criticalPct = (g.criticalCount / total) * 100;
-    g.oosPct = (g.oosCount / total) * 100;
+    const nonP = g.nonPCount || 1;
+    g.criticalPct = (g.criticalCount / nonP) * 100;
+    g.oosPct = (g.oosCount / nonP) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
@@ -1618,15 +1626,17 @@ app.get('/api/stores', (req, res) => {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    if (r.isCritical) g.criticalCount++;
+    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
+    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock) g.oosCount++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
   }
   const result = Object.values(storeGroups).map(g => {
     const total = g.totalSKUs || 1;
-    g.criticalPct = (g.criticalCount / total) * 100;
-    g.oosPct = (g.oosCount / total) * 100;
+    const nonP = g.nonPCount || 1;
+    g.criticalPct = (g.criticalCount / nonP) * 100;
+    g.oosPct = (g.oosCount / nonP) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
@@ -1651,15 +1661,17 @@ app.get('/api/suppliers', (req, res) => {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    if (r.isCritical) g.criticalCount++;
+    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
+    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
     if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock) g.oosCount++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
   }
   const result = Object.values(supplierGroups).map(g => {
     const total = g.totalSKUs || 1;
-    g.criticalPct = (g.criticalCount / total) * 100;
-    g.oosPct = (g.oosCount / total) * 100;
+    const nonP = g.nonPCount || 1;
+    g.criticalPct = (g.criticalCount / nonP) * 100;
+    g.oosPct = (g.oosCount / nonP) * 100;
     g.overstockPct = (g.overstockCount / total) * 100;
     g.deadPct = (g.deadCount / total) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
