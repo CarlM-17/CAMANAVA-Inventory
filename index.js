@@ -1197,6 +1197,34 @@ app.post('/api/logs/clear', async (req, res) => {
   res.json({ ok });
 });
 
+// Activity Log XLSX export (admin only)
+app.get('/api/export-logs-xlsx', async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const logs = await readLogs();
+  logs.reverse();
+  const data = logs.map(r => ({
+    user: r.user,
+    loginTime: r.loginTime,
+    logoutTime: r.logoutTime,
+    duration: r.duration,
+    area: r.area
+  }));
+  const columns = [
+    { header: 'User', key: 'user' },
+    { header: 'Login Time', key: 'loginTime' },
+    { header: 'Logout Time', key: 'logoutTime' },
+    { header: 'Duration', key: 'duration' },
+    { header: 'Area', key: 'area' }
+  ];
+  if (data.length === 0) return res.status(204).send('No logs');
+  const filename = `Activity_Logs_${new Date().toISOString().split('T')[0]}.xlsx`;
+  await writeStyledWorkbook(res, {
+    sheetName: 'Activity Logs',
+    title: 'Activity Logs — CAMANAVA Inventory Dashboard',
+    columns, rows: data, filename
+  });
+});
+
 app.get('/api/status', (req, res) => {
   res.json({
     ready: cache.ready,
@@ -1709,36 +1737,329 @@ app.post('/api/refresh', async (req, res) => {
 });
 
 // ─── EXPORT CSV ───────────────────────────────────────────────────────────────
-app.get('/api/export/:type', (req, res) => {
+// ─── STYLED XLSX HELPER ───────────────────────────────────────────────────────
+// Generates a dark green header workbook and streams to response.
+// columns: [{ header, key, width?, format? ('currency'|'integer'|'decimal'|'date'|'text'|'percent') }]
+async function writeStyledWorkbook(res, opts) {
+  const { sheetName, title, columns, rows, filename } = opts;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CAMANAVA Inventory Dashboard';
+  wb.created = new Date();
+  const ws = wb.addWorksheet(sheetName || 'Data');
+  const DARK_GREEN = 'FF1B5E20';
+
+  // Title row (merged)
+  ws.mergeCells(1, 1, 1, columns.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = (title || sheetName) + '  |  Exported: ' + new Date().toLocaleString();
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13, name: 'Calibri' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 26;
+
+  // Set columns + header row
+  ws.columns = columns.map(c => ({ header: c.header, key: c.key, width: c.width || Math.max(12, c.header.length + 2) }));
+  const headerRow = ws.getRow(2);
+  columns.forEach((c, i) => { headerRow.getCell(i + 1).value = c.header; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+  });
+  headerRow.height = 22;
+
+  // Number formats per column type
+  const numFmtMap = {
+    currency: '"₱"#,##0.00',
+    decimal: '#,##0.00',
+    integer: '#,##0',
+    percent: '0.0"%"',
+    date: 'mm/dd/yyyy',
+    text: '@'
+  };
+
+  // Add data rows + auto-size columns based on content
+  const maxWidths = columns.map(c => c.header.length);
+  const dateRegex = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/;
+  for (const r of rows) {
+    const rowObj = {};
+    columns.forEach((c, i) => {
+      let v = r[c.key];
+      // Date type: parse "MM/DD/YYYY" string to Date so Excel formats it as date
+      if (c.format === 'date' && typeof v === 'string' && v) {
+        const m = v.match(dateRegex);
+        if (m) {
+          let [_, mm, dd, yy] = m;
+          if (yy.length === 2) yy = '20' + yy;
+          v = new Date(parseInt(yy), parseInt(mm) - 1, parseInt(dd));
+        }
+      } else if ((c.format === 'currency' || c.format === 'decimal' || c.format === 'integer' || c.format === 'percent') && v != null && v !== '') {
+        v = Number(v);
+        if (!Number.isFinite(v)) v = null;
+      }
+      rowObj[c.key] = v;
+      const dispLen = (v == null) ? 0 : (v instanceof Date ? 10 : String(v).length);
+      if (dispLen > maxWidths[i]) maxWidths[i] = dispLen;
+    });
+    ws.addRow(rowObj);
+  }
+
+  // Apply number formats and auto-adjust widths (capped at 50)
+  ws.columns.forEach((col, i) => {
+    const c = columns[i];
+    if (c && c.format && numFmtMap[c.format]) col.numFmt = numFmtMap[c.format];
+    if (!c.width) col.width = Math.min(50, Math.max(10, maxWidths[i] + 2));
+  });
+
+  // Freeze title + header, enable autoFilter
+  ws.views = [{ state: 'frozen', xSplit: 0, ySplit: 2 }];
+  ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: columns.length } };
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+}
+
+// Apply tab search across common displayed fields
+function applyTableSearch(rows, search) {
+  if (!search) return rows;
+  const q = search.toLowerCase().trim();
+  return rows.filter(r => {
+    return Object.values(r).some(v => v != null && String(v).toLowerCase().includes(q));
+  });
+}
+
+// Unified styled XLSX export for all tabs (replaces the old CSV endpoint)
+app.get('/api/export/:type', async (req, res) => {
   if (!cache.ready) return res.status(503).send('Cache not ready');
   const type = req.params.type;
-  // Enforce area lock for non-admin
-  const token = req.query.token || '';
-  const s = sessions[token];
-  const lockedArea = (s && !s.isAdmin && s.area) ? s.area : null;
+  const filters = resolveFilters(req);
+  const search = req.query.search || '';
+  const today = new Date().toISOString().split('T')[0];
+  const baseRows = applyFilters(cache.rows, filters);
 
-  let data;
-  if (lockedArea) {
-    // Recompute from filtered rows so users only export their area
-    const rows = applyFilters(cache.rows, { area: lockedArea });
-    if (type === 'critical') data = rows.filter(r => r.isCritical).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, wtsNet:r.wtsNet }));
-    else if (type === 'overstock') data = rows.filter(r => r.isOverstock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
-    else if (type === 'deadstock') data = rows.filter(r => r.isDeadStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue }));
-    else if (type === 'aging') data = rows.filter(r => r.isAging).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, p8ave:r.p8ave, daysCover:r.skuDaysCover }));
-    else if (type === 'blackinventory') data = rows.filter(r => r.isBlackInventory).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, onHand:r.onHand, onHandValue:r.onHandValue, p8ave:r.p8ave, daysCover:r.skuDaysCover }));
-    else if (type === 'outofstock') data = rows.filter(r => r.isOutOfStock).map(r => ({ store:`${r.storeNumber} - ${r.storeName}`, area:r.area, skuCode:r.skuCode, skuDesc:r.skuDesc, supplier:r.supplierName, p8ave:r.p8ave, lostSalesPerWeek:r.lostSalesPerWeek }));
-    else data = [];
-  } else {
-    const dataMap = { critical: cache.criticalItems, overstock: cache.overstockItems, aging: cache.agingItems, blackinventory: cache.blackInventoryItems, deadstock: cache.deadStockItems, outofstock: cache.outOfStockItems, stores: cache.storeAnalysis, suppliers: cache.supplierAnalysis };
-    data = dataMap[type];
+  // Build (rows, columns, sheetName, title) per type
+  let data, columns, sheetName, title;
+
+  if (type === 'critical') {
+    sheetName = 'Critical';
+    title = 'Critical Stock — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isCritical).sort((a, b) => a.wtsNet - b.wtsNet).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue, currentWkSales: r.currentWkSales, p8ave: r.p8ave, wtsNet: r.wtsNet,
+      totalPO: r.totalPO, dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: r.poOrderGR > 0 || r.trfOrderGR > 0 ? 'PO Incoming' : 'URGENT: Place PO'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'Cur Wk Sales', key: 'currentWkSales', format: 'integer' }, { header: 'P8 Ave', key: 'p8ave', format: 'decimal' },
+      { header: 'WTS Net', key: 'wtsNet', format: 'decimal' }, { header: 'Total PO', key: 'totalPO', format: 'integer' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
   }
-  if (!data) return res.status(404).send('Not found');
-  if (data.length === 0) return res.status(204).send('No data');
-  const headers = Object.keys(data[0]);
-  const csv = [headers.join(','), ...data.map(row => headers.map(h => `"${(row[h] || '').toString().replace(/"/g, '""')}"`).join(','))].join('\n');
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="${type}_${new Date().toISOString().split('T')[0]}.csv"`);
-  res.send(csv);
+  else if (type === 'overstock') {
+    sheetName = 'Overstock';
+    title = 'Overstock Items — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isOverstock).sort((a, b) => b.wtsNet - a.wtsNet).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, wtsNet: r.wtsNet,
+      dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'WTS Net', key: 'wtsNet', format: 'decimal' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
+  }
+  else if (type === 'aging') {
+    sheetName = 'Aging';
+    title = 'Aging Items — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isAging).sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0)).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: 'For Stop Booking'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
+  }
+  else if (type === 'blackinventory') {
+    sheetName = 'Black Inventory';
+    title = 'Black Inventory — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isBlackInventory).sort((a, b) => b.onHandValue - a.onHandValue).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: 'Investigate / Liquidate'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
+  }
+  else if (type === 'deadstock') {
+    sheetName = 'P8 Weeks No Sales';
+    title = 'P8 Weeks No Sales — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isDeadStock).sort((a, b) => b.onHandValue - a.onHandValue).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      onHand: r.onHand, onHandValue: r.onHandValue,
+      weeksToSell: r.p8ave > 0 ? r.onHand / r.p8ave : null,
+      daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: r.onHandValue > 10000 ? 'High-Value Review' : 'Markdown / Liquidate'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
+  }
+  else if (type === 'outofstock') {
+    sheetName = 'Out of Stock';
+    title = 'Out of Stock — CAMANAVA Inventory';
+    data = baseRows.filter(r => r.isOutOfStock).sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).map(r => ({
+      store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
+      p8ave: r.p8ave, avgCost: r.avgCost, lostSalesPerWeek: r.lostSalesPerWeek,
+      totalPO: r.totalPO, daysNoSales: r.daysNoSales,
+      dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
+      lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
+      action: r.totalPO > 0 ? 'PO Incoming' : 'URGENT: Place PO'
+    }));
+    columns = [
+      { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
+      { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Avg Cost', key: 'avgCost', format: 'currency' },
+      { header: 'Lost Sales/Wk', key: 'lostSalesPerWeek', format: 'currency' }, { header: 'Total PO', key: 'totalPO', format: 'integer' },
+      { header: 'Days No Sales', key: 'daysNoSales', format: 'integer' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
+      { header: 'Action', key: 'action' }
+    ];
+  }
+  else if (type === 'stores') {
+    sheetName = 'Stores';
+    title = 'Store Analysis — CAMANAVA Inventory';
+    // Aggregate from filtered rows (respects area lock)
+    const groups = {};
+    for (const r of baseRows) {
+      const k = r.storeNumber;
+      if (!groups[k]) groups[k] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalLostSales: 0, totalWklSalesValue: 0, nonPCount: 0 };
+      const g = groups[k];
+      g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
+      g.totalLostSales += r.lostSalesPerWeek;
+      g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+      if (r.merchGro !== 'P') g.nonPCount++;
+      if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
+      if (r.isOverstock) g.overstockCount++;
+      if (r.isDeadStock) g.deadCount++;
+      if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
+    }
+    data = Object.values(groups).map(g => {
+      const daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+      return {
+        storeNumber: g.storeNumber, storeName: g.storeName, area: g.area,
+        totalValue: g.totalValue, totalOnHand: g.totalOnHand, totalSKUs: g.totalSKUs,
+        weeksToSell: daysCover != null ? +(daysCover / 7).toFixed(2) : null,
+        daysCover: daysCover != null ? Math.round(daysCover) : null,
+        oosCount: g.oosCount, totalLostSales: g.totalLostSales,
+        criticalCount: g.criticalCount, overstockCount: g.overstockCount, deadCount: g.deadCount
+      };
+    }).sort((a, b) => b.totalValue - a.totalValue);
+    columns = [
+      { header: 'Store #', key: 'storeNumber' }, { header: 'Name', key: 'storeName' }, { header: 'Area', key: 'area' },
+      { header: 'Inv Value', key: 'totalValue', format: 'currency' }, { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
+      { header: 'SKUs', key: 'totalSKUs', format: 'integer' },
+      { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'OOS', key: 'oosCount', format: 'integer' }, { header: 'Lost Sales/Wk', key: 'totalLostSales', format: 'currency' },
+      { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
+      { header: 'Dead', key: 'deadCount', format: 'integer' }
+    ];
+  }
+  else if (type === 'suppliers') {
+    sheetName = 'Suppliers';
+    title = 'Supplier Analysis — CAMANAVA Inventory';
+    const groups = {};
+    for (const r of baseRows) {
+      if (!r.supplierCode) continue;
+      const k = r.supplierCode;
+      if (!groups[k]) groups[k] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalWklSalesValue: 0, nonPCount: 0 };
+      const g = groups[k];
+      g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
+      g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+      if (r.merchGro !== 'P') g.nonPCount++;
+      if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
+      if (r.isOverstock) g.overstockCount++;
+      if (r.isDeadStock) g.deadCount++;
+      if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
+    }
+    data = Object.values(groups).map(g => {
+      const daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
+      return {
+        supplierCode: g.supplierCode, supplierName: g.supplierName,
+        totalValue: g.totalValue, totalOnHand: g.totalOnHand, totalSKUs: g.totalSKUs,
+        weeksToSell: daysCover != null ? +(daysCover / 7).toFixed(2) : null,
+        daysCover: daysCover != null ? Math.round(daysCover) : null,
+        oosCount: g.oosCount,
+        criticalCount: g.criticalCount, overstockCount: g.overstockCount, deadCount: g.deadCount
+      };
+    }).sort((a, b) => b.totalValue - a.totalValue);
+    columns = [
+      { header: 'Code', key: 'supplierCode' }, { header: 'Name', key: 'supplierName' },
+      { header: 'Inv Value', key: 'totalValue', format: 'currency' }, { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
+      { header: 'SKUs', key: 'totalSKUs', format: 'integer' },
+      { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'OOS', key: 'oosCount', format: 'integer' },
+      { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
+      { header: 'Dead', key: 'deadCount', format: 'integer' }
+    ];
+  }
+  else {
+    return res.status(404).send('Unknown export type');
+  }
+
+  // Apply tab search filter (so the export matches what the user sees)
+  data = applyTableSearch(data, search);
+  if (!data || data.length === 0) return res.status(204).send('No data');
+
+  const filename = `${sheetName.replace(/[^a-zA-Z0-9]+/g, '_')}_${today}.xlsx`;
+  await writeStyledWorkbook(res, { sheetName, title, columns, rows: data, filename });
 });
 
 // SKU Analysis Excel export — respects all filters, sort, search, and status
@@ -2771,7 +3092,7 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('risk-matrix-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('stores')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('stores')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap" style="max-height:520px;">
@@ -2853,7 +3174,7 @@ canvas { max-height:260px; }
           <div class="section-title">⚠ Critical Stock <span class="badge badge-red" id="critical-count">0</span></div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('critical-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('critical')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('critical')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -2892,7 +3213,7 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('overstock-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('overstock')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('overstock')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -2929,7 +3250,7 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('aging-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('aging')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('aging')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -2966,7 +3287,7 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('blackinv-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('blackinventory')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('blackinventory')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3067,7 +3388,7 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('deadstock-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('deadstock')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('deadstock')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3102,7 +3423,7 @@ canvas { max-height:260px; }
           <div class="section-title">🚫 Out of Stock — Lost Sales <span class="badge badge-red" id="outofstock-count">0</span></div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('outofstock-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('outofstock')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('outofstock')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3138,7 +3459,7 @@ canvas { max-height:260px; }
           <div class="section-title">🏪 Store Analysis</div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('stores-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('stores')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('stores')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3205,7 +3526,7 @@ canvas { max-height:260px; }
           <div class="section-title">🏭 Supplier Analysis</div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search supplier..." oninput="searchTable('suppliers-table',this.value)"/>
-            <button class="btn btn-sm" onclick="exportData('suppliers')">⬇ Export CSV</button>
+            <button class="btn btn-sm" onclick="exportData('suppliers')">⬇ Export Excel</button>
           </div>
         </div>
         <div class="table-wrap">
@@ -3553,17 +3874,14 @@ function renderLogs(data) {
 
 function exportLogs() {
   if (logsData.length === 0) { alert('No logs to export'); return; }
-  const headers = ['User', 'Login Time', 'Logout Time', 'Duration', 'Area'];
-  const rows = logsData.map(r => [r.user, r.loginTime, r.logoutTime, r.duration, r.area]);
-  const NL = String.fromCharCode(10);
-  const csv = [headers.join(',')].concat(rows.map(row => row.map(c => '"' + (c || '').toString().replace(/"/g, '""') + '"').join(','))).join(NL);
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const url = URL.createObjectURL(blob);
+  const params = new URLSearchParams();
+  if (authToken) params.set('token', authToken);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = 'activity_logs_' + new Date().toISOString().split('T')[0] + '.csv';
+  a.href = '/api/export-logs-xlsx?' + params.toString();
+  a.download = '';
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(url);
+  document.body.removeChild(a);
 }
 
 async function confirmClearLogs() {
@@ -5005,7 +5323,26 @@ function sortTable(tableId, colIndex) {
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 function exportData(type) {
-  window.open('/api/export/' + type + filterQuery(), '_blank');
+  // Maps type → tab key for tableData/tableSearch lookups
+  const typeToKey = {
+    critical: 'critical', overstock: 'overstock', aging: 'aging',
+    blackinventory: 'blackinv', deadstock: 'deadstock', outofstock: 'outofstock',
+    stores: 'stores', suppliers: 'suppliers'
+  };
+  const key = typeToKey[type] || type;
+  // Build URL with filters + tab-specific search
+  const params = new URLSearchParams(activeFilters);
+  if (authToken) params.set('token', authToken);
+  const search = tableSearch && tableSearch[key] ? tableSearch[key] : '';
+  if (search) params.set('search', search);
+  const url = '/api/export/' + type + '?' + params.toString();
+  // Trigger download via hidden link (better than window.open which can be blocked)
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
 }
 
 async function exportSKUsExcel() {
