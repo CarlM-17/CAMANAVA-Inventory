@@ -676,13 +676,19 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const overstockItems = enriched
     .filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet)
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
       skuCode: r.skuCode,
       skuDesc: r.skuDesc,
       supplier: r.supplierName,
       onHand: r.onHand,
+      qtyCases,
       onHandValue: r.onHandValue,
       p8ave: r.p8ave,
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
@@ -691,20 +697,27 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
-    }));
+      };
+    });
 
   // ── AGING ─────────────────────────────────────────────────────────────────
   // Stock projected to last 180+ days AND sold within last 180 days
   const agingItems = enriched
     .filter(r => r.isAging)
     .sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0))
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
       skuCode: r.skuCode,
       skuDesc: r.skuDesc,
       supplier: r.supplierName,
       onHand: r.onHand,
+      qtyCases,
       onHandValue: r.onHandValue,
       p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
@@ -713,20 +726,27 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
-    }));
+      };
+    });
 
   // ── BLACK INVENTORY ───────────────────────────────────────────────────────
   // OnHand > 0, no sales 180+ days (or never sold), and last received 180+ days ago
   const blackInventoryItems = enriched
     .filter(r => r.isBlackInventory)
     .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`,
       area: r.area,
       skuCode: r.skuCode,
       skuDesc: r.skuDesc,
       supplier: r.supplierName,
       onHand: r.onHand,
+      qtyCases,
       onHandValue: r.onHandValue,
       p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
@@ -735,7 +755,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
-    }));
+      };
+    });
 
   // ── NEGATIVE SKU ──────────────────────────────────────────────────────────
   // On hand is negative (system error or data sync issue) — needs investigation
@@ -772,6 +793,10 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     .map(r => {
       const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
       const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
       return {
         store: `${r.storeNumber} - ${r.storeName}`,
         area: r.area,
@@ -779,6 +804,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
         skuDesc: r.skuDesc,
         supplier: r.supplierName,
         onHand: r.onHand,
+        qtyCases,
         onHandValue: r.onHandValue,
         weeksToSell: wtsItem,
         daysCover: dcItem,
@@ -1460,6 +1486,7 @@ app.get('/api/top300skus', (req, res) => {
       itemDescription: t.desc || (inv ? inv.skuDesc : ''),
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
+      qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
       p8ave: inv ? inv.p8ave : null,
       daysCover: inv ? inv.skuDaysCover : null,
       status,
@@ -1908,7 +1935,9 @@ app.get('/api/export/:type', async (req, res) => {
     title = 'Overstock Items — CAMANAVA Inventory';
     data = baseRows.filter(r => r.isOverstock).sort((a, b) => b.wtsNet - a.wtsNet).map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, wtsNet: r.wtsNet,
+      onHand: r.onHand,
+      qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
+      onHandValue: r.onHandValue, p8ave: r.p8ave, wtsNet: r.wtsNet,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
@@ -1916,7 +1945,8 @@ app.get('/api/export/:type', async (req, res) => {
     columns = [
       { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
-      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
+      { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
       { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'WTS Net', key: 'wtsNet', format: 'decimal' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -1928,7 +1958,9 @@ app.get('/api/export/:type', async (req, res) => {
     title = 'Aging Items — CAMANAVA Inventory';
     data = baseRows.filter(r => r.isAging).sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0)).map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      onHand: r.onHand,
+      qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
+      onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
@@ -1936,7 +1968,8 @@ app.get('/api/export/:type', async (req, res) => {
     columns = [
       { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
-      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
+      { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
       { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -1948,7 +1981,9 @@ app.get('/api/export/:type', async (req, res) => {
     title = 'Black Inventory — CAMANAVA Inventory';
     data = baseRows.filter(r => r.isBlackInventory).sort((a, b) => b.onHandValue - a.onHandValue).map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      onHand: r.onHand,
+      qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
+      onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
@@ -1956,7 +1991,8 @@ app.get('/api/export/:type', async (req, res) => {
     columns = [
       { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
-      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
+      { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
       { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -1968,7 +2004,9 @@ app.get('/api/export/:type', async (req, res) => {
     title = 'P8 Weeks No Sales — CAMANAVA Inventory';
     data = baseRows.filter(r => r.isDeadStock).sort((a, b) => b.onHandValue - a.onHandValue).map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue,
+      onHand: r.onHand,
+      qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
+      onHandValue: r.onHandValue,
       weeksToSell: r.p8ave > 0 ? r.onHand / r.p8ave : null,
       daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
@@ -1978,7 +2016,8 @@ app.get('/api/export/:type', async (req, res) => {
     columns = [
       { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
-      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
+      { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
       { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -2372,6 +2411,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
       itemDescription: t.desc || (inv ? inv.skuDesc : ''),
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
+      qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
       p8ave: inv ? +(inv.p8ave || 0).toFixed(2) : null,
       daysCover: inv && inv.skuDaysCover != null ? +inv.skuDaysCover.toFixed(0) : null,
       status,
@@ -2398,6 +2438,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
     { header: 'Item Description', key: 'itemDescription', width: 36 },
     { header: 'Supplier', key: 'supplier', width: 28 },
     { header: 'On Hand', key: 'onHand', width: 10 },
+    { header: 'Qty in Cases', key: 'qtyCases', width: 12 },
     { header: 'P8 Ave', key: 'p8ave', width: 12 },
     { header: 'Days Cover', key: 'daysCover', width: 12 },
     { header: 'Status', key: 'status', width: 12 },
@@ -3271,13 +3312,14 @@ canvas { max-height:260px; }
               <th onclick="sortTable('overstock-table',3)">Description</th>
               <th onclick="sortTable('overstock-table',4)">Supplier</th>
               <th onclick="sortTable('overstock-table',5)">On Hand</th>
-              <th onclick="sortTable('overstock-table',6)">Value</th>
-              <th onclick="sortTable('overstock-table',7)">P8 Ave</th>
-              <th onclick="sortTable('overstock-table',8)">WTS Net</th>
-              <th onclick="sortTable('overstock-table',9)">Last Sold</th>
-              <th onclick="sortTable('overstock-table',10)">Last Received</th>
-              <th onclick="sortTable('overstock-table',11)">Transfer In</th>
-              <th onclick="sortTable('overstock-table',12)">Transfer Out</th>
+              <th onclick="sortTable('overstock-table',6)">Qty in Cases</th>
+              <th onclick="sortTable('overstock-table',7)">Value</th>
+              <th onclick="sortTable('overstock-table',8)">P8 Ave</th>
+              <th onclick="sortTable('overstock-table',9)">WTS Net</th>
+              <th onclick="sortTable('overstock-table',10)">Last Sold</th>
+              <th onclick="sortTable('overstock-table',11)">Last Received</th>
+              <th onclick="sortTable('overstock-table',12)">Transfer In</th>
+              <th onclick="sortTable('overstock-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -3308,13 +3350,14 @@ canvas { max-height:260px; }
               <th onclick="sortTable('aging-table',3)">Description</th>
               <th onclick="sortTable('aging-table',4)">Supplier</th>
               <th onclick="sortTable('aging-table',5)">On Hand</th>
-              <th onclick="sortTable('aging-table',6)">Value</th>
-              <th onclick="sortTable('aging-table',7)">P8 Ave</th>
-              <th onclick="sortTable('aging-table',8)">Days Cover</th>
-              <th onclick="sortTable('aging-table',9)">Last Sold</th>
-              <th onclick="sortTable('aging-table',10)">Last Received</th>
-              <th onclick="sortTable('aging-table',11)">Transfer In</th>
-              <th onclick="sortTable('aging-table',12)">Transfer Out</th>
+              <th onclick="sortTable('aging-table',6)">Qty in Cases</th>
+              <th onclick="sortTable('aging-table',7)">Value</th>
+              <th onclick="sortTable('aging-table',8)">P8 Ave</th>
+              <th onclick="sortTable('aging-table',9)">Days Cover</th>
+              <th onclick="sortTable('aging-table',10)">Last Sold</th>
+              <th onclick="sortTable('aging-table',11)">Last Received</th>
+              <th onclick="sortTable('aging-table',12)">Transfer In</th>
+              <th onclick="sortTable('aging-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="aging-body"></tbody>
@@ -3345,13 +3388,14 @@ canvas { max-height:260px; }
               <th onclick="sortTable('blackinv-table',3)">Description</th>
               <th onclick="sortTable('blackinv-table',4)">Supplier</th>
               <th onclick="sortTable('blackinv-table',5)">On Hand</th>
-              <th onclick="sortTable('blackinv-table',6)">Value</th>
-              <th onclick="sortTable('blackinv-table',7)">P8 Ave</th>
-              <th onclick="sortTable('blackinv-table',8)">Days Cover</th>
-              <th onclick="sortTable('blackinv-table',9)">Last Sold</th>
-              <th onclick="sortTable('blackinv-table',10)">Last Received</th>
-              <th onclick="sortTable('blackinv-table',11)">Transfer In</th>
-              <th onclick="sortTable('blackinv-table',12)">Transfer Out</th>
+              <th onclick="sortTable('blackinv-table',6)">Qty in Cases</th>
+              <th onclick="sortTable('blackinv-table',7)">Value</th>
+              <th onclick="sortTable('blackinv-table',8)">P8 Ave</th>
+              <th onclick="sortTable('blackinv-table',9)">Days Cover</th>
+              <th onclick="sortTable('blackinv-table',10)">Last Sold</th>
+              <th onclick="sortTable('blackinv-table',11)">Last Received</th>
+              <th onclick="sortTable('blackinv-table',12)">Transfer In</th>
+              <th onclick="sortTable('blackinv-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="blackinv-body"></tbody>
@@ -3446,13 +3490,14 @@ canvas { max-height:260px; }
               <th onclick="sortTable('deadstock-table',3)">Description</th>
               <th onclick="sortTable('deadstock-table',4)">Supplier</th>
               <th onclick="sortTable('deadstock-table',5)">On Hand</th>
-              <th onclick="sortTable('deadstock-table',6)">Value</th>
-              <th onclick="sortTable('deadstock-table',7)">WTS</th>
-              <th onclick="sortTable('deadstock-table',8)">Days Cover</th>
-              <th onclick="sortTable('deadstock-table',9)">Last Sold</th>
-              <th onclick="sortTable('deadstock-table',10)">Last Received</th>
-              <th onclick="sortTable('deadstock-table',11)">Transfer In</th>
-              <th onclick="sortTable('deadstock-table',12)">Transfer Out</th>
+              <th onclick="sortTable('deadstock-table',6)">Qty in Cases</th>
+              <th onclick="sortTable('deadstock-table',7)">Value</th>
+              <th onclick="sortTable('deadstock-table',8)">WTS</th>
+              <th onclick="sortTable('deadstock-table',9)">Days Cover</th>
+              <th onclick="sortTable('deadstock-table',10)">Last Sold</th>
+              <th onclick="sortTable('deadstock-table',11)">Last Received</th>
+              <th onclick="sortTable('deadstock-table',12)">Transfer In</th>
+              <th onclick="sortTable('deadstock-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -3680,16 +3725,17 @@ canvas { max-height:260px; }
               <th onclick="sortTable('top300-table',4)">Item Description</th>
               <th onclick="sortTable('top300-table',5)">Supplier</th>
               <th onclick="sortTable('top300-table',6)">On Hand</th>
-              <th onclick="sortTable('top300-table',7)">P8 Ave</th>
-              <th onclick="sortTable('top300-table',8)">Days Cover</th>
-              <th onclick="sortTable('top300-table',9)">Status</th>
-              <th onclick="sortTable('top300-table',10)">Incoming PO</th>
-              <th onclick="sortTable('top300-table',11)">Lost Sales/Wk</th>
-              <th onclick="sortTable('top300-table',12)">ICO</th>
-              <th onclick="sortTable('top300-table',13)">Last Sold</th>
-              <th onclick="sortTable('top300-table',14)">Last Received</th>
-              <th onclick="sortTable('top300-table',15)">Transfer In</th>
-              <th onclick="sortTable('top300-table',16)">Transfer Out</th>
+              <th onclick="sortTable('top300-table',7)">Qty in Cases</th>
+              <th onclick="sortTable('top300-table',8)">P8 Ave</th>
+              <th onclick="sortTable('top300-table',9)">Days Cover</th>
+              <th onclick="sortTable('top300-table',10)">Status</th>
+              <th onclick="sortTable('top300-table',11)">Incoming PO</th>
+              <th onclick="sortTable('top300-table',12)">Lost Sales/Wk</th>
+              <th onclick="sortTable('top300-table',13)">ICO</th>
+              <th onclick="sortTable('top300-table',14)">Last Sold</th>
+              <th onclick="sortTable('top300-table',15)">Last Received</th>
+              <th onclick="sortTable('top300-table',16)">Transfer In</th>
+              <th onclick="sortTable('top300-table',17)">Transfer Out</th>
             </tr></thead>
             <tbody id="top300-body"></tbody>
           </table>
@@ -5049,6 +5095,7 @@ function renderOverstockRow(r) {
     '<td>' + esc(r.skuDesc) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + r.wtsNet + '</td>' +
@@ -5068,6 +5115,7 @@ function renderAgingRow(r) {
     '<td>' + esc(r.skuDesc) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + dc + '</td>' +
@@ -5088,6 +5136,7 @@ function renderBlackInventoryRow(r) {
     '<td>' + esc(r.skuDesc) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + dc + '</td>' +
@@ -5128,6 +5177,7 @@ function renderTop300Row(r) {
   const onHandStyle = (r.onHand !== null && r.onHand < 0) ? ' style="color:var(--red-light);font-weight:600;"' : '';
   const dcColor = r.daysCover != null && r.daysCover < 7 ? 'color:var(--red-light);' :
                   r.daysCover != null && r.daysCover > 90 ? 'color:var(--yellow-light);' : '';
+  const qtyCases = r.qtyCases == null ? '—' : (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases));
   return '<tr>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
     '<td>' + esc(r.storeName) + '</td>' +
@@ -5136,6 +5186,7 @@ function renderTop300Row(r) {
     '<td>' + esc(r.itemDescription) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono"' + onHandStyle + '>' + onHand + '</td>' +
+    '<td class="mono">' + qtyCases + '</td>' +
     '<td class="mono">' + p8 + '</td>' +
     '<td class="mono" style="' + dcColor + '">' + dc + '</td>' +
     '<td><span class="' + statusClass + '">' + esc(r.status) + '</span></td>' +
@@ -5158,6 +5209,7 @@ function renderDeadstockRow(r) {
     '<td>' + esc(r.skuDesc) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono" style="color:var(--text2);">' + wts + '</td>' +
     '<td class="mono" style="color:var(--text2);">' + dc + '</td>' +
