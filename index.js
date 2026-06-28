@@ -1358,17 +1358,23 @@ app.get('/api/overstock', (req, res) => {
   if (Object.keys(filters).length === 0) return res.json(cache.overstockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet)
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
-    }));
+      };
+    });
   res.json(filtered);
 });
 
@@ -1378,17 +1384,23 @@ app.get('/api/aging', (req, res) => {
   if (Object.keys(filters).length === 0) return res.json(cache.agingItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isAging)
     .sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0))
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
-    }));
+      };
+    });
   res.json(filtered);
 });
 
@@ -1398,17 +1410,23 @@ app.get('/api/blackinventory', (req, res) => {
   if (Object.keys(filters).length === 0) return res.json(cache.blackInventoryItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isBlackInventory)
     .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => ({
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn),
       lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
-    }));
+      };
+    });
   res.json(filtered);
 });
 
@@ -1564,10 +1582,14 @@ app.get('/api/deadstock', (req, res) => {
     .map(r => {
       const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
       const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
       return {
         store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
         skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-        onHand: r.onHand, onHandValue: r.onHandValue,
+        onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
         weeksToSell: wtsItem,
         daysCover: dcItem,
         dateLastSold: formatDate(r.dateLastSold),
