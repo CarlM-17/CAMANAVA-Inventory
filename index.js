@@ -908,7 +908,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
         totalValue: 0, totalOnHand: 0,
         criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
         totalSKUs: 0, totalSales: 0, totalLostSales: 0,
-        totalWklSalesValue: 0
+        totalWklSalesValue: 0, totalP8Ave: 0
       };
     }
     const g = supplierGroups[key];
@@ -918,6 +918,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+    g.totalP8Ave += r.p8ave;
     if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
     // OOS & Critical exclude items with Merchandise Gro = 'P'
     if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
@@ -1761,12 +1762,13 @@ app.get('/api/suppliers', (req, res) => {
   for (const r of filtered) {
     if (!r.supplierCode) continue;
     const key = r.supplierCode;
-    if (!supplierGroups[key]) supplierGroups[key] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0 };
+    if (!supplierGroups[key]) supplierGroups[key] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0, totalP8Ave: 0 };
     const g = supplierGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+    g.totalP8Ave += r.p8ave;
     if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
     if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
@@ -2125,10 +2127,11 @@ app.get('/api/export/:type', async (req, res) => {
     for (const r of baseRows) {
       if (!r.supplierCode) continue;
       const k = r.supplierCode;
-      if (!groups[k]) groups[k] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalWklSalesValue: 0, nonPCount: 0 };
+      if (!groups[k]) groups[k] = { supplierCode: r.supplierCode, supplierName: r.supplierName, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalWklSalesValue: 0, totalP8Ave: 0, nonPCount: 0 };
       const g = groups[k];
       g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
       g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+      g.totalP8Ave += r.p8ave;
       if (r.merchGro !== 'P') g.nonPCount++;
       if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
       if (r.isOverstock) g.overstockCount++;
@@ -2139,7 +2142,7 @@ app.get('/api/export/:type', async (req, res) => {
       const daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
       return {
         supplierCode: g.supplierCode, supplierName: g.supplierName,
-        totalValue: g.totalValue, totalOnHand: g.totalOnHand, totalSKUs: g.totalSKUs,
+        totalValue: g.totalValue, totalP8Ave: +g.totalP8Ave.toFixed(2), totalOnHand: g.totalOnHand, totalSKUs: g.totalSKUs,
         weeksToSell: daysCover != null ? +(daysCover / 7).toFixed(2) : null,
         daysCover: daysCover != null ? Math.round(daysCover) : null,
         oosCount: g.oosCount,
@@ -2148,7 +2151,9 @@ app.get('/api/export/:type', async (req, res) => {
     }).sort((a, b) => b.totalValue - a.totalValue);
     columns = [
       { header: 'Code', key: 'supplierCode' }, { header: 'Name', key: 'supplierName' },
-      { header: 'Inv Value', key: 'totalValue', format: 'currency' }, { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
+      { header: 'Inv Value', key: 'totalValue', format: 'currency' },
+      { header: 'P8 Ave/Wk', key: 'totalP8Ave', format: 'decimal' },
+      { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
       { header: 'SKUs', key: 'totalSKUs', format: 'integer' },
       { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'OOS', key: 'oosCount', format: 'integer' },
@@ -3655,14 +3660,15 @@ canvas { max-height:260px; }
               <th onclick="sortTable('suppliers-table',0)">Supplier Code</th>
               <th onclick="sortTable('suppliers-table',1)">Supplier Name</th>
               <th onclick="sortTable('suppliers-table',2)">Inv Value</th>
-              <th onclick="sortTable('suppliers-table',3)">On Hand</th>
-              <th onclick="sortTable('suppliers-table',4)">SKUs</th>
-              <th onclick="sortTable('suppliers-table',5)">WTS</th>
-              <th onclick="sortTable('suppliers-table',6)">Days Cover</th>
-              <th onclick="sortTable('suppliers-table',7)">Out of Stock</th>
-              <th onclick="sortTable('suppliers-table',8)">Critical</th>
-              <th onclick="sortTable('suppliers-table',9)">Overstock</th>
-              <th onclick="sortTable('suppliers-table',10)">Dead Stock</th>
+              <th onclick="sortTable('suppliers-table',3)">P8 Ave/Wk</th>
+              <th onclick="sortTable('suppliers-table',4)">On Hand</th>
+              <th onclick="sortTable('suppliers-table',5)">SKUs</th>
+              <th onclick="sortTable('suppliers-table',6)">WTS</th>
+              <th onclick="sortTable('suppliers-table',7)">Days Cover</th>
+              <th onclick="sortTable('suppliers-table',8)">Out of Stock</th>
+              <th onclick="sortTable('suppliers-table',9)">Critical</th>
+              <th onclick="sortTable('suppliers-table',10)">Overstock</th>
+              <th onclick="sortTable('suppliers-table',11)">Dead Stock</th>
             </tr></thead>
             <tbody id="suppliers-body"></tbody>
           </table>
@@ -5304,6 +5310,7 @@ function renderSupplierRow(r) {
     '<td class="mono">' + esc(r.supplierCode) + '</td>' +
     '<td>' + esc(r.supplierName) + '</td>' +
     '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.totalValue) + '</td>' +
+    '<td class="mono">' + fmtN(r.totalP8Ave || 0) + '</td>' +
     '<td class="mono">' + fmt(r.totalOnHand) + '</td>' +
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
     '<td class="mono">' + wts + '</td>' +
