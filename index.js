@@ -4294,24 +4294,31 @@ async function loadKPIs() {
   const d = await r.json();
   if (d.error) return;
   const grid = document.getElementById('kpi-grid');
+  const wtsColor = d.avgWts < 4 ? 'red' : d.avgWts > 12 ? 'yellow' : 'green';
+  const daysCover = (d.avgWts || 0) * 7;
   grid.innerHTML = [
+    // GREEN
     kpiCard('Total Inv Value', '₱' + fmtM(d.totalOnHandValue), 'w/ VAT', 'green'),
+    kpiCard('Active Stores', fmt(d.activeStores), 'stores', 'green'),
+    kpiCard('Avg WTS Net', (d.avgWts || 0).toFixed(1) + ' wks', 'weeks to sell', wtsColor),
+    kpiCard('Days Cover', daysCover.toFixed(0) + ' days', 'avg coverage', wtsColor),
+    // BLUE
     kpiCard('On Hand Qty', fmt(d.totalOnHand), 'units', 'blue'),
+    kpiCard('Suppliers', fmt(d.activeSuppliers), 'active', 'blue'),
+    kpiCard('PO Value', '₱' + fmtM(d.totalPOValue), 'incoming', 'blue'),
+    kpiCard('Total SKUs', fmt(d.totalSKUs), 'in scope', 'blue'),
+    // YELLOW
+    kpiCard('Overstock SKUs', fmt(d.overstockCount), 'WTS > 12 weeks', 'yellow'),
+    kpiCard('Overstock Value', '₱' + fmtM(d.overstockValue || 0), fmt(d.overstockCount || 0) + ' SKUs', 'yellow'),
+    kpiCard('Aging Value', '₱' + fmtM(d.agingValue || 0), fmt(d.agingCount || 0) + ' SKUs, 180+ days', 'yellow'),
+    kpiCard('Transfer Value', '₱' + fmtM(d.totalTRFValue), 'incoming', 'yellow'),
+    // RED
     kpiCard('Out of Stock', fmt(d.outOfStockCount || 0), 'SKUs losing sales', 'red'),
     kpiCard('Lost Sales/Wk', '₱' + fmtM(d.totalLostSalesPerWeek || 0), 'estimated/week', 'red'),
     kpiCard('Critical SKUs', fmt(d.criticalCount), 'WTS < 2 weeks', 'red'),
-    kpiCard('Overstock SKUs', fmt(d.overstockCount), 'WTS > 12 weeks', 'yellow'),
     kpiCard('Dead Stock SKUs', fmt(d.deadStockCount), 'No sales 8 wks', 'red'),
-    kpiCard('Overstock Value', '₱' + fmtM(d.overstockValue || 0), fmt(d.overstockCount || 0) + ' SKUs', 'yellow'),
-    kpiCard('Aging Value', '₱' + fmtM(d.agingValue || 0), fmt(d.agingCount || 0) + ' SKUs, 180+ days', 'yellow'),
     kpiCard('Black Inv Value', '₱' + fmtM(d.blackInventoryValue || 0), fmt(d.blackInventoryCount || 0) + ' SKUs, stagnant', 'red'),
     kpiCard('P8 Wks No Sales Val', '₱' + fmtM(d.deadStockValue || 0), fmt(d.deadStockCount || 0) + ' SKUs', 'red'),
-    kpiCard('Active Stores', fmt(d.activeStores), 'stores', 'green'),
-    kpiCard('Suppliers', fmt(d.activeSuppliers), 'active', 'blue'),
-    kpiCard('PO Value', '₱' + fmtM(d.totalPOValue), 'incoming', 'blue'),
-    kpiCard('Transfer Value', '₱' + fmtM(d.totalTRFValue), 'incoming', 'yellow'),
-    kpiCard('Avg WTS Net', (d.avgWts || 0).toFixed(1) + ' wks', 'weeks to sell', d.avgWts < 4 ? 'red' : d.avgWts > 12 ? 'yellow' : 'green'),
-    kpiCard('Total SKUs', fmt(d.totalSKUs), 'in scope', 'blue'),
   ].join('');
 }
 
