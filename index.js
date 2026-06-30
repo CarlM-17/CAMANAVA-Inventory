@@ -3294,21 +3294,21 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="critical-table">
             <thead><tr>
-              <th onclick="sortTable('critical-table',0)">Store</th>
-              <th onclick="sortTable('critical-table',1)">Area</th>
-              <th onclick="sortTable('critical-table',2)">SKU Code</th>
-              <th onclick="sortTable('critical-table',3)">Description</th>
-              <th onclick="sortTable('critical-table',4)">Supplier</th>
-              <th onclick="sortTable('critical-table',5)">On Hand</th>
-              <th onclick="sortTable('critical-table',6)">Value</th>
-              <th onclick="sortTable('critical-table',7)">Cur Wk Sales</th>
-              <th onclick="sortTable('critical-table',8)">P8 Ave</th>
-              <th onclick="sortTable('critical-table',9)">WTS Net</th>
-              <th onclick="sortTable('critical-table',10)">Total PO</th>
-              <th onclick="sortTable('critical-table',11)">Last Sold</th>
-              <th onclick="sortTable('critical-table',12)">Last Received</th>
-              <th onclick="sortTable('critical-table',13)">Transfer In</th>
-              <th onclick="sortTable('critical-table',14)">Transfer Out</th>
+              <th data-field="store" onclick="sortTable('critical-table',0)">Store</th>
+              <th data-field="area" onclick="sortTable('critical-table',1)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('critical-table',2)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('critical-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('critical-table',4)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('critical-table',5)">On Hand</th>
+              <th data-field="onHandValue" onclick="sortTable('critical-table',6)">Value</th>
+              <th data-field="currentWkSales" onclick="sortTable('critical-table',7)">Cur Wk Sales</th>
+              <th data-field="p8ave" onclick="sortTable('critical-table',8)">P8 Ave</th>
+              <th data-field="wtsNet" onclick="sortTable('critical-table',9)">WTS Net</th>
+              <th data-field="totalPO" onclick="sortTable('critical-table',10)">Total PO</th>
+              <th data-field="dateLastSold" onclick="sortTable('critical-table',11)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('critical-table',12)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('critical-table',13)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('critical-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="critical-body"></tbody>
@@ -3333,20 +3333,20 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="overstock-table">
             <thead><tr>
-              <th onclick="sortTable('overstock-table',0)">Store</th>
-              <th onclick="sortTable('overstock-table',1)">Area</th>
-              <th onclick="sortTable('overstock-table',2)">SKU Code</th>
-              <th onclick="sortTable('overstock-table',3)">Description</th>
-              <th onclick="sortTable('overstock-table',4)">Supplier</th>
-              <th onclick="sortTable('overstock-table',5)">On Hand</th>
-              <th onclick="sortTable('overstock-table',6)">Qty in Cases</th>
-              <th onclick="sortTable('overstock-table',7)">Value</th>
-              <th onclick="sortTable('overstock-table',8)">P8 Ave</th>
-              <th onclick="sortTable('overstock-table',9)">WTS Net</th>
-              <th onclick="sortTable('overstock-table',10)">Last Sold</th>
-              <th onclick="sortTable('overstock-table',11)">Last Received</th>
-              <th onclick="sortTable('overstock-table',12)">Transfer In</th>
-              <th onclick="sortTable('overstock-table',13)">Transfer Out</th>
+              <th data-field="store" onclick="sortTable('overstock-table',0)">Store</th>
+              <th data-field="area" onclick="sortTable('overstock-table',1)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('overstock-table',2)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('overstock-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('overstock-table',4)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('overstock-table',5)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('overstock-table',6)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('overstock-table',7)">Value</th>
+              <th data-field="p8ave" onclick="sortTable('overstock-table',8)">P8 Ave</th>
+              <th data-field="wtsNet" onclick="sortTable('overstock-table',9)">WTS Net</th>
+              <th data-field="dateLastSold" onclick="sortTable('overstock-table',10)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('overstock-table',11)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('overstock-table',12)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('overstock-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -3371,20 +3371,20 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="aging-table">
             <thead><tr>
-              <th onclick="sortTable('aging-table',0)">Store</th>
-              <th onclick="sortTable('aging-table',1)">Area</th>
-              <th onclick="sortTable('aging-table',2)">SKU Code</th>
-              <th onclick="sortTable('aging-table',3)">Description</th>
-              <th onclick="sortTable('aging-table',4)">Supplier</th>
-              <th onclick="sortTable('aging-table',5)">On Hand</th>
-              <th onclick="sortTable('aging-table',6)">Qty in Cases</th>
-              <th onclick="sortTable('aging-table',7)">Value</th>
-              <th onclick="sortTable('aging-table',8)">P8 Ave</th>
-              <th onclick="sortTable('aging-table',9)">Days Cover</th>
-              <th onclick="sortTable('aging-table',10)">Last Sold</th>
-              <th onclick="sortTable('aging-table',11)">Last Received</th>
-              <th onclick="sortTable('aging-table',12)">Transfer In</th>
-              <th onclick="sortTable('aging-table',13)">Transfer Out</th>
+              <th data-field="store" onclick="sortTable('aging-table',0)">Store</th>
+              <th data-field="area" onclick="sortTable('aging-table',1)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('aging-table',2)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('aging-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('aging-table',4)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('aging-table',5)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('aging-table',6)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('aging-table',7)">Value</th>
+              <th data-field="p8ave" onclick="sortTable('aging-table',8)">P8 Ave</th>
+              <th data-field="daysCover" onclick="sortTable('aging-table',9)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('aging-table',10)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('aging-table',11)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('aging-table',12)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('aging-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="aging-body"></tbody>
@@ -3409,20 +3409,20 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="blackinv-table">
             <thead><tr>
-              <th onclick="sortTable('blackinv-table',0)">Store</th>
-              <th onclick="sortTable('blackinv-table',1)">Area</th>
-              <th onclick="sortTable('blackinv-table',2)">SKU Code</th>
-              <th onclick="sortTable('blackinv-table',3)">Description</th>
-              <th onclick="sortTable('blackinv-table',4)">Supplier</th>
-              <th onclick="sortTable('blackinv-table',5)">On Hand</th>
-              <th onclick="sortTable('blackinv-table',6)">Qty in Cases</th>
-              <th onclick="sortTable('blackinv-table',7)">Value</th>
-              <th onclick="sortTable('blackinv-table',8)">P8 Ave</th>
-              <th onclick="sortTable('blackinv-table',9)">Days Cover</th>
-              <th onclick="sortTable('blackinv-table',10)">Last Sold</th>
-              <th onclick="sortTable('blackinv-table',11)">Last Received</th>
-              <th onclick="sortTable('blackinv-table',12)">Transfer In</th>
-              <th onclick="sortTable('blackinv-table',13)">Transfer Out</th>
+              <th data-field="store" onclick="sortTable('blackinv-table',0)">Store</th>
+              <th data-field="area" onclick="sortTable('blackinv-table',1)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('blackinv-table',2)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('blackinv-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('blackinv-table',4)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('blackinv-table',5)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('blackinv-table',6)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('blackinv-table',7)">Value</th>
+              <th data-field="p8ave" onclick="sortTable('blackinv-table',8)">P8 Ave</th>
+              <th data-field="daysCover" onclick="sortTable('blackinv-table',9)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('blackinv-table',10)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('blackinv-table',11)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('blackinv-table',12)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('blackinv-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="blackinv-body"></tbody>
@@ -3478,16 +3478,16 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="negsku-table">
             <thead><tr>
-              <th onclick="sortTable('negsku-table',0)">Store Name</th>
-              <th onclick="sortTable('negsku-table',1)">SKU</th>
-              <th onclick="sortTable('negsku-table',2)">Description</th>
-              <th onclick="sortTable('negsku-table',3)">Supplier</th>
-              <th onclick="sortTable('negsku-table',4)">On Hand</th>
-              <th onclick="sortTable('negsku-table',5)">Qty in Cases</th>
-              <th onclick="sortTable('negsku-table',6)">Inv Value</th>
-              <th onclick="sortTable('negsku-table',7)">P8 Ave/Wk</th>
-              <th onclick="sortTable('negsku-table',8)">Last Sold</th>
-              <th onclick="sortTable('negsku-table',9)">Last Received</th>
+              <th data-field="storeName" onclick="sortTable('negsku-table',0)">Store Name</th>
+              <th data-field="skuCode" onclick="sortTable('negsku-table',1)">SKU</th>
+              <th data-field="skuDesc" onclick="sortTable('negsku-table',2)">Description</th>
+              <th data-field="supplier" onclick="sortTable('negsku-table',3)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('negsku-table',4)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('negsku-table',5)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('negsku-table',6)">Inv Value</th>
+              <th data-field="p8ave" onclick="sortTable('negsku-table',7)">P8 Ave/Wk</th>
+              <th data-field="dateLastSold" onclick="sortTable('negsku-table',8)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('negsku-table',9)">Last Received</th>
             </tr></thead>
             <tbody id="negsku-body"></tbody>
           </table>
@@ -3511,20 +3511,20 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="deadstock-table">
             <thead><tr>
-              <th onclick="sortTable('deadstock-table',0)">Store</th>
-              <th onclick="sortTable('deadstock-table',1)">Area</th>
-              <th onclick="sortTable('deadstock-table',2)">SKU Code</th>
-              <th onclick="sortTable('deadstock-table',3)">Description</th>
-              <th onclick="sortTable('deadstock-table',4)">Supplier</th>
-              <th onclick="sortTable('deadstock-table',5)">On Hand</th>
-              <th onclick="sortTable('deadstock-table',6)">Qty in Cases</th>
-              <th onclick="sortTable('deadstock-table',7)">Value</th>
-              <th onclick="sortTable('deadstock-table',8)">WTS</th>
-              <th onclick="sortTable('deadstock-table',9)">Days Cover</th>
-              <th onclick="sortTable('deadstock-table',10)">Last Sold</th>
-              <th onclick="sortTable('deadstock-table',11)">Last Received</th>
-              <th onclick="sortTable('deadstock-table',12)">Transfer In</th>
-              <th onclick="sortTable('deadstock-table',13)">Transfer Out</th>
+              <th data-field="store" onclick="sortTable('deadstock-table',0)">Store</th>
+              <th data-field="area" onclick="sortTable('deadstock-table',1)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('deadstock-table',2)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('deadstock-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('deadstock-table',4)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('deadstock-table',5)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('deadstock-table',6)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('deadstock-table',7)">Value</th>
+              <th data-field="weeksToSell" onclick="sortTable('deadstock-table',8)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('deadstock-table',9)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('deadstock-table',10)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('deadstock-table',11)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('deadstock-table',12)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('deadstock-table',13)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -3547,28 +3547,28 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="outofstock-table">
             <thead><tr>
-              <th onclick="sortTable('outofstock-table',0)">Store #</th>
-              <th onclick="sortTable('outofstock-table',1)">Store Name</th>
-              <th onclick="sortTable('outofstock-table',2)">Area</th>
-              <th onclick="sortTable('outofstock-table',3)">SKU Code</th>
-              <th onclick="sortTable('outofstock-table',4)">Description</th>
-              <th onclick="sortTable('outofstock-table',5)">Supplier</th>
-              <th onclick="sortTable('outofstock-table',6)">On Hand</th>
-              <th onclick="sortTable('outofstock-table',7)">Std Pack</th>
-              <th onclick="sortTable('outofstock-table',8)">Qty Cases</th>
-              <th onclick="sortTable('outofstock-table',9)">Inv Value</th>
-              <th onclick="sortTable('outofstock-table',10)">P8 Ave/Wk</th>
-              <th onclick="sortTable('outofstock-table',11)">WTS</th>
-              <th onclick="sortTable('outofstock-table',12)">Days Cover</th>
-              <th onclick="sortTable('outofstock-table',13)">Status</th>
-              <th onclick="sortTable('outofstock-table',14)">Lost Sales/Wk</th>
-              <th onclick="sortTable('outofstock-table',15)">ICO</th>
-              <th onclick="sortTable('outofstock-table',16)">PO On Order</th>
-              <th onclick="sortTable('outofstock-table',17)">Trf On Order</th>
-              <th onclick="sortTable('outofstock-table',18)">Last Sold</th>
-              <th onclick="sortTable('outofstock-table',19)">Last Received</th>
-              <th onclick="sortTable('outofstock-table',20)">Transfer In</th>
-              <th onclick="sortTable('outofstock-table',21)">Transfer Out</th>
+              <th data-field="storeNumber" onclick="sortTable('outofstock-table',0)">Store #</th>
+              <th data-field="storeName" onclick="sortTable('outofstock-table',1)">Store Name</th>
+              <th data-field="area" onclick="sortTable('outofstock-table',2)">Area</th>
+              <th data-field="skuCode" onclick="sortTable('outofstock-table',3)">SKU Code</th>
+              <th data-field="skuDesc" onclick="sortTable('outofstock-table',4)">Description</th>
+              <th data-field="supplier" onclick="sortTable('outofstock-table',5)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('outofstock-table',6)">On Hand</th>
+              <th data-field="stdPack" onclick="sortTable('outofstock-table',7)">Std Pack</th>
+              <th data-field="qtyCases" onclick="sortTable('outofstock-table',8)">Qty Cases</th>
+              <th data-field="invValue" onclick="sortTable('outofstock-table',9)">Inv Value</th>
+              <th data-field="p8ave" onclick="sortTable('outofstock-table',10)">P8 Ave/Wk</th>
+              <th data-field="weeksToSell" onclick="sortTable('outofstock-table',11)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('outofstock-table',12)">Days Cover</th>
+              <th data-field="status" onclick="sortTable('outofstock-table',13)">Status</th>
+              <th data-field="lostSalesPerWeek" onclick="sortTable('outofstock-table',14)">Lost Sales/Wk</th>
+              <th data-field="ico" onclick="sortTable('outofstock-table',15)">ICO</th>
+              <th data-field="poOrderGR" onclick="sortTable('outofstock-table',16)">PO On Order</th>
+              <th data-field="trfOrderGR" onclick="sortTable('outofstock-table',17)">Trf On Order</th>
+              <th data-field="dateLastSold" onclick="sortTable('outofstock-table',18)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('outofstock-table',19)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('outofstock-table',20)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('outofstock-table',21)">Transfer Out</th>
             </tr></thead>
             <tbody id="outofstock-body"></tbody>
           </table>
@@ -3590,19 +3590,19 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="stores-table">
             <thead><tr>
-              <th onclick="sortTable('stores-table',0)">Store #</th>
-              <th onclick="sortTable('stores-table',1)">Store Name</th>
-              <th onclick="sortTable('stores-table',2)">Area</th>
-              <th onclick="sortTable('stores-table',3)">Inv Value</th>
-              <th onclick="sortTable('stores-table',4)">On Hand</th>
-              <th onclick="sortTable('stores-table',5)">SKUs</th>
-              <th onclick="sortTable('stores-table',6)">WTS</th>
-              <th onclick="sortTable('stores-table',7)">Days Cover</th>
-              <th onclick="sortTable('stores-table',8)">Out of Stock</th>
-              <th onclick="sortTable('stores-table',9)">Lost Sales/Wk</th>
-              <th onclick="sortTable('stores-table',10)">Critical</th>
-              <th onclick="sortTable('stores-table',11)">Overstock</th>
-              <th onclick="sortTable('stores-table',12)">Dead Stock</th>
+              <th data-field="storeNumber" onclick="sortTable('stores-table',0)">Store #</th>
+              <th data-field="storeName" onclick="sortTable('stores-table',1)">Store Name</th>
+              <th data-field="area" onclick="sortTable('stores-table',2)">Area</th>
+              <th data-field="totalValue" onclick="sortTable('stores-table',3)">Inv Value</th>
+              <th data-field="totalOnHand" onclick="sortTable('stores-table',4)">On Hand</th>
+              <th data-field="totalSKUs" onclick="sortTable('stores-table',5)">SKUs</th>
+              <th data-field="weeksToSell" onclick="sortTable('stores-table',6)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('stores-table',7)">Days Cover</th>
+              <th data-field="oosCount" onclick="sortTable('stores-table',8)">Out of Stock</th>
+              <th data-field="totalLostSales" onclick="sortTable('stores-table',9)">Lost Sales/Wk</th>
+              <th data-field="criticalCount" onclick="sortTable('stores-table',10)">Critical</th>
+              <th data-field="overstockCount" onclick="sortTable('stores-table',11)">Overstock</th>
+              <th data-field="deadCount" onclick="sortTable('stores-table',12)">Dead Stock</th>
             </tr></thead>
             <tbody id="stores-body"></tbody>
           </table>
@@ -3658,18 +3658,18 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="suppliers-table">
             <thead><tr>
-              <th onclick="sortTable('suppliers-table',0)">Supplier Code</th>
-              <th onclick="sortTable('suppliers-table',1)">Supplier Name</th>
-              <th onclick="sortTable('suppliers-table',2)">Inv Value</th>
-              <th onclick="sortTable('suppliers-table',3)">P8 Ave/Wk</th>
-              <th onclick="sortTable('suppliers-table',4)">On Hand</th>
-              <th onclick="sortTable('suppliers-table',5)">SKUs</th>
-              <th onclick="sortTable('suppliers-table',6)">WTS</th>
-              <th onclick="sortTable('suppliers-table',7)">Days Cover</th>
-              <th onclick="sortTable('suppliers-table',8)">Out of Stock</th>
-              <th onclick="sortTable('suppliers-table',9)">Critical</th>
-              <th onclick="sortTable('suppliers-table',10)">Overstock</th>
-              <th onclick="sortTable('suppliers-table',11)">Dead Stock</th>
+              <th data-field="supplierCode" onclick="sortTable('suppliers-table',0)">Supplier Code</th>
+              <th data-field="supplierName" onclick="sortTable('suppliers-table',1)">Supplier Name</th>
+              <th data-field="totalValue" onclick="sortTable('suppliers-table',2)">Inv Value</th>
+              <th data-field="totalP8Ave" onclick="sortTable('suppliers-table',3)">P8 Ave/Wk</th>
+              <th data-field="totalOnHand" onclick="sortTable('suppliers-table',4)">On Hand</th>
+              <th data-field="totalSKUs" onclick="sortTable('suppliers-table',5)">SKUs</th>
+              <th data-field="weeksToSell" onclick="sortTable('suppliers-table',6)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('suppliers-table',7)">Days Cover</th>
+              <th data-field="oosCount" onclick="sortTable('suppliers-table',8)">Out of Stock</th>
+              <th data-field="criticalCount" onclick="sortTable('suppliers-table',9)">Critical</th>
+              <th data-field="overstockCount" onclick="sortTable('suppliers-table',10)">Overstock</th>
+              <th data-field="deadCount" onclick="sortTable('suppliers-table',11)">Dead Stock</th>
             </tr></thead>
             <tbody id="suppliers-body"></tbody>
           </table>
@@ -3747,24 +3747,24 @@ canvas { max-height:260px; }
         <div class="table-wrap">
           <table id="top300-table">
             <thead><tr>
-              <th onclick="sortTable('top300-table',0)">Area</th>
-              <th onclick="sortTable('top300-table',1)">Store Name</th>
-              <th onclick="sortTable('top300-table',2)">Rank</th>
-              <th onclick="sortTable('top300-table',3)">SKU</th>
-              <th onclick="sortTable('top300-table',4)">Item Description</th>
-              <th onclick="sortTable('top300-table',5)">Supplier</th>
-              <th onclick="sortTable('top300-table',6)">On Hand</th>
-              <th onclick="sortTable('top300-table',7)">Qty in Cases</th>
-              <th onclick="sortTable('top300-table',8)">P8 Ave</th>
-              <th onclick="sortTable('top300-table',9)">Days Cover</th>
-              <th onclick="sortTable('top300-table',10)">Status</th>
-              <th onclick="sortTable('top300-table',11)">Incoming PO</th>
-              <th onclick="sortTable('top300-table',12)">Lost Sales/Wk</th>
-              <th onclick="sortTable('top300-table',13)">ICO</th>
-              <th onclick="sortTable('top300-table',14)">Last Sold</th>
-              <th onclick="sortTable('top300-table',15)">Last Received</th>
-              <th onclick="sortTable('top300-table',16)">Transfer In</th>
-              <th onclick="sortTable('top300-table',17)">Transfer Out</th>
+              <th data-field="area" onclick="sortTable('top300-table',0)">Area</th>
+              <th data-field="storeName" onclick="sortTable('top300-table',1)">Store Name</th>
+              <th data-field="rank" onclick="sortTable('top300-table',2)">Rank</th>
+              <th data-field="sku" onclick="sortTable('top300-table',3)">SKU</th>
+              <th data-field="itemDescription" onclick="sortTable('top300-table',4)">Item Description</th>
+              <th data-field="supplier" onclick="sortTable('top300-table',5)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('top300-table',6)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('top300-table',7)">Qty in Cases</th>
+              <th data-field="p8ave" onclick="sortTable('top300-table',8)">P8 Ave</th>
+              <th data-field="daysCover" onclick="sortTable('top300-table',9)">Days Cover</th>
+              <th data-field="status" onclick="sortTable('top300-table',10)">Status</th>
+              <th data-field="incomingPO" onclick="sortTable('top300-table',11)">Incoming PO</th>
+              <th data-field="lostSalesPerWeek" onclick="sortTable('top300-table',12)">Lost Sales/Wk</th>
+              <th data-field="ico" onclick="sortTable('top300-table',13)">ICO</th>
+              <th data-field="dateLastSold" onclick="sortTable('top300-table',14)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('top300-table',15)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('top300-table',16)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('top300-table',17)">Transfer Out</th>
             </tr></thead>
             <tbody id="top300-body"></tbody>
           </table>
@@ -5375,7 +5375,11 @@ function renderFromCache(key) {
   const q = (tableSearch[key] || '').toLowerCase().trim();
   let view = fullData;
   if (q) {
-    view = fullData.filter(r => cfg.cols.some(field => {
+    // Prefer fields declared via data-field on the <th>s (resilient to column add/reorder)
+    const ths = document.querySelectorAll('#' + tableId + ' thead th');
+    let fields = Array.from(ths).map(th => th.dataset && th.dataset.field).filter(Boolean);
+    if (fields.length === 0) fields = cfg.cols;
+    view = fullData.filter(r => fields.some(field => {
       if (!field) return false;
       const v = r[field];
       if (v == null) return false;
@@ -5414,23 +5418,23 @@ function getTableConfig(tableId) {
     'critical-table':   { key: 'critical',   render: renderCriticalRow,   pagination: 'critical-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'aging-table':      { key: 'aging',      render: renderAgingRow,      pagination: 'aging-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
       cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
       cols: ['storeNumber','storeName','area','skuCode','skuDesc','supplier','onHand','stdPack','qtyCases','invValue','p8ave','weeksToSell','daysCover','status','lostSalesPerWeek','ico','poOrderGR','trfOrderGR','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
-      cols: ['supplierCode','supplierName','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
+      cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
-      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] }
+      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] }
   };
   return configs[tableId];
 }
@@ -5438,7 +5442,11 @@ function getTableConfig(tableId) {
 function sortTable(tableId, colIndex) {
   const cfg = getTableConfig(tableId);
   if (!cfg) return;
-  const field = cfg.cols[colIndex];
+  // Prefer data-field on the actual <th> (resilient to column add/reorder).
+  // Falls back to cfg.cols[colIndex] for tables that haven't migrated yet.
+  const ths = document.querySelectorAll('#' + tableId + ' thead th');
+  const th = ths[colIndex];
+  const field = (th && th.dataset && th.dataset.field) || cfg.cols[colIndex];
   if (!field) return;
   const data = tableData[cfg.key];
   if (!Array.isArray(data) || data.length === 0) return;
