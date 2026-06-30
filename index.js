@@ -532,7 +532,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     // (excludes recent deliveries which would otherwise look like aging due to high stock)
     const isAging = onHand > 0
       && skuDaysCover != null && skuDaysCover >= 180
-      && daysSinceReceived != null && daysSinceReceived >= 180;
+      && daysSinceLastStockIn != null && daysSinceLastStockIn >= 180;
     // Black Inventory: on hand AND no sales 180+ days (or never sold) AND last received 180+ days ago
     const isBlackInventory = onHand > 0
       && (daysNoSales == null || daysNoSales >= 180)
