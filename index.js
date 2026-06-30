@@ -3633,12 +3633,13 @@ canvas { max-height:260px; }
               <th onclick="sortSupplierRisk(0)">Supplier</th>
               <th onclick="sortSupplierRisk(1)">SKUs</th>
               <th onclick="sortSupplierRisk(2)">Inv Value</th>
-              <th onclick="sortSupplierRisk(3)">Days Cover</th>
-              <th onclick="sortSupplierRisk(4)">Critical %</th>
-              <th onclick="sortSupplierRisk(5)">OOS %</th>
-              <th onclick="sortSupplierRisk(6)">Overstock %</th>
-              <th onclick="sortSupplierRisk(7)">Dead %</th>
-              <th onclick="sortSupplierRisk(8)">Lost Sales/Wk</th>
+              <th onclick="sortSupplierRisk(3)">P8 Ave/Wk</th>
+              <th onclick="sortSupplierRisk(4)">Days Cover</th>
+              <th onclick="sortSupplierRisk(5)">Critical %</th>
+              <th onclick="sortSupplierRisk(6)">OOS %</th>
+              <th onclick="sortSupplierRisk(7)">Overstock %</th>
+              <th onclick="sortSupplierRisk(8)">Dead %</th>
+              <th onclick="sortSupplierRisk(9)">Lost Sales/Wk</th>
             </tr></thead>
             <tbody id="supplier-risk-body"></tbody>
           </table>
@@ -4772,12 +4773,13 @@ let supplierRiskData = [];
 function renderSupplierRisk(data) {
   const tbody = document.getElementById('supplier-risk-body');
   if (!tbody) return;
-  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="empty">No data</td></tr>'; return; }
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="10" class="empty">No data</td></tr>'; return; }
   tbody.innerHTML = data.map(s => {
     return '<tr>' +
       '<td>' + esc(s.supplierName) + '</td>' +
       '<td class="mono">' + fmt(s.totalSKUs) + '</td>' +
       '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(s.totalValue) + '</td>' +
+      '<td class="mono">' + fmtN(s.totalP8Ave || 0) + '</td>' +
       '<td>' + daysCoverPill(s.daysCover) + '</td>' +
       '<td>' + riskPill(s.criticalPct, 'critical') + '</td>' +
       '<td>' + riskPill(s.oosPct, 'oos') + '</td>' +
@@ -4790,7 +4792,7 @@ function renderSupplierRisk(data) {
 
 let supplierRiskSortState = {};
 function sortSupplierRisk(colIndex) {
-  const keys = ['supplierName','totalSKUs','totalValue','daysCover','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
+  const keys = ['supplierName','totalSKUs','totalValue','totalP8Ave','daysCover','criticalPct','oosPct','overstockPct','deadPct','totalLostSales'];
   const key = keys[colIndex];
   const asc = supplierRiskSortState[colIndex] !== true;
   supplierRiskSortState[colIndex] = asc;
