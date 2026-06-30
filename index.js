@@ -5467,12 +5467,16 @@ function sortTable(tableId, colIndex) {
     if (aNull && bNull) return 0;
     if (aNull) return 1;
     if (bNull) return -1;
-    // Try numeric first
+    // Try numeric coercion
     const an = (typeof av === 'number') ? av : parseFloat(String(av).replace(/[₱,]/g, ''));
     const bn = (typeof bv === 'number') ? bv : parseFloat(String(bv).replace(/[₱,]/g, ''));
-    if (!isNaN(an) && !isNaN(bn) && (typeof av === 'number' || typeof bv === 'number' || /^[\d.,₱\-]+$/.test(String(av).trim()))) {
-      return asc ? an - bn : bn - an;
-    }
+    const aNum = !isNaN(an);
+    const bNum = !isNaN(bn);
+    // If either side is numeric, sort numerically and push non-numeric values
+    // (e.g. "Per Piece", "N/A", text labels) to the bottom regardless of direction.
+    if (aNum && bNum) return asc ? an - bn : bn - an;
+    if (aNum) return -1;
+    if (bNum) return 1;
     return asc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
   });
   // Reset to page 1 and re-render (renderFromCache will reapply current search)
