@@ -1,5 +1,13 @@
 'use strict';
 
+// Force IPv4 for DNS resolution — many cloud containers have broken IPv6 egress,
+// which causes googleapis "Premature close" errors on the OAuth token endpoint.
+// This must run before any network-facing modules are required.
+const dns = require('dns');
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 const express = require('express');
 const { google } = require('googleapis');
 const { parse } = require('csv-parse');
@@ -8,6 +16,7 @@ const ExcelJS = require('exceljs');
 const cron = require('node-cron');
 const { Readable } = require('stream');
 const crypto = require('crypto');
+const https = require('https');
 
 const app = express();
 app.use(express.json());
@@ -52,25 +61,91 @@ let cache = {
 };
 
 // ─── GOOGLE DRIVE AUTH ────────────────────────────────────────────────────────
-function getAuth() {
-  return new google.auth.GoogleAuth({
-    credentials: {
-      client_email: GOOGLE_CLIENT_EMAIL,
-      private_key: GOOGLE_PRIVATE_KEY
-    },
-    scopes: [
-      'https://www.googleapis.com/auth/drive',
-      'https://www.googleapis.com/auth/spreadsheets'
-    ]
+// Hand-rolled JWT → access_token exchange using ONLY Node built-ins (crypto + https).
+// This bypasses gaxios/undici (whose transitive updates have caused
+// "Premature close" errors on cloud containers). Forces IPv4 at the socket layer.
+let tokenCache = { token: null, expiresAt: 0 };
+
+function httpsRequest(opts, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(opts, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(30000, () => req.destroy(new Error('OAuth request timeout after 30s')));
+    if (body) req.write(body);
+    req.end();
   });
 }
 
-function getDriveClient() {
-  return google.drive({ version: 'v3', auth: getAuth() });
+async function getAccessToken() {
+  // Return cached token if still valid (60s safety window before real expiry)
+  if (tokenCache.token && tokenCache.expiresAt > Date.now() + 60000) {
+    return tokenCache.token;
+  }
+  if (!GOOGLE_CLIENT_EMAIL || !GOOGLE_PRIVATE_KEY) {
+    throw new Error('Missing GOOGLE_CLIENT_EMAIL or GOOGLE_PRIVATE_KEY');
+  }
+  // 1. Build signed JWT (RS256)
+  const now = Math.floor(Date.now() / 1000);
+  const header = { alg: 'RS256', typ: 'JWT' };
+  const claims = {
+    iss: GOOGLE_CLIENT_EMAIL,
+    scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets',
+    aud: 'https://oauth2.googleapis.com/token',
+    exp: now + 3600,
+    iat: now
+  };
+  const b64url = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const signingInput = b64url(header) + '.' + b64url(claims);
+  const signature = crypto.createSign('RSA-SHA256').update(signingInput).sign(GOOGLE_PRIVATE_KEY).toString('base64url');
+  const jwt = signingInput + '.' + signature;
+
+  // 2. POST to Google's token endpoint (native https, IPv4)
+  const body = 'grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=' + encodeURIComponent(jwt);
+  const res = await httpsRequest({
+    hostname: 'oauth2.googleapis.com',
+    port: 443,
+    path: '/token',
+    method: 'POST',
+    family: 4,
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+      'Accept': 'application/json'
+    }
+  }, body);
+
+  let data;
+  try { data = JSON.parse(res.body); } catch (e) {
+    throw new Error('OAuth response not JSON (HTTP ' + res.status + '): ' + res.body.slice(0, 200));
+  }
+  if (res.status !== 200 || !data.access_token) {
+    throw new Error('OAuth token exchange failed (HTTP ' + res.status + '): ' + (data.error_description || data.error || res.body));
+  }
+  tokenCache.token = data.access_token;
+  tokenCache.expiresAt = Date.now() + (data.expires_in * 1000);
+  console.log('[Auth] Access token acquired via native OAuth (expires in ' + data.expires_in + 's)');
+  return tokenCache.token;
 }
 
-function getSheetsClient() {
-  return google.sheets({ version: 'v4', auth: getAuth() });
+async function getDriveClient() {
+  const token = await getAccessToken();
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: token });
+  return google.drive({ version: 'v3', auth });
+}
+
+async function getSheetsClient() {
+  const token = await getAccessToken();
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: token });
+  return google.sheets({ version: 'v4', auth });
 }
 
 // ─── ACTIVITY LOG (Google Sheets) ─────────────────────────────────────────────
@@ -78,7 +153,7 @@ function getSheetsClient() {
 async function logLoginEvent(username, area) {
   if (!LOGS_SHEET_ID) { console.warn('[Logs] LOGS_SHEET_ID not set, skipping log'); return null; }
   try {
-    const sheets = getSheetsClient();
+    const sheets = await getSheetsClient();
     const loginTime = new Date().toISOString();
     const resp = await sheets.spreadsheets.values.append({
       spreadsheetId: LOGS_SHEET_ID,
@@ -105,7 +180,7 @@ async function logLoginEvent(username, area) {
 async function logLogoutEvent(rowNum, loginTimeISO, reason) {
   if (!LOGS_SHEET_ID || !rowNum) return;
   try {
-    const sheets = getSheetsClient();
+    const sheets = await getSheetsClient();
     const logoutTime = new Date();
     const loginTime = new Date(loginTimeISO);
     const durationMs = logoutTime - loginTime;
@@ -129,7 +204,7 @@ async function logLogoutEvent(rowNum, loginTimeISO, reason) {
 async function readLogs() {
   if (!LOGS_SHEET_ID) return [];
   try {
-    const sheets = getSheetsClient();
+    const sheets = await getSheetsClient();
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: LOGS_SHEET_ID,
       range: 'A2:E'
@@ -152,7 +227,7 @@ async function readLogs() {
 async function clearLogs() {
   if (!LOGS_SHEET_ID) return false;
   try {
-    const sheets = getSheetsClient();
+    const sheets = await getSheetsClient();
     await sheets.spreadsheets.values.clear({
       spreadsheetId: LOGS_SHEET_ID,
       range: 'A2:E'
@@ -623,8 +698,12 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const activeSuppliers = new Set(enriched.map(r => r.supplierCode).filter(Boolean)).size;
   const totalPOValue = enriched.reduce((s, r) => s + r.poValue, 0);
   const totalTRFValue = enriched.reduce((s, r) => s + r.trfValue, 0);
-  const validWts = enriched.filter(r => r.wtsNet > 0 && r.wtsNet < 999 && r.onHand > 0);
-  const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
+  // Value-weighted Days Cover / Weeks-to-Sell (same formula used by Store & Supplier rollups)
+  //   daysCover = (totalValue × 7) / Σ(wkAveNet × avgCost)
+  //   avgWts    = daysCover / 7
+  const totalWklSalesValue = enriched.reduce((s, r) => s + (r.wkAveNet * r.avgCost), 0);
+  const daysCover = totalWklSalesValue > 0 ? (totalOnHandValue * 7) / totalWklSalesValue : 0;
+  const avgWts = daysCover > 0 ? daysCover / 7 : 0;
 
   const kpis = {
     totalOnHandValue,
@@ -646,6 +725,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     totalPOValue,
     totalTRFValue,
     avgWts,
+    daysCover,
     totalSKUs: enriched.length
   };
 
@@ -960,6 +1040,31 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
 }
 
+// Retry a network operation on transient errors (premature close, ECONNRESET, ETIMEDOUT, 5xx).
+async function retryNet(label, fn, maxAttempts = 3) {
+  let attempt = 0;
+  let lastErr;
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = (e && e.message) || '';
+      const code = (e && e.code) || '';
+      const status = e && e.response && e.response.status;
+      const transient = /premature close|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network|EPIPE/i.test(msg)
+        || /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EPIPE/i.test(code)
+        || (status && status >= 500 && status < 600);
+      if (!transient || attempt >= maxAttempts) throw e;
+      const wait = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.warn(`[Cache] ${label} failed (attempt ${attempt}/${maxAttempts}): ${msg}. Retrying in ${wait}ms...`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
 async function refreshData(force = false) {
   if (cache.refreshing) {
@@ -974,10 +1079,10 @@ async function refreshData(force = false) {
       throw new Error('Missing Google Drive credentials in environment variables.');
     }
 
-    const drive = getDriveClient();
+    const drive = await getDriveClient();
 
     // Find InvData.csv
-    const invFile = await findFile(drive, INV_FILE_NAME);
+    const invFile = await retryNet('findFile(' + INV_FILE_NAME + ')', () => findFile(drive, INV_FILE_NAME));
     if (!invFile) throw new Error(`${INV_FILE_NAME} not found in folder.`);
 
     const modifiedTime = invFile.modifiedTime;
@@ -992,7 +1097,7 @@ async function refreshData(force = false) {
     }
 
     console.log(`[Cache] Downloading ${INV_FILE_NAME} (${Math.round(fileSize / 1024 / 1024)}MB)...`);
-    const invBuffer = await downloadFileBuffer(drive, invFile.id);
+    const invBuffer = await retryNet('download(' + INV_FILE_NAME + ')', () => downloadFileBuffer(drive, invFile.id));
 
     const hash = crypto.createHash('md5').update(invBuffer).digest('hex');
     if (!force && cache.ready && cache.lastFileHash === hash) {
@@ -1010,10 +1115,10 @@ async function refreshData(force = false) {
     let top300 = [];
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
-      const storesFile = await findFile(drive, STORES_FILE_NAME);
+      const storesFile = await retryNet('findFile(' + STORES_FILE_NAME + ')', () => findFile(drive, STORES_FILE_NAME));
       if (storesFile) {
         console.log('[Cache] Found stores file ID: ' + storesFile.id + ', downloading...');
-        const storesBuffer = await downloadFileBuffer(drive, storesFile.id);
+        const storesBuffer = await retryNet('download(' + STORES_FILE_NAME + ')', () => downloadFileBuffer(drive, storesFile.id));
         storeMap = parseStoresXLSX(storesBuffer);
         usersMap = parseUsersXLSX(storesBuffer);
         catMap = parseCatCodeXLSX(storesBuffer);
@@ -1301,8 +1406,10 @@ app.get('/api/kpis', (req, res) => {
   const blackInventoryValue = filtered.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
   const deadStockValue = filtered.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
   const totalLostSalesPerWeek = filtered.reduce((s, r) => s + r.lostSalesPerWeek, 0);
-  const validWts = filtered.filter(r => r.wtsNet > 0 && r.wtsNet < 999);
-  const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
+  // Value-weighted: daysCover = (totalValue × 7) / Σ(wkAveNet × avgCost); avgWts = daysCover / 7
+  const totalWklSalesValue = filtered.reduce((s, r) => s + (r.wkAveNet * r.avgCost), 0);
+  const daysCover = totalWklSalesValue > 0 ? (totalOnHandValue * 7) / totalWklSalesValue : 0;
+  const avgWts = daysCover > 0 ? daysCover / 7 : 0;
   res.json({
     totalOnHandValue, totalOnHand, criticalCount, overstockCount, deadStockCount,
     agingCount, blackInventoryCount,
@@ -1313,6 +1420,7 @@ app.get('/api/kpis', (req, res) => {
     totalPOValue: filtered.reduce((s, r) => s + r.poValue, 0),
     totalTRFValue: filtered.reduce((s, r) => s + r.trfValue, 0),
     avgWts,
+    daysCover,
     totalSKUs: filtered.length
   });
 });
@@ -4295,7 +4403,7 @@ async function loadKPIs() {
   if (d.error) return;
   const grid = document.getElementById('kpi-grid');
   const wtsColor = d.avgWts < 4 ? 'red' : d.avgWts > 12 ? 'yellow' : 'green';
-  const daysCover = (d.avgWts || 0) * 7;
+  const daysCover = (d.daysCover != null ? d.daysCover : (d.avgWts || 0) * 7);
   grid.innerHTML = [
     // GREEN
     kpiCard('Total Inv Value', '₱' + fmtM(d.totalOnHandValue), 'w/ VAT', 'green'),
