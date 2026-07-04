@@ -240,25 +240,76 @@ async function clearLogs() {
 }
 
 
-// ─── FIND FILE IN FOLDER ──────────────────────────────────────────────────────
-async function findFile(drive, fileName) {
-  const res = await drive.files.list({
-    q: `'${GDRIVE_FOLDER_ID}' in parents and name='${fileName}' and trashed=false`,
-    fields: 'files(id,name,size,modifiedTime,md5Checksum)',
-    pageSize: 5
+// ─── NATIVE DRIVE API HELPERS ────────────────────────────────────────────────
+// Hand-rolled Drive REST calls using native https + IPv4, bypassing gaxios/undici
+// (which causes "Premature close" errors on some cloud containers like Railway).
+async function driveList(q, fields, pageSize) {
+  const token = await getAccessToken();
+  const params = new URLSearchParams({
+    q,
+    fields: fields || 'files(id,name,size,modifiedTime,md5Checksum)',
+    pageSize: String(pageSize || 5)
   });
-  const files = res.data.files;
+  const res = await httpsRequest({
+    hostname: 'www.googleapis.com',
+    port: 443,
+    path: '/drive/v3/files?' + params.toString(),
+    method: 'GET',
+    family: 4,
+    headers: {
+      'Authorization': 'Bearer ' + token,
+      'Accept': 'application/json'
+    }
+  });
+  if (res.status !== 200) {
+    throw new Error('Drive list failed (HTTP ' + res.status + '): ' + res.body.slice(0, 300));
+  }
+  return JSON.parse(res.body);
+}
+
+function driveDownload(fileId) {
+  return getAccessToken().then((token) => new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'www.googleapis.com',
+      port: 443,
+      path: '/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media',
+      method: 'GET',
+      family: 4,
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        'Accept': '*/*'
+      }
+    }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        if (res.statusCode !== 200) {
+          reject(new Error('Drive download failed (HTTP ' + res.statusCode + '): ' + buf.toString('utf8').slice(0, 300)));
+        } else {
+          resolve(buf);
+        }
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(180000, () => req.destroy(new Error('Drive download timeout after 180s')));
+    req.end();
+  }));
+}
+
+// ─── FIND FILE IN FOLDER ──────────────────────────────────────────────────────
+async function findFile(_drive, fileName) {
+  const q = `'${GDRIVE_FOLDER_ID}' in parents and name='${fileName}' and trashed=false`;
+  const data = await driveList(q);
+  const files = data.files;
   if (!files || files.length === 0) return null;
   return files[0];
 }
 
 // ─── DOWNLOAD FILE AS BUFFER ──────────────────────────────────────────────────
-async function downloadFileBuffer(drive, fileId) {
-  const res = await drive.files.get(
-    { fileId, alt: 'media' },
-    { responseType: 'arraybuffer' }
-  );
-  return Buffer.from(res.data);
+async function downloadFileBuffer(_drive, fileId) {
+  return driveDownload(fileId);
 }
 
 // ─── PARSE CSV FROM BUFFER ────────────────────────────────────────────────────
@@ -1128,13 +1179,13 @@ async function refreshData(force = false) {
       } else {
         console.warn('[Cache] STORES FILE NOT FOUND! Searched name: "' + STORES_FILE_NAME + '" in folder: ' + GDRIVE_FOLDER_ID);
         // List all files in folder for debugging
-        const allFiles = await drive.files.list({
-          q: `'${GDRIVE_FOLDER_ID}' in parents and trashed=false`,
-          fields: 'files(id,name,mimeType)',
-          pageSize: 20
-        });
+        const allFiles = await driveList(
+          `'${GDRIVE_FOLDER_ID}' in parents and trashed=false`,
+          'files(id,name,mimeType)',
+          20
+        );
         console.warn('[Cache] Files in folder:');
-        (allFiles.data.files || []).forEach(f => console.warn('  - "' + f.name + '" (type: ' + f.mimeType + ')'));
+        (allFiles.files || []).forEach(f => console.warn('  - "' + f.name + '" (type: ' + f.mimeType + ')'));
       }
     } catch (e) {
       console.warn('[Cache] Could not load stores file:', e.message);
