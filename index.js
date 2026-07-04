@@ -623,8 +623,12 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const activeSuppliers = new Set(enriched.map(r => r.supplierCode).filter(Boolean)).size;
   const totalPOValue = enriched.reduce((s, r) => s + r.poValue, 0);
   const totalTRFValue = enriched.reduce((s, r) => s + r.trfValue, 0);
-  const validWts = enriched.filter(r => r.wtsNet > 0 && r.wtsNet < 999 && r.onHand > 0);
-  const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
+  // Value-weighted Days Cover / Weeks-to-Sell (same formula used by Store & Supplier rollups)
+  //   daysCover = (totalValue × 7) / Σ(wkAveNet × avgCost)
+  //   avgWts    = daysCover / 7
+  const totalWklSalesValue = enriched.reduce((s, r) => s + (r.wkAveNet * r.avgCost), 0);
+  const daysCover = totalWklSalesValue > 0 ? (totalOnHandValue * 7) / totalWklSalesValue : 0;
+  const avgWts = daysCover > 0 ? daysCover / 7 : 0;
 
   const kpis = {
     totalOnHandValue,
@@ -646,6 +650,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     totalPOValue,
     totalTRFValue,
     avgWts,
+    daysCover,
     totalSKUs: enriched.length
   };
 
@@ -1301,8 +1306,10 @@ app.get('/api/kpis', (req, res) => {
   const blackInventoryValue = filtered.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
   const deadStockValue = filtered.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
   const totalLostSalesPerWeek = filtered.reduce((s, r) => s + r.lostSalesPerWeek, 0);
-  const validWts = filtered.filter(r => r.wtsNet > 0 && r.wtsNet < 999);
-  const avgWts = validWts.length > 0 ? validWts.reduce((s, r) => s + r.wtsNet, 0) / validWts.length : 0;
+  // Value-weighted: daysCover = (totalValue × 7) / Σ(wkAveNet × avgCost); avgWts = daysCover / 7
+  const totalWklSalesValue = filtered.reduce((s, r) => s + (r.wkAveNet * r.avgCost), 0);
+  const daysCover = totalWklSalesValue > 0 ? (totalOnHandValue * 7) / totalWklSalesValue : 0;
+  const avgWts = daysCover > 0 ? daysCover / 7 : 0;
   res.json({
     totalOnHandValue, totalOnHand, criticalCount, overstockCount, deadStockCount,
     agingCount, blackInventoryCount,
@@ -1313,6 +1320,7 @@ app.get('/api/kpis', (req, res) => {
     totalPOValue: filtered.reduce((s, r) => s + r.poValue, 0),
     totalTRFValue: filtered.reduce((s, r) => s + r.trfValue, 0),
     avgWts,
+    daysCover,
     totalSKUs: filtered.length
   });
 });
@@ -4295,7 +4303,7 @@ async function loadKPIs() {
   if (d.error) return;
   const grid = document.getElementById('kpi-grid');
   const wtsColor = d.avgWts < 4 ? 'red' : d.avgWts > 12 ? 'yellow' : 'green';
-  const daysCover = (d.avgWts || 0) * 7;
+  const daysCover = (d.daysCover != null ? d.daysCover : (d.avgWts || 0) * 7);
   grid.innerHTML = [
     // GREEN
     kpiCard('Total Inv Value', '₱' + fmtM(d.totalOnHandValue), 'w/ VAT', 'green'),
