@@ -1,5 +1,13 @@
 'use strict';
 
+// Force IPv4 for DNS resolution — many cloud containers have broken IPv6 egress,
+// which causes googleapis "Premature close" errors on the OAuth token endpoint.
+// This must run before any network-facing modules are required.
+const dns = require('dns');
+if (typeof dns.setDefaultResultOrder === 'function') {
+  dns.setDefaultResultOrder('ipv4first');
+}
+
 const express = require('express');
 const { google } = require('googleapis');
 const { parse } = require('csv-parse');
