@@ -965,6 +965,31 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
 }
 
+// Retry a network operation on transient errors (premature close, ECONNRESET, ETIMEDOUT, 5xx).
+async function retryNet(label, fn, maxAttempts = 3) {
+  let attempt = 0;
+  let lastErr;
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      const msg = (e && e.message) || '';
+      const code = (e && e.code) || '';
+      const status = e && e.response && e.response.status;
+      const transient = /premature close|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|socket hang up|network|EPIPE/i.test(msg)
+        || /ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EPIPE/i.test(code)
+        || (status && status >= 500 && status < 600);
+      if (!transient || attempt >= maxAttempts) throw e;
+      const wait = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.warn(`[Cache] ${label} failed (attempt ${attempt}/${maxAttempts}): ${msg}. Retrying in ${wait}ms...`);
+      await new Promise(r => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
+}
+
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
 async function refreshData(force = false) {
   if (cache.refreshing) {
@@ -982,7 +1007,7 @@ async function refreshData(force = false) {
     const drive = getDriveClient();
 
     // Find InvData.csv
-    const invFile = await findFile(drive, INV_FILE_NAME);
+    const invFile = await retryNet('findFile(' + INV_FILE_NAME + ')', () => findFile(drive, INV_FILE_NAME));
     if (!invFile) throw new Error(`${INV_FILE_NAME} not found in folder.`);
 
     const modifiedTime = invFile.modifiedTime;
@@ -997,7 +1022,7 @@ async function refreshData(force = false) {
     }
 
     console.log(`[Cache] Downloading ${INV_FILE_NAME} (${Math.round(fileSize / 1024 / 1024)}MB)...`);
-    const invBuffer = await downloadFileBuffer(drive, invFile.id);
+    const invBuffer = await retryNet('download(' + INV_FILE_NAME + ')', () => downloadFileBuffer(drive, invFile.id));
 
     const hash = crypto.createHash('md5').update(invBuffer).digest('hex');
     if (!force && cache.ready && cache.lastFileHash === hash) {
@@ -1015,10 +1040,10 @@ async function refreshData(force = false) {
     let top300 = [];
     try {
       console.log('[Cache] Looking for ' + STORES_FILE_NAME + ' in folder ' + GDRIVE_FOLDER_ID);
-      const storesFile = await findFile(drive, STORES_FILE_NAME);
+      const storesFile = await retryNet('findFile(' + STORES_FILE_NAME + ')', () => findFile(drive, STORES_FILE_NAME));
       if (storesFile) {
         console.log('[Cache] Found stores file ID: ' + storesFile.id + ', downloading...');
-        const storesBuffer = await downloadFileBuffer(drive, storesFile.id);
+        const storesBuffer = await retryNet('download(' + STORES_FILE_NAME + ')', () => downloadFileBuffer(drive, storesFile.id));
         storeMap = parseStoresXLSX(storesBuffer);
         usersMap = parseUsersXLSX(storesBuffer);
         catMap = parseCatCodeXLSX(storesBuffer);
