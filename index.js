@@ -640,6 +640,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
     const dateLastSold = row[COL.dateLastSold] || '';
     const dateLastReceived = row[COL.dateLastReceived] || '';
+    const dateLastOrdered = row[COL.dateLastOrdered] || '';
     const lastTransferIn = row[COL.lastTransferIn] || '';
     const lastTransferOut = row[COL.lastTransferOut] || '';
     const daysNoSales = daysSince(dateLastSold);
@@ -713,6 +714,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       delivMode: row[COL.delivMode] || '',
       dateLastSold,
       dateLastReceived,
+      dateLastOrdered,
       lastTransferIn,
       lastTransferOut,
       daysNoSales,
@@ -1741,6 +1743,7 @@ app.get('/api/rice-review', (req, res) => {
       stockStatus,
       incomingStatus: incoming.status,
       incomingQty: incoming.qty,
+      dateLastOrdered: formatDate(r.dateLastOrdered),
       action: recommendedAction(r, incoming, priority)
     };
   }).sort((a, b) => {
@@ -2038,6 +2041,7 @@ app.get('/api/skus', (req, res) => {
       ico: r.ico,
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
+      dateLastOrdered: formatDate(r.dateLastOrdered),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn),
@@ -2526,6 +2530,7 @@ app.get('/api/export/:type', async (req, res) => {
         stockStatus,
         incomingStatus: incoming.status,
         incomingQty: incoming.qty,
+        dateLastOrdered: formatDate(r.dateLastOrdered),
         action: recommendedAction(r, incoming, priority)
       };
     }).sort((a, b) => {
@@ -2544,6 +2549,7 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Stock Status', key: 'stockStatus' },
       { header: 'Incoming Status', key: 'incomingStatus' },
       { header: 'Incoming Qty', key: 'incomingQty', format: 'integer' },
+      { header: 'Date Last Ordered', key: 'dateLastOrdered', format: 'date' },
       { header: 'Recommended Action', key: 'action' }
     ];
     // Custom filename per spec (Rice_Stock_Review_YYYY-MM-DD.xlsx)
@@ -2631,6 +2637,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'ICO', key: 'ico', width: 8 },
     { header: 'PO On Order', key: 'poOrderGR', width: 14 },
     { header: 'Trf On Order', key: 'trfOrderGR', width: 14 },
+    { header: 'Date Last Ordered', key: 'dateLastOrdered', width: 16 },
     { header: 'Last Sold', key: 'dateLastSold', width: 14 },
     { header: 'Last Received', key: 'dateLastReceived', width: 14 },
     { header: 'Transfer In', key: 'lastTransferIn', width: 16 },
@@ -2691,6 +2698,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       ico: r.ico,
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
+      dateLastOrdered: formatDate(r.dateLastOrdered),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn),
@@ -4112,6 +4120,7 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('ico')">ICO <span class="sort-ind" data-key="ico"></span></th>
               <th onclick="sortSKUs('poOrderGR')">PO On Order <span class="sort-ind" data-key="poOrderGR"></span></th>
               <th onclick="sortSKUs('trfOrderGR')">Trf On Order <span class="sort-ind" data-key="trfOrderGR"></span></th>
+              <th onclick="sortSKUs('dateLastOrdered')">Date Last Ordered <span class="sort-ind" data-key="dateLastOrdered"></span></th>
               <th onclick="sortSKUs('dateLastSold')">Last Sold <span class="sort-ind" data-key="dateLastSold"></span></th>
               <th onclick="sortSKUs('dateLastReceived')">Last Received <span class="sort-ind" data-key="dateLastReceived"></span></th>
               <th onclick="sortSKUs('lastTransferIn')">Transfer In <span class="sort-ind" data-key="lastTransferIn"></span></th>
@@ -4228,12 +4237,12 @@ canvas { max-height:260px; }
               <th data-field="stockStatus" onclick="sortTable('rice-table',10)">Stock Status</th>
               <th data-field="incomingStatus" onclick="sortTable('rice-table',11)">Incoming</th>
               <th data-field="incomingQty" onclick="sortTable('rice-table',12)">Incoming Qty</th>
-              <th data-field="action" onclick="sortTable('rice-table',13)">Recommended Action</th>
+              <th data-field="dateLastOrdered" onclick="sortTable('rice-table',13)">Date Last Ordered</th>
+              <th data-field="action" onclick="sortTable('rice-table',14)">Recommended Action</th>
             </tr></thead>
             <tbody id="rice-body"></tbody>
           </table>
         </div>
-        <div class="pagination" id="rice-pagination"></div>
       </div>
     </div>
 
@@ -5213,7 +5222,21 @@ async function loadRiceReview() {
   renderRiceStoresChart(data.storesTop10);
   tableData.rice = data.items || [];
   document.getElementById('rice-count').textContent = fmt(tableData.rice.length);
-  renderTable('rice-body', tableData.rice, renderRiceRow, 'rice-pagination', 'rice', tablePages.rice);
+  renderRiceBody();
+}
+// Render the entire rice table body (no pagination — internal scroll handles overflow)
+function renderRiceBody() {
+  const tbody = document.getElementById('rice-body');
+  if (!tbody) return;
+  const q = (tableSearch.rice || '').toLowerCase().trim();
+  const cols = ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'];
+  const view = q
+    ? (tableData.rice || []).filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
+    : (tableData.rice || []);
+  document.getElementById('rice-count').textContent = fmt(view.length);
+  tbody.innerHTML = view.length === 0
+    ? '<tr><td colspan="15" class="empty">No data found</td></tr>'
+    : view.map(renderRiceRow).join('');
 }
 function resetRiceFilters() {
   const s = document.getElementById('rice-status-filter');
@@ -5347,6 +5370,7 @@ function renderRiceRow(r) {
     '<td><span class="' + statusClass + '">' + esc(r.stockStatus) + '</span></td>' +
     '<td>' + incomingBadge + '</td>' +
     '<td class="mono">' + fmt(r.incomingQty) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastOrdered || '—') + '</td>' +
     '<td style="font-size:12px;">' + esc(r.action) + '</td>' +
     '</tr>';
 }
@@ -5626,7 +5650,7 @@ async function loadSKUs(page) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="19" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="20" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -5657,6 +5681,7 @@ function renderSKUTable(rows) {
       '<td class="mono">' + esc(r.ico || '—') + '</td>' +
       '<td class="mono">' + fmt(r.poOrderGR) + '</td>' +
       '<td class="mono">' + fmt(r.trfOrderGR) + '</td>' +
+      '<td class="mono">' + esc(r.dateLastOrdered || '—') + '</td>' +
       '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
       '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
       '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
@@ -5720,6 +5745,7 @@ function renderTable(bodyId, data, rowFn, paginationId, key, page) {
 
 function renderPagination(id, current, total, key, data) {
   const cont = document.getElementById(id);
+  if (!cont) return; // pagination container is optional (e.g. Rice tab scrolls internally)
   if (total <= 1) { cont.innerHTML = '<span class="page-info">' + fmt(data.length) + ' rows</span>'; return; }
   let html = '<span class="page-info">' + fmt(data.length) + ' rows | Page ' + current + ' of ' + total + '</span>';
   html += '<button class="page-btn" data-key="' + key + '" data-page="1" onclick="pageBtnClick(this)">&laquo;</button>';
@@ -6013,6 +6039,8 @@ const tableKeyToId = {
 
 // Re-render a table from cached data, applying current search filter
 function renderFromCache(key) {
+  // Rice tab renders all rows at once (no pagination — internal scroll)
+  if (key === 'rice') { renderRiceBody(); return true; }
   const tableId = tableKeyToId[key];
   if (!tableId) return false;
   const cfg = getTableConfig(tableId);
@@ -6083,7 +6111,7 @@ function getTableConfig(tableId) {
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
       cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
-      cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','action'] }
+      cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] }
   };
   return configs[tableId];
 }
