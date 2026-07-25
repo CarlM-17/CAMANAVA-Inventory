@@ -3135,7 +3135,7 @@ a { color: var(--green-bright); }
 .content { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:20px; }
 
 /* NAV TABS */
-.tabs { display:flex; gap:2px; border-bottom:1px solid var(--border); padding-bottom:0; }
+.tabs { display:flex; flex-wrap:wrap; gap:2px; border-bottom:1px solid var(--border); padding-bottom:0; row-gap:0; }
 .tab {
   padding:8px 16px; font-size:13px; cursor:pointer;
   border-bottom:2px solid transparent; color:var(--text2);
@@ -4208,8 +4208,11 @@ canvas { max-height:260px; }
           <div class="section-title" style="font-size:14px;">Rice Stock Details
             <span class="badge badge-red" id="rice-count" style="margin-left:8px;">0</span>
           </div>
+          <div class="section-actions">
+            <button class="btn btn-sm" onclick="exportRiceReview()" id="rice-details-export-btn">⬇ Export to Excel</button>
+          </div>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap" style="max-height:520px;overflow:auto;">
           <table id="rice-table">
             <thead><tr>
               <th data-field="priority" onclick="sortTable('rice-table',0)">Priority</th>
