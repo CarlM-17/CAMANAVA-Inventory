@@ -2144,6 +2144,51 @@ app.get('/api/categories', (req, res) => {
   res.json(Object.values(catGroups).sort((a, b) => b.totalValue - a.totalValue));
 });
 
+// Per-store aggregation for Black Inventory, Aging, Overstock — powers the
+// "Problem Inventory by Store" section on the Overview tab.
+app.get('/api/overview-store-issues', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const rows = applyFilters(cache.rows, filters);
+  const groups = {};
+  for (const r of rows) {
+    if (!r.isBlackInventory && !r.isAging && !r.isOverstock) continue;
+    const key = r.storeNumber;
+    if (!groups[key]) {
+      groups[key] = {
+        storeNumber: r.storeNumber, storeName: r.storeName, area: r.area,
+        blackCount: 0, blackOnHand: 0, blackValue: 0,
+        agingCount: 0, agingOnHand: 0, agingValue: 0,
+        overstockCount: 0, overstockOnHand: 0, overstockValue: 0
+      };
+    }
+    const g = groups[key];
+    if (r.isBlackInventory) { g.blackCount++; g.blackOnHand += r.onHand; g.blackValue += r.onHandValue; }
+    if (r.isAging)          { g.agingCount++; g.agingOnHand += r.onHand; g.agingValue += r.onHandValue; }
+    if (r.isOverstock)      { g.overstockCount++; g.overstockOnHand += r.onHand; g.overstockValue += r.onHandValue; }
+  }
+  const stores = Object.values(groups).map(g => {
+    g.totalProblemValue = g.blackValue + g.agingValue + g.overstockValue;
+    g.totalProblemOnHand = g.blackOnHand + g.agingOnHand + g.overstockOnHand;
+    return g;
+  }).sort((a, b) => b.totalProblemValue - a.totalProblemValue);
+
+  // Global totals across the filtered scope
+  const totals = {
+    blackCount: stores.reduce((s, g) => s + g.blackCount, 0),
+    blackOnHand: stores.reduce((s, g) => s + g.blackOnHand, 0),
+    blackValue: stores.reduce((s, g) => s + g.blackValue, 0),
+    agingCount: stores.reduce((s, g) => s + g.agingCount, 0),
+    agingOnHand: stores.reduce((s, g) => s + g.agingOnHand, 0),
+    agingValue: stores.reduce((s, g) => s + g.agingValue, 0),
+    overstockCount: stores.reduce((s, g) => s + g.overstockCount, 0),
+    overstockOnHand: stores.reduce((s, g) => s + g.overstockOnHand, 0),
+    overstockValue: stores.reduce((s, g) => s + g.overstockValue, 0),
+    affectedStores: stores.length
+  };
+  res.json({ stores, totals });
+});
+
 app.post('/api/refresh', async (req, res) => {
   refreshData(true);
   res.json({ message: 'Refresh triggered' });
@@ -2492,6 +2537,42 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'OOS', key: 'oosCount', format: 'integer' },
       { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
       { header: 'Dead', key: 'deadCount', format: 'integer' }
+    ];
+  }
+  else if (type === 'problem-inv') {
+    sheetName = 'Problem Inventory by Store';
+    title = 'Problem Inventory by Store — Black Inv, Aging, Overstock';
+    const groups = {};
+    for (const r of baseRows) {
+      if (!r.isBlackInventory && !r.isAging && !r.isOverstock) continue;
+      const key = r.storeNumber;
+      if (!groups[key]) groups[key] = {
+        storeNumber: r.storeNumber, storeName: r.storeName, area: r.area,
+        blackCount: 0, blackOnHand: 0, blackValue: 0,
+        agingCount: 0, agingOnHand: 0, agingValue: 0,
+        overstockCount: 0, overstockOnHand: 0, overstockValue: 0
+      };
+      const g = groups[key];
+      if (r.isBlackInventory) { g.blackCount++; g.blackOnHand += r.onHand; g.blackValue += r.onHandValue; }
+      if (r.isAging)          { g.agingCount++; g.agingOnHand += r.onHand; g.agingValue += r.onHandValue; }
+      if (r.isOverstock)      { g.overstockCount++; g.overstockOnHand += r.onHand; g.overstockValue += r.onHandValue; }
+    }
+    data = Object.values(groups).map(g => {
+      g.totalProblemValue = g.blackValue + g.agingValue + g.overstockValue;
+      return g;
+    }).sort((a, b) => b.totalProblemValue - a.totalProblemValue);
+    columns = [
+      { header: 'Store #', key: 'storeNumber' }, { header: 'Store Name', key: 'storeName' }, { header: 'Area', key: 'area' },
+      { header: 'Black Inv SKUs', key: 'blackCount', format: 'integer' },
+      { header: 'Black Inv On Hand', key: 'blackOnHand', format: 'integer' },
+      { header: 'Black Inv Value', key: 'blackValue', format: 'currency' },
+      { header: 'Aging SKUs', key: 'agingCount', format: 'integer' },
+      { header: 'Aging On Hand', key: 'agingOnHand', format: 'integer' },
+      { header: 'Aging Value', key: 'agingValue', format: 'currency' },
+      { header: 'Overstock SKUs', key: 'overstockCount', format: 'integer' },
+      { header: 'Overstock On Hand', key: 'overstockOnHand', format: 'integer' },
+      { header: 'Overstock Value', key: 'overstockValue', format: 'currency' },
+      { header: 'Total Problem Value', key: 'totalProblemValue', format: 'currency' }
     ];
   }
   else if (type === 'rice') {
@@ -3679,6 +3760,56 @@ canvas { max-height:260px; }
           <canvas id="chart-risk"></canvas>
         </div>
       </div>
+
+      <!-- STORE-LEVEL PROBLEM INVENTORY (Black Inv, Aging, Overstock) -->
+      <div class="section" style="margin-top:4px;">
+        <div class="section-header">
+          <div class="section-title">🏪 Problem Inventory by Store
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;">On-Hand qty and Inventory Value across Black Inventory, Aging, and Overstock</span>
+          </div>
+          <div class="section-actions">
+            <button class="btn btn-sm" onclick="exportProblemInventory()" id="problem-inv-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <!-- Summary KPI strip -->
+        <div class="kpi-grid" id="problem-inv-kpis" style="margin-bottom:12px;"></div>
+        <!-- Three side-by-side charts -->
+        <div class="summary-grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:12px;">
+          <div class="summary-card">
+            <div class="summary-card-title" style="color:#f85149;">⬛ Black Inventory — Top 10 Stores by Value</div>
+            <div class="summary-card-body" id="problem-blackinv-chart" style="min-height:260px;"></div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card-title" style="color:#e3b341;">📅 Aging — Top 10 Stores by Value</div>
+            <div class="summary-card-body" id="problem-aging-chart" style="min-height:260px;"></div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card-title" style="color:#d29922;">📦 Overstock — Top 10 Stores by Value</div>
+            <div class="summary-card-body" id="problem-overstock-chart" style="min-height:260px;"></div>
+          </div>
+        </div>
+        <!-- Combined table: per-store breakdown -->
+        <div class="table-wrap" style="max-height:520px;overflow:auto;">
+          <table id="problem-inv-table">
+            <thead><tr>
+              <th data-field="storeNumber" onclick="sortTable('problem-inv-table',0)">Store #</th>
+              <th data-field="storeName" onclick="sortTable('problem-inv-table',1)">Store Name</th>
+              <th data-field="area" onclick="sortTable('problem-inv-table',2)">Area</th>
+              <th data-field="blackCount" onclick="sortTable('problem-inv-table',3)" style="color:#f85149;">Black Inv SKUs</th>
+              <th data-field="blackOnHand" onclick="sortTable('problem-inv-table',4)" style="color:#f85149;">Black Inv On Hand</th>
+              <th data-field="blackValue" onclick="sortTable('problem-inv-table',5)" style="color:#f85149;">Black Inv Value</th>
+              <th data-field="agingCount" onclick="sortTable('problem-inv-table',6)" style="color:#e3b341;">Aging SKUs</th>
+              <th data-field="agingOnHand" onclick="sortTable('problem-inv-table',7)" style="color:#e3b341;">Aging On Hand</th>
+              <th data-field="agingValue" onclick="sortTable('problem-inv-table',8)" style="color:#e3b341;">Aging Value</th>
+              <th data-field="overstockCount" onclick="sortTable('problem-inv-table',9)" style="color:#d29922;">Overstock SKUs</th>
+              <th data-field="overstockOnHand" onclick="sortTable('problem-inv-table',10)" style="color:#d29922;">Overstock On Hand</th>
+              <th data-field="overstockValue" onclick="sortTable('problem-inv-table',11)" style="color:#d29922;">Overstock Value</th>
+              <th data-field="totalProblemValue" onclick="sortTable('problem-inv-table',12)">Total Problem Value</th>
+            </tr></thead>
+            <tbody id="problem-inv-body"></tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <!-- CRITICAL TAB -->
@@ -4284,7 +4415,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -5053,7 +5184,7 @@ function sortTop300Perf(colIndex) {
 
 // ─── TABLE LOADING ────────────────────────────────────────────────────────────
 async function loadTabData() {
-  if (activeTab === 'overview') { await loadCharts(); await loadRiskMatrix(); await loadTop300Performance(); return; }
+  if (activeTab === 'overview') { await loadCharts(); await loadRiskMatrix(); await loadTop300Performance(); await loadProblemInventory(); return; }
   if (activeTab === 'critical') await loadCritical();
   if (activeTab === 'overstock') await loadOverstock();
   if (activeTab === 'aging') await loadAging();
@@ -5224,6 +5355,96 @@ async function loadRiceReview() {
   document.getElementById('rice-count').textContent = fmt(tableData.rice.length);
   renderRiceBody();
 }
+// ─── PROBLEM INVENTORY BY STORE (Overview tab) ────────────────────────────────
+let problemInvData = null;
+async function loadProblemInventory() {
+  const r = await fetch('/api/overview-store-issues' + filterQuery());
+  const data = await r.json();
+  if (data.error) return;
+  problemInvData = data;
+  renderProblemInvKPIs(data.totals);
+  renderProblemChart('problem-blackinv-chart', data.stores, 'blackValue', '#f85149');
+  renderProblemChart('problem-aging-chart', data.stores, 'agingValue', '#e3b341');
+  renderProblemChart('problem-overstock-chart', data.stores, 'overstockValue', '#d29922');
+  tableData.problemInv = data.stores || [];
+  renderProblemInvBody();
+}
+function renderProblemInvKPIs(t) {
+  const grid = document.getElementById('problem-inv-kpis');
+  if (!grid || !t) return;
+  grid.innerHTML = [
+    kpiCard('Affected Stores', fmt(t.affectedStores), 'w/ any problem inv', 'blue'),
+    kpiCard('Black Inv Value', '₱' + fmtM(t.blackValue), fmt(t.blackCount) + ' SKUs • ' + fmt(t.blackOnHand) + ' units', 'red'),
+    kpiCard('Aging Value', '₱' + fmtM(t.agingValue), fmt(t.agingCount) + ' SKUs • ' + fmt(t.agingOnHand) + ' units', 'yellow'),
+    kpiCard('Overstock Value', '₱' + fmtM(t.overstockValue), fmt(t.overstockCount) + ' SKUs • ' + fmt(t.overstockOnHand) + ' units', 'yellow'),
+    kpiCard('Total Problem Value', '₱' + fmtM((t.blackValue || 0) + (t.agingValue || 0) + (t.overstockValue || 0)), 'inv at risk', 'red'),
+    kpiCard('Total Problem On Hand', fmt((t.blackOnHand || 0) + (t.agingOnHand || 0) + (t.overstockOnHand || 0)), 'units', 'yellow')
+  ].join('');
+}
+function renderProblemChart(elId, stores, field, color) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  const filtered = (stores || []).filter(s => (s[field] || 0) > 0)
+                                 .sort((a, b) => (b[field] || 0) - (a[field] || 0))
+                                 .slice(0, 10);
+  if (filtered.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--text2);">No data</div>'; return; }
+  const max = Math.max(...filtered.map(s => s[field] || 0));
+  const rows = filtered.map(s => {
+    const val = s[field] || 0;
+    const w = max > 0 ? (val / max) * 100 : 0;
+    const label = s.storeNumber + ' - ' + s.storeName;
+    return '<div style="display:grid;grid-template-columns:160px 1fr 80px;gap:8px;align-items:center;padding:3px 0;font-size:11px;">' +
+      '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(label) + '">' + esc(label) + '</div>' +
+      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:3px;overflow:hidden;">' +
+        '<div style="width:' + w.toFixed(2) + '%;background:' + color + ';height:100%;"></div>' +
+      '</div>' +
+      '<div style="text-align:right;color:var(--text1);font-weight:600;">₱' + fmtM(val) + '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML = '<div style="padding:8px;">' + rows + '</div>';
+}
+function renderProblemInvRow(r) {
+  const cell = (n) => '<td class="mono">' + fmt(n || 0) + '</td>';
+  const money = (n, col) => '<td class="mono"' + (col ? ' style="color:' + col + ';font-weight:600;"' : '') + '>₱' + fmtN(n || 0) + '</td>';
+  return '<tr>' +
+    '<td class="mono" style="font-weight:600;">' + esc(r.storeNumber) + '</td>' +
+    '<td>' + esc(r.storeName) + '</td>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    cell(r.blackCount) +
+    cell(r.blackOnHand) +
+    money(r.blackValue, '#f85149') +
+    cell(r.agingCount) +
+    cell(r.agingOnHand) +
+    money(r.agingValue, '#e3b341') +
+    cell(r.overstockCount) +
+    cell(r.overstockOnHand) +
+    money(r.overstockValue, '#d29922') +
+    money(r.totalProblemValue, 'var(--red-light)') +
+    '</tr>';
+}
+function renderProblemInvBody() {
+  const tbody = document.getElementById('problem-inv-body');
+  if (!tbody) return;
+  const data = tableData.problemInv || [];
+  tbody.innerHTML = data.length === 0
+    ? '<tr><td colspan="13" class="empty">No problem inventory in this scope</td></tr>'
+    : data.map(renderProblemInvRow).join('');
+}
+async function exportProblemInventory() {
+  const btn = document.getElementById('problem-inv-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const params = new URLSearchParams(activeFilters);
+    if (authToken) params.set('token', authToken);
+    const url = '/api/export/problem-inv?' + params.toString();
+    const a = document.createElement('a');
+    a.href = url; a.download = '';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  } catch (e) { alert('Export failed: ' + e.message); }
+  finally { setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800); }
+}
+
 // Render the entire rice table body (no pagination — internal scroll handles overflow)
 function renderRiceBody() {
   const tbody = document.getElementById('rice-body');
@@ -6034,13 +6255,15 @@ const tableKeyToId = {
   stores: 'stores-table',
   suppliers: 'suppliers-table',
   top300: 'top300-table',
-  rice: 'rice-table'
+  rice: 'rice-table',
+  problemInv: 'problem-inv-table'
 };
 
 // Re-render a table from cached data, applying current search filter
 function renderFromCache(key) {
-  // Rice tab renders all rows at once (no pagination — internal scroll)
+  // Tabs that render all rows at once (no pagination — internal scroll)
   if (key === 'rice') { renderRiceBody(); return true; }
+  if (key === 'problemInv') { renderProblemInvBody(); return true; }
   const tableId = tableKeyToId[key];
   if (!tableId) return false;
   const cfg = getTableConfig(tableId);
@@ -6111,7 +6334,9 @@ function getTableConfig(tableId) {
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
       cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
-      cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] }
+      cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] },
+    'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
+      cols: ['storeNumber','storeName','area','blackCount','blackOnHand','blackValue','agingCount','agingOnHand','agingValue','overstockCount','overstockOnHand','overstockValue','totalProblemValue'] }
   };
   return configs[tableId];
 }
