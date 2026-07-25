@@ -1621,6 +1621,176 @@ app.get('/api/negativeskus', (req, res) => {
   res.json(filtered);
 });
 
+// ─── RICE STOCK REVIEW ────────────────────────────────────────────────────────
+// Filters rows to Sub-Department = "Rice" (case-insensitive, trimmed).
+// Returns pre-computed KPIs, status breakdown, top-10 affected stores, and item detail.
+function isRice(r) {
+  return String(r.subDeptName || '').trim().toLowerCase() === 'rice';
+}
+// Build a fast SKU → first UPC lookup once, cached on first use per refresh cycle.
+let _skuUpcCache = { hash: null, map: null };
+function getSkuUpcMap() {
+  const upcMap = cache.upcMap || {};
+  const currentHash = Object.keys(upcMap).length + ':' + cache.lastRefresh;
+  if (_skuUpcCache.hash === currentHash && _skuUpcCache.map) return _skuUpcCache.map;
+  const skuToUpc = {};
+  for (const upc in upcMap) {
+    const sku = (upcMap[upc] && upcMap[upc].sku) || '';
+    if (sku && !skuToUpc[sku]) skuToUpc[sku] = upc;
+  }
+  _skuUpcCache = { hash: currentHash, map: skuToUpc };
+  return skuToUpc;
+}
+// Classify incoming delivery based on available fields (PO / Transfer on order).
+// Dataset lacks explicit Expected Delivery Date and PO Number — we detect this
+// and mark date/PO fields as unavailable.
+function classifyIncoming(r) {
+  const poQty = Number(r.poOrderGR || 0);
+  const trfQty = Number(r.trfOrderGR || 0);
+  const totalIncoming = poQty + trfQty;
+  if (totalIncoming > 0) return { status: 'Confirmed', qty: totalIncoming };
+  return { status: 'No Incoming Delivery', qty: 0 };
+}
+// Simplified 3-tier priority (dataset has no Expected Date → no Overdue detection).
+function classifyPriority(r, incoming) {
+  const hasIncoming = incoming.qty > 0;
+  if (r.isOutOfStock && !hasIncoming) return 1; // Immediate Action
+  if (r.isCritical && !hasIncoming) return 2;   // Urgent Follow-Up
+  if ((r.isOutOfStock || r.isCritical) && hasIncoming) return 3; // Monitor Delivery
+  return 0; // Not affected
+}
+function recommendedAction(r, incoming, priority) {
+  if (priority === 1) return 'Emergency replenishment / follow up supplier';
+  if (priority === 2) return 'Follow up supplier / check nearby stores for transfer';
+  if (priority === 3) return 'Monitor incoming delivery';
+  if (r.isOverstock) return 'Review ordering level';
+  return 'Monitor';
+}
+
+app.get('/api/rice-review', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const status = (req.query.status || '').toString().toLowerCase();
+
+  // Pre-filter to Rice, then apply the shared filter helper.
+  const riceRows = cache.rows.filter(isRice);
+  let filtered = applyFilters(riceRows, filters);
+
+  // Additional status filter (optional): oos | critical | overstock | normal | affected
+  if (status === 'oos') filtered = filtered.filter(r => r.isOutOfStock);
+  else if (status === 'critical') filtered = filtered.filter(r => r.isCritical);
+  else if (status === 'overstock') filtered = filtered.filter(r => r.isOverstock);
+  else if (status === 'affected') filtered = filtered.filter(r => r.isOutOfStock || r.isCritical);
+  else if (status === 'normal') filtered = filtered.filter(r => !r.isOutOfStock && !r.isCritical && !r.isOverstock);
+
+  const skuUpc = getSkuUpcMap();
+
+  // ── KPIs ────────────────────────────────────────────────────────────────
+  const totalItems = filtered.length;
+  const oosCount = filtered.filter(r => r.isOutOfStock).length;
+  const criticalCount = filtered.filter(r => r.isCritical).length;
+  const affectedRows = filtered.filter(r => r.isOutOfStock || r.isCritical);
+  const affectedStores = new Set(affectedRows.map(r => r.storeNumber)).size;
+  const withIncoming = affectedRows.filter(r => classifyIncoming(r).qty > 0).length;
+  const noIncoming = affectedRows.length - withIncoming;
+
+  // ── STATUS BREAKDOWN (Chart 1) ──────────────────────────────────────────
+  const statusBreakdown = [
+    { label: 'Out of Stock', count: oosCount },
+    { label: 'Critical', count: criticalCount },
+    { label: 'Overstock', count: filtered.filter(r => r.isOverstock).length },
+    { label: 'Normal', count: filtered.filter(r => !r.isOutOfStock && !r.isCritical && !r.isOverstock).length }
+  ];
+
+  // ── AFFECTED BY STORE (Chart 2, top 10) ─────────────────────────────────
+  const storeAgg = {};
+  for (const r of affectedRows) {
+    const key = r.storeNumber + ' - ' + r.storeName;
+    if (!storeAgg[key]) storeAgg[key] = { store: key, oos: 0, critical: 0 };
+    if (r.isOutOfStock) storeAgg[key].oos++;
+    if (r.isCritical) storeAgg[key].critical++;
+  }
+  const storesTop10 = Object.values(storeAgg)
+    .sort((a, b) => (b.oos + b.critical) - (a.oos + a.critical))
+    .slice(0, 10);
+
+  // ── ITEMS (default: only affected, so table stays focused) ──────────────
+  // If a status filter is applied we return that filtered set; otherwise
+  // we default to affected items (spec: "primarily show Out-of-Stock and Critical").
+  const itemsSource = status ? filtered : affectedRows;
+  const items = itemsSource.map(r => {
+    const incoming = classifyIncoming(r);
+    const priority = classifyPriority(r, incoming);
+    let stockStatus = 'Normal';
+    if (r.isOutOfStock) stockStatus = 'OOS';
+    else if (r.isCritical) stockStatus = 'Critical';
+    else if (r.isOverstock) stockStatus = 'Overstock';
+    return {
+      priority,
+      area: r.area,
+      store: r.storeNumber + ' - ' + r.storeName,
+      storeNumber: r.storeNumber,
+      skuCode: r.skuCode,
+      upc: skuUpc[r.skuCode] || '',
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      onHand: r.onHand,
+      avgDailySales: r.p8ave > 0 ? +(r.p8ave / 7).toFixed(2) : 0,
+      p8ave: r.p8ave,
+      daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      stockStatus,
+      incomingStatus: incoming.status,
+      incomingQty: incoming.qty,
+      action: recommendedAction(r, incoming, priority)
+    };
+  }).sort((a, b) => {
+    // Default sort per spec: P1 → P2 → P3, then Avg Daily Sales desc, store, desc
+    if (a.priority !== b.priority) {
+      // Priority 0 goes last
+      const ap = a.priority === 0 ? 99 : a.priority;
+      const bp = b.priority === 0 ? 99 : b.priority;
+      return ap - bp;
+    }
+    if (b.avgDailySales !== a.avgDailySales) return b.avgDailySales - a.avgDailySales;
+    if (a.store !== b.store) return String(a.store).localeCompare(String(b.store));
+    return String(a.skuDesc).localeCompare(String(b.skuDesc));
+  });
+
+  // ── ALERT MESSAGE (dynamic priority) ────────────────────────────────────
+  let alert = '';
+  if (oosCount === 0 && criticalCount === 0) {
+    alert = 'No Rice items are currently Out of Stock or Critical. Stock levels are healthy.';
+  } else {
+    const parts = [];
+    parts.push(oosCount + ' Rice ' + (oosCount === 1 ? 'item is' : 'items are') + ' Out of Stock');
+    if (criticalCount > 0) parts.push(criticalCount + ' Critical');
+    const combined = oosCount + criticalCount;
+    if (noIncoming > 0) {
+      alert = 'Immediate Action Required: ' + combined + ' Rice items are Out of Stock or Critical, and ' + noIncoming + ' have no recorded incoming delivery.';
+    } else {
+      alert = combined + ' Rice items are Out of Stock or Critical. All have incoming delivery recorded — monitor arrivals.';
+    }
+  }
+
+  // Detect whether incoming-delivery info is available at all in this dataset
+  const hasIncomingData = riceRows.some(r => Number(r.poOrderGR || 0) > 0 || Number(r.trfOrderGR || 0) > 0);
+
+  res.json({
+    kpis: { totalItems, oosCount, criticalCount, affectedStores, withIncoming, noIncoming },
+    statusBreakdown,
+    storesTop10,
+    items,
+    alert,
+    dataAvailability: {
+      hasIncomingQty: true,
+      hasIncomingData,
+      hasExpectedDate: false,
+      hasPONumber: false,
+      note: 'Expected Delivery Date and PO Number fields are not available in the current data source. Overdue detection is therefore unavailable.'
+    }
+  });
+});
+
 // Top 300 SKUs — joined with InvData via storeNumber + skuCode
 app.get('/api/top300skus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
@@ -2319,6 +2489,68 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
       { header: 'Dead', key: 'deadCount', format: 'integer' }
     ];
+  }
+  else if (type === 'rice') {
+    sheetName = 'Rice Stock Review';
+    title = 'Rice Stock Review — CAMANAVA Inventory';
+    const status = (req.query.status || '').toString().toLowerCase();
+    const skuUpc = getSkuUpcMap();
+    let rice = baseRows.filter(isRice);
+    if (status === 'oos') rice = rice.filter(r => r.isOutOfStock);
+    else if (status === 'critical') rice = rice.filter(r => r.isCritical);
+    else if (status === 'overstock') rice = rice.filter(r => r.isOverstock);
+    else if (status === 'affected') rice = rice.filter(r => r.isOutOfStock || r.isCritical);
+    else if (status === 'normal') rice = rice.filter(r => !r.isOutOfStock && !r.isCritical && !r.isOverstock);
+    // Default (no status): affected items only, matching the on-screen default
+    const source = status ? rice : rice.filter(r => r.isOutOfStock || r.isCritical);
+    data = source.map(r => {
+      const incoming = classifyIncoming(r);
+      const priority = classifyPriority(r, incoming);
+      let stockStatus = 'Normal';
+      if (r.isOutOfStock) stockStatus = 'OOS';
+      else if (r.isCritical) stockStatus = 'Critical';
+      else if (r.isOverstock) stockStatus = 'Overstock';
+      const priorityLabel = priority === 1 ? 'P1 · Immediate Action'
+        : priority === 2 ? 'P2 · Urgent Follow-Up'
+        : priority === 3 ? 'P3 · Monitor Delivery'
+        : '—';
+      return {
+        priority: priorityLabel,
+        area: r.area,
+        store: r.storeNumber + ' - ' + r.storeName,
+        skuCode: r.skuCode,
+        upc: skuUpc[r.skuCode] || '',
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        onHand: r.onHand,
+        stockStatus,
+        incomingStatus: incoming.status,
+        incomingQty: incoming.qty,
+        action: recommendedAction(r, incoming, priority)
+      };
+    }).sort((a, b) => {
+      // Same priority ordering as the on-screen table
+      const pa = a.priority.startsWith('P') ? parseInt(a.priority[1]) : 99;
+      const pb = b.priority.startsWith('P') ? parseInt(b.priority[1]) : 99;
+      if (pa !== pb) return pa - pb;
+      if (a.store !== b.store) return String(a.store).localeCompare(String(b.store));
+      return String(a.skuDesc).localeCompare(String(b.skuDesc));
+    });
+    columns = [
+      { header: 'Priority', key: 'priority' }, { header: 'Area', key: 'area' }, { header: 'Store', key: 'store' },
+      { header: 'SKU', key: 'skuCode' }, { header: 'UPC', key: 'upc' }, { header: 'Description', key: 'skuDesc' },
+      { header: 'Supplier', key: 'supplier' },
+      { header: 'On Hand', key: 'onHand', format: 'integer' },
+      { header: 'Stock Status', key: 'stockStatus' },
+      { header: 'Incoming Status', key: 'incomingStatus' },
+      { header: 'Incoming Qty', key: 'incomingQty', format: 'integer' },
+      { header: 'Recommended Action', key: 'action' }
+    ];
+    // Custom filename per spec (Rice_Stock_Review_YYYY-MM-DD.xlsx)
+    const filename = 'Rice_Stock_Review_' + today + '.xlsx';
+    data = applyTableSearch(data, search);
+    if (!data || data.length === 0) return res.status(204).send('No data');
+    return writeStyledWorkbook(res, { sheetName, title, columns, rows: data, filename });
   }
   else {
     return res.status(404).send('Unknown export type');
@@ -3344,6 +3576,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
       <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU</div>
+      <div class="tab" onclick="showTab('ricereview')">🌾 Rice Stock Review</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
 
@@ -3932,6 +4165,75 @@ canvas { max-height:260px; }
       </div>
     </div>
 
+    <!-- RICE STOCK REVIEW TAB -->
+    <div id="tab-ricereview" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">🌾 Rice Stock Review
+            <span style="font-size:11px;color:var(--text2);margin-left:8px;font-weight:normal;">Sub-Department = Rice</span>
+          </div>
+          <div class="section-actions">
+            <select id="rice-status-filter" class="table-search" style="max-width:180px;" onchange="loadRiceReview()">
+              <option value="">All Statuses</option>
+              <option value="affected">Affected (OOS + Critical)</option>
+              <option value="oos">Out of Stock only</option>
+              <option value="critical">Critical only</option>
+              <option value="overstock">Overstock only</option>
+              <option value="normal">Normal only</option>
+            </select>
+            <input type="text" class="table-search" id="rice-search-input" placeholder="Search SKU/UPC/Description..." oninput="searchTable('rice-table',this.value)"/>
+            <button class="btn btn-sm" onclick="resetRiceFilters()">↺ Reset</button>
+            <button class="btn btn-sm" onclick="exportRiceReview()" id="rice-export-btn">⬇ Export Rice Stock Review</button>
+          </div>
+        </div>
+        <!-- KPI Cards -->
+        <div class="kpi-grid" id="rice-kpi-grid" style="margin-bottom:12px;"></div>
+        <!-- Management Alert -->
+        <div id="rice-alert" style="margin-bottom:12px;"></div>
+        <!-- Data-availability note -->
+        <div id="rice-data-note" style="margin-bottom:12px;"></div>
+        <!-- Two charts side by side -->
+        <div class="summary-grid" style="margin-bottom:12px;">
+          <div class="summary-card">
+            <div class="summary-card-title">Rice Stock Status</div>
+            <div class="summary-card-body" id="rice-status-chart" style="min-height:260px;"></div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card-title">Out-of-Stock and Critical Rice Items by Store (Top 10)</div>
+            <div class="summary-card-body" id="rice-stores-chart" style="min-height:260px;"></div>
+          </div>
+        </div>
+        <!-- Detail table -->
+        <div class="section-header">
+          <div class="section-title" style="font-size:14px;">Rice Stock Details
+            <span class="badge badge-red" id="rice-count" style="margin-left:8px;">0</span>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="rice-table">
+            <thead><tr>
+              <th data-field="priority" onclick="sortTable('rice-table',0)">Priority</th>
+              <th data-field="area" onclick="sortTable('rice-table',1)">Area</th>
+              <th data-field="store" onclick="sortTable('rice-table',2)">Store</th>
+              <th data-field="skuCode" onclick="sortTable('rice-table',3)">SKU</th>
+              <th data-field="upc" onclick="sortTable('rice-table',4)">UPC</th>
+              <th data-field="skuDesc" onclick="sortTable('rice-table',5)">Description</th>
+              <th data-field="supplier" onclick="sortTable('rice-table',6)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('rice-table',7)">On Hand</th>
+              <th data-field="avgDailySales" onclick="sortTable('rice-table',8)">Avg Daily Sales</th>
+              <th data-field="daysCover" onclick="sortTable('rice-table',9)">Days Cover</th>
+              <th data-field="stockStatus" onclick="sortTable('rice-table',10)">Stock Status</th>
+              <th data-field="incomingStatus" onclick="sortTable('rice-table',11)">Incoming</th>
+              <th data-field="incomingQty" onclick="sortTable('rice-table',12)">Incoming Qty</th>
+              <th data-field="action" onclick="sortTable('rice-table',13)">Recommended Action</th>
+            </tr></thead>
+            <tbody id="rice-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="rice-pagination"></div>
+      </div>
+    </div>
+
     <!-- ACTIVITY LOG TAB (admin only) -->
     <div id="tab-logs" style="display:none;">
       <div class="section">
@@ -3970,7 +4272,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -4751,6 +5053,7 @@ async function loadTabData() {
   if (activeTab === 'suppliers') await loadSuppliers();
   if (activeTab === 'skus') await loadSKUs(1);
   if (activeTab === 'top300') await loadTop300();
+  if (activeTab === 'ricereview') await loadRiceReview();
   if (activeTab === 'logs') await loadLogs();
 }
 
@@ -4887,6 +5190,187 @@ async function loadTop300() {
                        '</span> &nbsp;|&nbsp; <span class="tp-label">Total Incoming PO:</span> <span class="tp-value">' + fmt(tIncomingPO) + '</span>';
   }
   renderTable('top300-body', data, renderTop300Row, 'top300-pagination', 'top300', tablePages.top300);
+}
+
+// ─── RICE STOCK REVIEW ────────────────────────────────────────────────────────
+let riceData = null;
+async function loadRiceReview() {
+  const statusEl = document.getElementById('rice-status-filter');
+  const status = statusEl ? statusEl.value : '';
+  const q = filterQuery();
+  const url = '/api/rice-review' + q + (q.includes('?') ? '&' : '?') + 'status=' + encodeURIComponent(status);
+  const r = await fetch(url);
+  const data = await r.json();
+  if (data.error) { alert('Rice Review: ' + data.error); return; }
+  riceData = data;
+  renderRiceKPIs(data.kpis);
+  renderRiceAlert(data.alert);
+  renderRiceDataNote(data.dataAvailability);
+  renderRiceStatusChart(data.statusBreakdown);
+  renderRiceStoresChart(data.storesTop10);
+  tableData.rice = data.items || [];
+  document.getElementById('rice-count').textContent = fmt(tableData.rice.length);
+  renderTable('rice-body', tableData.rice, renderRiceRow, 'rice-pagination', 'rice', tablePages.rice);
+}
+function resetRiceFilters() {
+  const s = document.getElementById('rice-status-filter');
+  if (s) s.value = '';
+  const inp = document.getElementById('rice-search-input');
+  if (inp) inp.value = '';
+  tableSearch.rice = '';
+  loadRiceReview();
+}
+function renderRiceKPIs(k) {
+  const grid = document.getElementById('rice-kpi-grid');
+  if (!grid || !k) return;
+  grid.innerHTML = [
+    kpiCard('Total Rice Items', fmt(k.totalItems), 'unique SKU × store', 'blue'),
+    kpiCard('Out of Stock', fmt(k.oosCount), 'Rice SKUs', 'red'),
+    kpiCard('Critical Stock', fmt(k.criticalCount), 'WTS < 2 wks', 'red'),
+    kpiCard('Affected Stores', fmt(k.affectedStores), 'stores w/ OOS or Critical', 'yellow'),
+    kpiCard('With Incoming Delivery', fmt(k.withIncoming), 'affected items', 'green'),
+    kpiCard('No Incoming Delivery', fmt(k.noIncoming), 'affected items', 'red')
+  ].join('');
+}
+function renderRiceAlert(msg) {
+  const el = document.getElementById('rice-alert');
+  if (!el) return;
+  if (!msg) { el.innerHTML = ''; return; }
+  const urgent = /Immediate Action/i.test(msg);
+  const color = urgent ? 'var(--red)' : (msg.startsWith('No Rice') ? 'var(--green)' : 'var(--yellow)');
+  const bg = urgent ? 'rgba(248,81,73,0.08)' : (msg.startsWith('No Rice') ? 'rgba(63,185,80,0.08)' : 'rgba(227,179,65,0.08)');
+  el.innerHTML =
+    '<div style="padding:12px 16px;border-left:4px solid ' + color + ';background:' + bg + ';border-radius:6px;font-weight:600;color:var(--text1);">' +
+      (urgent ? '⚠ ' : (msg.startsWith('No Rice') ? '✅ ' : 'ℹ ')) + esc(msg) +
+    '</div>';
+}
+function renderRiceDataNote(d) {
+  const el = document.getElementById('rice-data-note');
+  if (!el) return;
+  if (!d) { el.innerHTML = ''; return; }
+  if (!d.hasIncomingData && !d.hasExpectedDate && !d.hasPONumber) {
+    el.innerHTML = '<div style="padding:8px 12px;background:rgba(88,166,255,0.08);border-left:3px solid var(--blue);border-radius:4px;font-size:12px;color:var(--text2);">Incoming delivery information is not available in the current data source.</div>';
+  } else if (!d.hasExpectedDate || !d.hasPONumber) {
+    el.innerHTML = '<div style="padding:6px 12px;background:rgba(88,166,255,0.05);border-left:2px solid var(--blue);border-radius:3px;font-size:11px;color:var(--text2);">Note: ' + esc(d.note) + '</div>';
+  } else {
+    el.innerHTML = '';
+  }
+}
+function renderRiceStatusChart(data) {
+  const el = document.getElementById('rice-status-chart');
+  if (!el) return;
+  const total = data.reduce((s, x) => s + x.count, 0);
+  if (total === 0) { el.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--text2);">No data</div>'; return; }
+  const colors = { 'Out of Stock': '#f85149', 'Critical': '#e3b341', 'Overstock': '#d29922', 'Normal': '#3fb950' };
+  // Simple donut: use conic-gradient
+  let deg = 0;
+  const segments = data.filter(x => x.count > 0).map(x => {
+    const pct = (x.count / total) * 100;
+    const start = deg;
+    deg += (pct * 3.6);
+    return { label: x.label, count: x.count, pct, color: colors[x.label] || '#8b949e', start, end: deg };
+  });
+  const gradientStops = segments.map(s => (s.color + ' ' + s.start.toFixed(2) + 'deg ' + s.end.toFixed(2) + 'deg')).join(', ');
+  const legend = segments.map(s =>
+    '<div style="display:flex;align-items:center;gap:6px;font-size:12px;padding:2px 0;">' +
+      '<span style="width:12px;height:12px;background:' + s.color + ';border-radius:2px;display:inline-block;"></span>' +
+      '<span style="color:var(--text1);font-weight:500;">' + esc(s.label) + '</span>' +
+      '<span style="color:var(--text2);margin-left:auto;">' + fmt(s.count) + ' (' + s.pct.toFixed(1) + '%)</span>' +
+    '</div>').join('');
+  el.innerHTML =
+    '<div style="display:flex;align-items:center;gap:24px;padding:12px;">' +
+      '<div style="width:180px;height:180px;border-radius:50%;background:conic-gradient(' + gradientStops + ');flex-shrink:0;position:relative;">' +
+        '<div style="position:absolute;inset:38px;background:var(--bg1);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;">' +
+          '<div style="font-size:22px;font-weight:700;color:var(--text1);">' + fmt(total) + '</div>' +
+          '<div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;">Rice Items</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="flex:1;min-width:0;">' + legend + '</div>' +
+    '</div>';
+}
+function renderRiceStoresChart(data) {
+  const el = document.getElementById('rice-stores-chart');
+  if (!el) return;
+  if (!data || data.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--text2);">No affected stores</div>'; return; }
+  const maxTotal = Math.max(...data.map(d => d.oos + d.critical));
+  const rows = data.map(d => {
+    const total = d.oos + d.critical;
+    const w = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
+    const oosW = total > 0 ? (d.oos / total) * w : 0;
+    const critW = total > 0 ? (d.critical / total) * w : 0;
+    return '<div style="display:grid;grid-template-columns:180px 1fr 60px;gap:8px;align-items:center;padding:4px 0;font-size:12px;">' +
+      '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(d.store) + '">' + esc(d.store) + '</div>' +
+      '<div style="height:18px;background:rgba(255,255,255,0.03);border-radius:3px;display:flex;overflow:hidden;">' +
+        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;" title="OOS: ' + fmt(d.oos) + '"></div>' +
+        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;" title="Critical: ' + fmt(d.critical) + '"></div>' +
+      '</div>' +
+      '<div style="text-align:right;color:var(--text1);font-weight:600;">' + fmt(total) + '</div>' +
+    '</div>';
+  }).join('');
+  const legend =
+    '<div style="display:flex;gap:16px;justify-content:flex-end;font-size:11px;padding:4px 0 8px 0;">' +
+      '<span style="color:var(--text2);"><span style="display:inline-block;width:10px;height:10px;background:#f85149;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Out of Stock</span>' +
+      '<span style="color:var(--text2);"><span style="display:inline-block;width:10px;height:10px;background:#e3b341;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Critical</span>' +
+    '</div>';
+  el.innerHTML = '<div style="padding:8px 12px;">' + legend + rows + '</div>';
+}
+function renderRiceRow(r) {
+  const pMap = {
+    1: { label: 'P1 · Immediate', color: '#f85149', bg: 'rgba(248,81,73,0.15)' },
+    2: { label: 'P2 · Urgent', color: '#e3b341', bg: 'rgba(227,179,65,0.15)' },
+    3: { label: 'P3 · Monitor', color: '#58a6ff', bg: 'rgba(88,166,255,0.15)' },
+    0: { label: '—', color: 'var(--text2)', bg: 'transparent' }
+  };
+  const p = pMap[r.priority] || pMap[0];
+  let statusClass = 'status-normal';
+  if (r.stockStatus === 'OOS') statusClass = 'status-oos';
+  else if (r.stockStatus === 'Critical') statusClass = 'status-critical';
+  else if (r.stockStatus === 'Overstock') statusClass = 'status-overstock';
+  const incomingBadge = r.incomingStatus === 'Confirmed'
+    ? '<span style="color:var(--green-bright);font-weight:600;">Confirmed</span>'
+    : '<span style="color:var(--red-light);font-weight:600;">None</span>';
+  const dc = r.daysCover != null ? r.daysCover + 'd' : '—';
+  return '<tr>' +
+    '<td><span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' + p.bg + ';color:' + p.color + ';font-size:11px;font-weight:700;">' + p.label + '</span></td>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td>' + esc(r.store) + '</td>' +
+    '<td class="mono">' + esc(r.skuCode) + '</td>' +
+    '<td class="mono" style="color:var(--text2);font-size:11px;">' + esc(r.upc || '—') + '</td>' +
+    '<td>' + esc(r.skuDesc) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + fmtN(r.avgDailySales) + '</td>' +
+    '<td class="mono">' + dc + '</td>' +
+    '<td><span class="' + statusClass + '">' + esc(r.stockStatus) + '</span></td>' +
+    '<td>' + incomingBadge + '</td>' +
+    '<td class="mono">' + fmt(r.incomingQty) + '</td>' +
+    '<td style="font-size:12px;">' + esc(r.action) + '</td>' +
+    '</tr>';
+}
+async function exportRiceReview() {
+  const btn = document.getElementById('rice-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const params = new URLSearchParams(activeFilters);
+    if (authToken) params.set('token', authToken);
+    const statusEl = document.getElementById('rice-status-filter');
+    const status = statusEl ? statusEl.value : '';
+    if (status) params.set('status', status);
+    const search = tableSearch && tableSearch.rice ? tableSearch.rice : '';
+    if (search) params.set('search', search);
+    const url = '/api/export/rice?' + params.toString();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
+  }
 }
 
 // Sums onHand & onHandValue and shows them in the section header
@@ -5492,7 +5976,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -5520,7 +6004,8 @@ const tableKeyToId = {
   outofstock: 'outofstock-table',
   stores: 'stores-table',
   suppliers: 'suppliers-table',
-  top300: 'top300-table'
+  top300: 'top300-table',
+  rice: 'rice-table'
 };
 
 // Re-render a table from cached data, applying current search filter
@@ -5593,7 +6078,9 @@ function getTableConfig(tableId) {
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
       cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
-      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] }
+      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+    'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
+      cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','action'] }
   };
   return configs[tableId];
 }
