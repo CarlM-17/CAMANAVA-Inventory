@@ -4332,15 +4332,15 @@ canvas { max-height:260px; }
         <div id="rice-alert" style="margin-bottom:12px;"></div>
         <!-- Data-availability note -->
         <div id="rice-data-note" style="margin-bottom:12px;"></div>
-        <!-- Two charts side by side -->
+        <!-- Two charts side by side (equal height, no scroll) -->
         <div class="summary-grid" style="margin-bottom:12px;">
           <div class="summary-card">
             <div class="summary-card-title">Rice Stock Status</div>
-            <div class="summary-card-body" id="rice-status-chart" style="min-height:260px;"></div>
+            <div class="summary-card-body" id="rice-status-chart" style="height:360px;max-height:none;overflow:visible;display:flex;align-items:center;justify-content:center;"></div>
           </div>
           <div class="summary-card">
             <div class="summary-card-title">Out-of-Stock and Critical Rice Items by Store (Top 10)</div>
-            <div class="summary-card-body" id="rice-stores-chart" style="min-height:260px;"></div>
+            <div class="summary-card-body" id="rice-stores-chart" style="height:360px;max-height:none;overflow:visible;"></div>
           </div>
         </div>
         <!-- Detail table -->
@@ -4349,6 +4349,18 @@ canvas { max-height:260px; }
             <span class="badge badge-red" id="rice-count" style="margin-left:8px;">0</span>
           </div>
           <div class="section-actions">
+            <select id="rice-details-priority-filter" class="table-search" style="max-width:170px;" onchange="renderRiceBody()">
+              <option value="">All Priorities</option>
+              <option value="1">P1 · Immediate Action</option>
+              <option value="2">P2 · Urgent Follow-Up</option>
+              <option value="3">P3 · Monitor Delivery</option>
+            </select>
+            <select id="rice-details-incoming-filter" class="table-search" style="max-width:170px;" onchange="renderRiceBody()">
+              <option value="">Any Incoming</option>
+              <option value="confirmed">Confirmed only</option>
+              <option value="none">No Incoming only</option>
+            </select>
+            <input type="text" id="rice-details-search" class="table-search" placeholder="Filter table (store, SKU, supplier...)" oninput="onRiceDetailsSearch(this.value)"/>
             <button class="btn btn-sm" onclick="exportRiceReview()" id="rice-details-export-btn">⬇ Export to Excel</button>
           </div>
         </div>
@@ -5445,26 +5457,48 @@ async function exportProblemInventory() {
   finally { setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800); }
 }
 
-// Render the entire rice table body (no pagination — internal scroll handles overflow)
+// Render the entire rice table body (no pagination — internal scroll handles overflow).
+// Applies: top-level search (tableSearch.rice), details search, priority dropdown,
+// and incoming-delivery dropdown — combined as AND filters.
 function renderRiceBody() {
   const tbody = document.getElementById('rice-body');
   if (!tbody) return;
-  const q = (tableSearch.rice || '').toLowerCase().trim();
+  const topQ = (tableSearch.rice || '').toLowerCase().trim();
+  const detailsInp = document.getElementById('rice-details-search');
+  const detailsQ = (detailsInp ? detailsInp.value : '').toLowerCase().trim();
+  const priorityEl = document.getElementById('rice-details-priority-filter');
+  const priority = priorityEl ? priorityEl.value : '';
+  const incomingEl = document.getElementById('rice-details-incoming-filter');
+  const incoming = incomingEl ? incomingEl.value : '';
   const cols = ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'];
-  const view = q
-    ? (tableData.rice || []).filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
-    : (tableData.rice || []);
+  const matches = (r, q) => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); });
+  const view = (tableData.rice || []).filter(r => {
+    if (topQ && !matches(r, topQ)) return false;
+    if (detailsQ && !matches(r, detailsQ)) return false;
+    if (priority && String(r.priority) !== String(priority)) return false;
+    if (incoming === 'confirmed' && r.incomingStatus !== 'Confirmed') return false;
+    if (incoming === 'none' && r.incomingStatus === 'Confirmed') return false;
+    return true;
+  });
   document.getElementById('rice-count').textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
     ? '<tr><td colspan="15" class="empty">No data found</td></tr>'
     : view.map(renderRiceRow).join('');
 }
+function onRiceDetailsSearch() { renderRiceBody(); }
 function resetRiceFilters() {
   const s = document.getElementById('rice-status-filter');
   if (s) s.value = '';
   const inp = document.getElementById('rice-search-input');
   if (inp) inp.value = '';
   tableSearch.rice = '';
+  // Also clear details-level filters
+  const dp = document.getElementById('rice-details-priority-filter');
+  if (dp) dp.value = '';
+  const di = document.getElementById('rice-details-incoming-filter');
+  if (di) di.value = '';
+  const ds = document.getElementById('rice-details-search');
+  if (ds) ds.value = '';
   loadRiceReview();
 }
 function renderRiceKPIs(k) {
@@ -5525,11 +5559,11 @@ function renderRiceStatusChart(data) {
       '<span style="color:var(--text2);margin-left:auto;">' + fmt(s.count) + ' (' + s.pct.toFixed(1) + '%)</span>' +
     '</div>').join('');
   el.innerHTML =
-    '<div style="display:flex;align-items:center;gap:24px;padding:12px;">' +
-      '<div style="width:180px;height:180px;border-radius:50%;background:conic-gradient(' + gradientStops + ');flex-shrink:0;position:relative;">' +
-        '<div style="position:absolute;inset:38px;background:var(--bg1);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;">' +
-          '<div style="font-size:22px;font-weight:700;color:var(--text1);">' + fmt(total) + '</div>' +
-          '<div style="font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;">Rice Items</div>' +
+    '<div style="display:flex;align-items:center;gap:24px;padding:12px;width:100%;">' +
+      '<div style="width:230px;height:230px;border-radius:50%;background:conic-gradient(' + gradientStops + ');flex-shrink:0;position:relative;">' +
+        '<div style="position:absolute;inset:48px;background:var(--bg1);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;">' +
+          '<div style="font-size:28px;font-weight:700;color:var(--text1);">' + fmt(total) + '</div>' +
+          '<div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;">Rice Items</div>' +
         '</div>' +
       '</div>' +
       '<div style="flex:1;min-width:0;">' + legend + '</div>' +
@@ -5540,14 +5574,15 @@ function renderRiceStoresChart(data) {
   if (!el) return;
   if (!data || data.length === 0) { el.innerHTML = '<div class="empty" style="padding:40px;text-align:center;color:var(--text2);">No affected stores</div>'; return; }
   const maxTotal = Math.max(...data.map(d => d.oos + d.critical));
+  // Compact rows so all 10 fit inside the 360px card height without scrolling.
   const rows = data.map(d => {
     const total = d.oos + d.critical;
     const w = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
     const oosW = total > 0 ? (d.oos / total) * w : 0;
     const critW = total > 0 ? (d.critical / total) * w : 0;
-    return '<div style="display:grid;grid-template-columns:180px 1fr 60px;gap:8px;align-items:center;padding:4px 0;font-size:12px;">' +
+    return '<div style="display:grid;grid-template-columns:170px 1fr 50px;gap:8px;align-items:center;padding:2px 0;font-size:11px;line-height:1.1;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(d.store) + '">' + esc(d.store) + '</div>' +
-      '<div style="height:18px;background:rgba(255,255,255,0.03);border-radius:3px;display:flex;overflow:hidden;">' +
+      '<div style="height:14px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
         '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;" title="OOS: ' + fmt(d.oos) + '"></div>' +
         '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;" title="Critical: ' + fmt(d.critical) + '"></div>' +
       '</div>' +
@@ -5555,9 +5590,9 @@ function renderRiceStoresChart(data) {
     '</div>';
   }).join('');
   const legend =
-    '<div style="display:flex;gap:16px;justify-content:flex-end;font-size:11px;padding:4px 0 8px 0;">' +
-      '<span style="color:var(--text2);"><span style="display:inline-block;width:10px;height:10px;background:#f85149;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Out of Stock</span>' +
-      '<span style="color:var(--text2);"><span style="display:inline-block;width:10px;height:10px;background:#e3b341;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Critical</span>' +
+    '<div style="display:flex;gap:14px;justify-content:flex-end;font-size:10px;padding:2px 0 6px 0;">' +
+      '<span style="color:var(--text2);"><span style="display:inline-block;width:9px;height:9px;background:#f85149;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Out of Stock</span>' +
+      '<span style="color:var(--text2);"><span style="display:inline-block;width:9px;height:9px;background:#e3b341;border-radius:2px;margin-right:4px;vertical-align:middle;"></span>Critical</span>' +
     '</div>';
   el.innerHTML = '<div style="padding:8px 12px;">' + legend + rows + '</div>';
 }
