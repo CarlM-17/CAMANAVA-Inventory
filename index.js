@@ -4360,7 +4360,9 @@ canvas { max-height:260px; }
               <option value="confirmed">Confirmed only</option>
               <option value="none">No Incoming only</option>
             </select>
-            <input type="text" id="rice-details-search" class="table-search" placeholder="Filter table (store, SKU, supplier...)" oninput="onRiceDetailsSearch(this.value)"/>
+            <select id="rice-details-store-filter" class="table-search" style="max-width:240px;" onchange="renderRiceBody()">
+              <option value="">All Stores</option>
+            </select>
             <button class="btn btn-sm" onclick="exportRiceReview()" id="rice-details-export-btn">⬇ Export to Excel</button>
           </div>
         </div>
@@ -5365,7 +5367,16 @@ async function loadRiceReview() {
   renderRiceStoresChart(data.storesTop10);
   tableData.rice = data.items || [];
   document.getElementById('rice-count').textContent = fmt(tableData.rice.length);
+  populateRiceStoreFilter(tableData.rice);
   renderRiceBody();
+}
+function populateRiceStoreFilter(rows) {
+  const sel = document.getElementById('rice-details-store-filter');
+  if (!sel) return;
+  const current = sel.value;
+  const stores = [...new Set((rows || []).map(r => r.store).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">All Stores</option>' +
+    stores.map(s => '<option value="' + esc(s) + '"' + (s === current ? ' selected' : '') + '>' + esc(s) + '</option>').join('');
 }
 // ─── PROBLEM INVENTORY BY STORE (Overview tab) ────────────────────────────────
 let problemInvData = null;
@@ -5464,8 +5475,8 @@ function renderRiceBody() {
   const tbody = document.getElementById('rice-body');
   if (!tbody) return;
   const topQ = (tableSearch.rice || '').toLowerCase().trim();
-  const detailsInp = document.getElementById('rice-details-search');
-  const detailsQ = (detailsInp ? detailsInp.value : '').toLowerCase().trim();
+  const storeEl = document.getElementById('rice-details-store-filter');
+  const storeFilter = storeEl ? storeEl.value : '';
   const priorityEl = document.getElementById('rice-details-priority-filter');
   const priority = priorityEl ? priorityEl.value : '';
   const incomingEl = document.getElementById('rice-details-incoming-filter');
@@ -5474,7 +5485,7 @@ function renderRiceBody() {
   const matches = (r, q) => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); });
   const view = (tableData.rice || []).filter(r => {
     if (topQ && !matches(r, topQ)) return false;
-    if (detailsQ && !matches(r, detailsQ)) return false;
+    if (storeFilter && r.store !== storeFilter) return false;
     if (priority && String(r.priority) !== String(priority)) return false;
     if (incoming === 'confirmed' && r.incomingStatus !== 'Confirmed') return false;
     if (incoming === 'none' && r.incomingStatus === 'Confirmed') return false;
@@ -5485,7 +5496,6 @@ function renderRiceBody() {
     ? '<tr><td colspan="15" class="empty">No data found</td></tr>'
     : view.map(renderRiceRow).join('');
 }
-function onRiceDetailsSearch() { renderRiceBody(); }
 function resetRiceFilters() {
   const s = document.getElementById('rice-status-filter');
   if (s) s.value = '';
@@ -5497,8 +5507,8 @@ function resetRiceFilters() {
   if (dp) dp.value = '';
   const di = document.getElementById('rice-details-incoming-filter');
   if (di) di.value = '';
-  const ds = document.getElementById('rice-details-search');
-  if (ds) ds.value = '';
+  const dstore = document.getElementById('rice-details-store-filter');
+  if (dstore) dstore.value = '';
   loadRiceReview();
 }
 function renderRiceKPIs(k) {
@@ -5580,11 +5590,19 @@ function renderRiceStoresChart(data) {
     const w = maxTotal > 0 ? (total / maxTotal) * 100 : 0;
     const oosW = total > 0 ? (d.oos / total) * w : 0;
     const critW = total > 0 ? (d.critical / total) * w : 0;
+    // Show the numeric label inside the segment only when the segment is wide
+    // enough to hold ~2 characters (>=4% of the row); otherwise omit to keep it readable.
+    const oosLabel = d.oos > 0 && oosW >= 4
+      ? '<span style="color:#fff;font-size:10px;font-weight:700;text-shadow:0 0 2px rgba(0,0,0,0.6);">' + fmt(d.oos) + '</span>'
+      : '';
+    const critLabel = d.critical > 0 && critW >= 4
+      ? '<span style="color:#1c1917;font-size:10px;font-weight:700;">' + fmt(d.critical) + '</span>'
+      : '';
     return '<div style="display:grid;grid-template-columns:170px 1fr 50px;gap:8px;align-items:center;padding:2px 0;font-size:11px;line-height:1.1;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(d.store) + '">' + esc(d.store) + '</div>' +
       '<div style="height:14px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
-        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;" title="OOS: ' + fmt(d.oos) + '"></div>' +
-        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;" title="Critical: ' + fmt(d.critical) + '"></div>' +
+        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;display:flex;align-items:center;justify-content:center;" title="OOS: ' + fmt(d.oos) + '">' + oosLabel + '</div>' +
+        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;display:flex;align-items:center;justify-content:center;" title="Critical: ' + fmt(d.critical) + '">' + critLabel + '</div>' +
       '</div>' +
       '<div style="text-align:right;color:var(--text1);font-weight:600;">' + fmt(total) + '</div>' +
     '</div>';
