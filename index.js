@@ -46,15 +46,10 @@ let cache = {
   top300: [],         // [{ area, storeNumber, storeName, rank, sku, desc }]
   storeSkuIndex: {},  // "storeNum_skuCode" -> enriched row (for fast lookup)
   kpis: {},
-  criticalItems: [],
-  overstockItems: [],
-  agingItems: [],
-  blackInventoryItems: [],
-  negativeSkuItems: [],
-  deadStockItems: [],
-  outOfStockItems: [],
-  storeAnalysis: [],
-  supplierAnalysis: [],
+  // Derived per-category lists (criticalItems, overstockItems, agingItems,
+  // blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems,
+  // storeAnalysis, supplierAnalysis) were removed in favor of on-demand
+  // computation from `rows` — saves ~100-150 MB RAM.
   filterMeta: {},
   refreshing: false,
   error: null
@@ -782,294 +777,9 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     totalSKUs: enriched.length
   };
 
-  // ── CRITICAL ITEMS ────────────────────────────────────────────────────────
-  const criticalItems = enriched
-    .filter(r => r.isCritical)
-    .sort((a, b) => a.wtsNet - b.wtsNet)
-    .map(r => ({
-      store: `${r.storeNumber} - ${r.storeName}`,
-      area: r.area,
-      skuCode: r.skuCode,
-      skuDesc: r.skuDesc,
-      supplier: r.supplierName,
-      onHand: r.onHand,
-      onHandValue: r.onHandValue,
-      currentWkSales: r.currentWkSales,
-      p8ave: r.p8ave,
-      wtsNet: r.wtsNet,
-      totalPO: r.totalPO,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
-      action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
-    }));
-
-  // ── OVERSTOCK ITEMS ───────────────────────────────────────────────────────
-  const overstockItems = enriched
-    .filter(r => r.isOverstock)
-    .sort((a, b) => b.wtsNet - a.wtsNet)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`,
-      area: r.area,
-      skuCode: r.skuCode,
-      skuDesc: r.skuDesc,
-      supplier: r.supplierName,
-      onHand: r.onHand,
-      qtyCases,
-      onHandValue: r.onHandValue,
-      p8ave: r.p8ave,
-      wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
-      action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
-      };
-    });
-
-  // ── AGING ─────────────────────────────────────────────────────────────────
-  // Stock projected to last 180+ days AND sold within last 180 days
-  const agingItems = enriched
-    .filter(r => r.isAging)
-    .sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0))
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`,
-      area: r.area,
-      skuCode: r.skuCode,
-      skuDesc: r.skuDesc,
-      supplier: r.supplierName,
-      onHand: r.onHand,
-      qtyCases,
-      onHandValue: r.onHandValue,
-      p8ave: r.p8ave,
-      daysCover: r.skuDaysCover,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
-      action: 'For Stop Booking'
-      };
-    });
-
-  // ── BLACK INVENTORY ───────────────────────────────────────────────────────
-  // OnHand > 0, no sales 180+ days (or never sold), and last received 180+ days ago
-  const blackInventoryItems = enriched
-    .filter(r => r.isBlackInventory)
-    .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`,
-      area: r.area,
-      skuCode: r.skuCode,
-      skuDesc: r.skuDesc,
-      supplier: r.supplierName,
-      onHand: r.onHand,
-      qtyCases,
-      onHandValue: r.onHandValue,
-      p8ave: r.p8ave,
-      daysCover: r.skuDaysCover,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
-      action: 'Investigate / Liquidate'
-      };
-    });
-
-  // ── NEGATIVE SKU ──────────────────────────────────────────────────────────
-  // On hand is negative (system error or data sync issue) — needs investigation
-  const negativeSkuItems = enriched
-    .filter(r => r.isNegativeStock)
-    .sort((a, b) => a.onHand - b.onHand)  // most negative first
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        storeName: `${r.storeNumber} - ${r.storeName}`,
-        area: r.area,
-        catName: r.catName || 'Uncategorized',
-        skuCode: r.skuCode,
-        skuDesc: r.skuDesc,
-        supplier: r.supplierName,
-        onHand: r.onHand,
-        qtyCases,
-        onHandValue: r.onHandValue,
-        p8ave: r.p8ave,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut)
-      };
-    });
-
-  // ── DEAD STOCK ────────────────────────────────────────────────────────────
-  const deadStockItems = enriched
-    .filter(r => r.isDeadStock)
-    .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => {
-      const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
-      const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        store: `${r.storeNumber} - ${r.storeName}`,
-        area: r.area,
-        skuCode: r.skuCode,
-        skuDesc: r.skuDesc,
-        supplier: r.supplierName,
-        onHand: r.onHand,
-        qtyCases,
-        onHandValue: r.onHandValue,
-        weeksToSell: wtsItem,
-        daysCover: dcItem,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut),
-        action: 'No Sales 8 Wks - Review/Markdown'
-      };
-    });
-
-  // ── OUT OF STOCK ITEMS (Lost Sales) ───────────────────────────────────────
-  const outOfStockItems = enriched
-    .filter(r => r.isOutOfStock)
-    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        storeNumber: r.storeNumber,
-        storeName: r.storeName,
-        area: r.area,
-        skuCode: r.skuCode,
-        skuDesc: r.skuDesc,
-        supplier: r.supplierName,
-        onHand: r.onHand,
-        stdPack: r.stdPack,
-        qtyCases,
-        invValue: r.onHandValue,
-        p8ave: r.p8ave,
-        weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
-        daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
-        status: 'OOS',
-        lostSalesPerWeek: r.lostSalesPerWeek,
-        ico: r.ico,
-        poOrderGR: r.poOrderGR,
-        trfOrderGR: r.trfOrderGR,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut)
-      };
-    });
-
-  // ── STORE ANALYSIS ────────────────────────────────────────────────────────
-  const storeGroups = {};
-  for (const r of enriched) {
-    const key = r.storeNumber;
-    if (!storeGroups[key]) {
-      storeGroups[key] = {
-        storeNumber: r.storeNumber,
-        storeName: r.storeName,
-        area: r.area,
-        region: r.regionName,
-        totalValue: 0, totalOnHand: 0,
-        criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
-        totalSKUs: 0, totalSales: 0, totalLostSales: 0,
-        totalWklSalesValue: 0  // sum of AU × AX (weekly sales value, net wholesale)
-      };
-    }
-    const g = storeGroups[key];
-    g.totalValue += r.onHandValue;
-    g.totalOnHand += r.onHand;
-    g.totalSKUs++;
-    g.totalSales += r.currentWkSales;
-    g.totalLostSales += r.lostSalesPerWeek;
-    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    // Track non-P (excluded from OOS/Critical) SKU count for accurate percentages
-    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
-    // OOS & Critical exclude items with Merchandise Gro = 'P' (per business rule)
-    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
-    if (r.isOverstock) g.overstockCount++;
-    if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
-  }
-  // Compute risk percentages and days cover
-  // Days Cover = OnHand Value / (Weekly Sales Net WS × Avg Cost / 7) = BC / (AU × AX / 7)
-  const storeAnalysis = Object.values(storeGroups).map(g => {
-    const total = g.totalSKUs || 1;
-    const nonP = g.nonPCount || 1; // for OOS/Critical %
-    g.criticalPct = (g.criticalCount / nonP) * 100;
-    g.oosPct = (g.oosCount / nonP) * 100;
-    g.overstockPct = (g.overstockCount / total) * 100;
-    g.deadPct = (g.deadCount / total) * 100;
-    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
-    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
-    return g;
-  }).sort((a, b) => b.totalValue - a.totalValue);
-
-  // ── SUPPLIER ANALYSIS ─────────────────────────────────────────────────────
-  const supplierGroups = {};
-  for (const r of enriched) {
-    if (!r.supplierCode) continue;
-    const key = r.supplierCode;
-    if (!supplierGroups[key]) {
-      supplierGroups[key] = {
-        supplierCode: r.supplierCode,
-        supplierName: r.supplierName,
-        totalValue: 0, totalOnHand: 0,
-        criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0,
-        totalSKUs: 0, totalSales: 0, totalLostSales: 0,
-        totalWklSalesValue: 0, totalP8Ave: 0
-      };
-    }
-    const g = supplierGroups[key];
-    g.totalValue += r.onHandValue;
-    g.totalOnHand += r.onHand;
-    g.totalSKUs++;
-    g.totalSales += r.currentWkSales;
-    g.totalLostSales += r.lostSalesPerWeek;
-    g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    g.totalP8Ave += r.p8ave;
-    if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
-    // OOS & Critical exclude items with Merchandise Gro = 'P'
-    if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
-    if (r.isOverstock) g.overstockCount++;
-    if (r.isDeadStock) g.deadCount++;
-    if (r.isOutOfStock && r.merchGro !== 'P') g.oosCount++;
-  }
-  const supplierAnalysis = Object.values(supplierGroups).map(g => {
-    const total = g.totalSKUs || 1;
-    const nonP = g.nonPCount || 1;
-    g.criticalPct = (g.criticalCount / nonP) * 100;
-    g.oosPct = (g.oosCount / nonP) * 100;
-    g.overstockPct = (g.overstockCount / total) * 100;
-    g.deadPct = (g.deadCount / total) * 100;
-    g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
-    g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
-    return g;
-  }).sort((a, b) => b.totalValue - a.totalValue).slice(0, 100);
+  // Derived per-category lists (criticalItems, overstockItems, agingItems, blackInventoryItems,
+  // negativeSkuItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis) removed
+  // — computed on demand from cache.rows in each /api endpoint (Option-1 RAM cleanup).
 
   // ── FILTER METADATA ───────────────────────────────────────────────────────
   const uniq = (arr) => [...new Set(arr.filter(Boolean))].sort();
@@ -1090,7 +800,7 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0)
   };
 
-  return { kpis, criticalItems, overstockItems, agingItems, blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems, storeAnalysis, supplierAnalysis, filterMeta, rows: enriched };
+  return { kpis, filterMeta, rows: enriched };
 }
 
 // Retry a network operation on transient errors (premature close, ECONNRESET, ETIMEDOUT, 5xx).
@@ -1216,15 +926,8 @@ async function refreshData(force = false) {
     }
     cache.storeSkuIndex = storeSkuIndex;
     cache.kpis = analytics.kpis;
-    cache.criticalItems = analytics.criticalItems;
-    cache.overstockItems = analytics.overstockItems;
-    cache.agingItems = analytics.agingItems;
-    cache.blackInventoryItems = analytics.blackInventoryItems;
-    cache.negativeSkuItems = analytics.negativeSkuItems;
-    cache.deadStockItems = analytics.deadStockItems;
-    cache.outOfStockItems = analytics.outOfStockItems;
-    cache.storeAnalysis = analytics.storeAnalysis;
-    cache.supplierAnalysis = analytics.supplierAnalysis;
+    // Derived per-category lists are computed on-demand from cache.rows
+    // in each /api endpoint (see Option-1 RAM cleanup).
     cache.filterMeta = analytics.filterMeta;
     cache.lastFileHash = hash;
     cache.lastFileSize = fileSize;
@@ -1496,7 +1199,6 @@ app.get('/api/filters', (req, res) => {
 app.get('/api/critical', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.criticalItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isCritical)
     .sort((a, b) => a.wtsNet - b.wtsNet)
     .map(r => ({
@@ -1517,7 +1219,6 @@ app.get('/api/critical', (req, res) => {
 app.get('/api/overstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.overstockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet)
     .map(r => {
@@ -1543,7 +1244,6 @@ app.get('/api/overstock', (req, res) => {
 app.get('/api/aging', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.agingItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isAging)
     .sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0))
     .map(r => {
@@ -1569,7 +1269,6 @@ app.get('/api/aging', (req, res) => {
 app.get('/api/blackinventory', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.blackInventoryItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isBlackInventory)
     .sort((a, b) => b.onHandValue - a.onHandValue)
     .map(r => {
@@ -1595,7 +1294,6 @@ app.get('/api/blackinventory', (req, res) => {
 app.get('/api/negativeskus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.negativeSkuItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativeStock)
     .sort((a, b) => a.onHand - b.onHand)
     .map(r => {
@@ -1909,7 +1607,6 @@ app.get('/api/top300-store-metrics', (req, res) => {
 app.get('/api/deadstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.deadStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue)
     .map(r => {
@@ -1938,7 +1635,6 @@ app.get('/api/deadstock', (req, res) => {
 app.get('/api/outofstock', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.outOfStockItems);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOutOfStock)
     .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
     .map(r => {
@@ -2055,7 +1751,6 @@ app.get('/api/skus', (req, res) => {
 app.get('/api/stores', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.storeAnalysis);
   const filtered = applyFilters(cache.rows, filters);
   const storeGroups = {};
   for (const r of filtered) {
@@ -2089,7 +1784,6 @@ app.get('/api/stores', (req, res) => {
 app.get('/api/suppliers', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
-  if (Object.keys(filters).length === 0) return res.json(cache.supplierAnalysis);
   const filtered = applyFilters(cache.rows, filters);
   const supplierGroups = {};
   for (const r of filtered) {
