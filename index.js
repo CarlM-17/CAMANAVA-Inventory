@@ -3358,7 +3358,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('stores')">🏪 Stores</div>
       <div class="tab" onclick="showTab('suppliers')">🏭 Suppliers</div>
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
-      <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU</div>
+      <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU Blitz</div>
       <div class="tab" onclick="showTab('ricereview')">🌾 Rice Stock Review</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
@@ -3962,7 +3962,7 @@ canvas { max-height:260px; }
     <div id="tab-top300" style="display:none;">
       <div class="section">
         <div class="section-header">
-          <div class="section-title">⭐ Top 300 SKU <span class="badge badge-green" id="top300-count">0</span>
+          <div class="section-title">⭐ Top 300 SKU Blitz <span class="badge badge-green" id="top300-count">0</span>
             <span class="totals-pill" id="top300-totals"></span>
           </div>
           <div class="section-actions">
@@ -3970,7 +3970,23 @@ canvas { max-height:260px; }
             <button class="btn btn-sm" onclick="exportTop300Excel()" id="top300-export-btn">⬇ Export Excel</button>
           </div>
         </div>
-        <div class="table-wrap">
+        <!-- KPI STRIP -->
+        <div class="kpi-grid" id="top300-kpi-grid" style="margin-bottom:12px;"></div>
+        <!-- STATUS PER STORE CHART -->
+        <div class="summary-card" style="margin-bottom:12px;">
+          <div class="summary-card-title">📊 Status by Store — OOS & Critical highlighted (Top 300 SKU Blitz)
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;font-weight:normal;">
+              <span style="color:#f85149;">🟥 OOS</span> &nbsp;
+              <span style="color:#e3b341;">🟨 Critical</span> &nbsp;
+              <span style="color:#d29922;">🟧 Overstock</span> &nbsp;
+              <span style="color:#8b949e;">⬜ Dead</span> &nbsp;
+              <span style="color:#3fb950;">🟩 Healthy</span> &nbsp;
+              <span style="color:#6e7681;">◻ Not Found</span>
+            </span>
+          </div>
+          <div class="summary-card-body" id="top300-store-chart" style="max-height:none;overflow:visible;padding:8px 12px;"></div>
+        </div>
+        <div class="table-wrap" style="max-height:600px;overflow:auto;">
           <table id="top300-table">
             <thead><tr>
               <th data-field="area" onclick="sortTable('top300-table',0)">Area</th>
@@ -3995,7 +4011,6 @@ canvas { max-height:260px; }
             <tbody id="top300-body"></tbody>
           </table>
         </div>
-        <div class="pagination" id="top300-pagination"></div>
       </div>
     </div>
 
@@ -5026,13 +5041,18 @@ function sortSummary(which, colIdx) {
 }
 
 async function loadTop300() {
-  const r = await fetch('/api/top300skus' + filterQuery());
-  const data = await r.json();
+  // Fetch items + per-store metrics in parallel — analytics endpoint already
+  // exists and is cheap. Table renders all rows once (no pagination).
+  const q = filterQuery();
+  const [itemsRes, metricsRes] = await Promise.all([
+    fetch('/api/top300skus' + q),
+    fetch('/api/top300-store-metrics' + q)
+  ]);
+  const data = await itemsRes.json();
+  const metrics = await metricsRes.json();
   if (!Array.isArray(data)) return;
   tableData.top300 = data;
   document.getElementById('top300-count').textContent = fmt(data.length);
-  // Custom totals pill for Top 300 (uses onHand + invValue derived from onHand × no value)
-  // We'll show On Hand total + a rough Inv Value if available
   const totals = document.getElementById('top300-totals');
   if (totals) {
     const tOnHand = data.reduce((s, x) => s + (Number(x.onHand) || 0), 0);
@@ -5040,7 +5060,80 @@ async function loadTop300() {
     totals.innerHTML = '<span class="tp-label">Total On Hand:</span> <span class="tp-value">' + fmt(tOnHand) +
                        '</span> &nbsp;|&nbsp; <span class="tp-label">Total Incoming PO:</span> <span class="tp-value">' + fmt(tIncomingPO) + '</span>';
   }
-  renderTable('top300-body', data, renderTop300Row, 'top300-pagination', 'top300', tablePages.top300);
+  renderTop300Analytics(Array.isArray(metrics) ? metrics : []);
+  renderTop300Body();
+}
+// Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
+function renderTop300Body() {
+  const tbody = document.getElementById('top300-body');
+  if (!tbody) return;
+  const q = (tableSearch.top300 || '').toLowerCase().trim();
+  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
+  const data = tableData.top300 || [];
+  const view = q
+    ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
+    : data;
+  document.getElementById('top300-count').textContent = fmt(view.length);
+  tbody.innerHTML = view.length === 0
+    ? '<tr><td colspan="18" class="empty">No data found</td></tr>'
+    : view.map(renderTop300Row).join('');
+}
+function renderTop300Analytics(metrics) {
+  // ── KPI STRIP: totals + OOS% + Critical% (global across all stores in scope)
+  const total = metrics.reduce((s, m) => s + (m.total || 0), 0);
+  const oos = metrics.reduce((s, m) => s + (m.oos || 0), 0);
+  const critical = metrics.reduce((s, m) => s + (m.critical || 0), 0);
+  const healthy = metrics.reduce((s, m) => s + (m.healthy || 0), 0);
+  const overstock = metrics.reduce((s, m) => s + (m.overstock || 0), 0);
+  const oosPct = total > 0 ? (oos / total * 100) : 0;
+  const critPct = total > 0 ? (critical / total * 100) : 0;
+  const healthyPct = total > 0 ? (healthy / total * 100) : 0;
+  const grid = document.getElementById('top300-kpi-grid');
+  if (grid) {
+    grid.innerHTML = [
+      kpiCard('Total Top 300 SKUs', fmt(total), 'store × SKU rows', 'blue'),
+      kpiCard('Out of Stock', fmt(oos), oosPct.toFixed(1) + '% of Top 300', 'red'),
+      kpiCard('Critical', fmt(critical), critPct.toFixed(1) + '% of Top 300', 'red'),
+      kpiCard('Healthy', fmt(healthy), healthyPct.toFixed(1) + '% of Top 300', 'green'),
+      kpiCard('Overstock', fmt(overstock), (total > 0 ? (overstock / total * 100).toFixed(1) : '0') + '% of Top 300', 'yellow'),
+      kpiCard('Affected Stores', fmt(metrics.filter(m => (m.oos + m.critical) > 0).length), 'w/ OOS or Critical', 'yellow')
+    ].join('');
+  }
+  // ── STACKED BAR PER STORE (sorted by OOS+Critical desc; show all stores in scope)
+  const el = document.getElementById('top300-store-chart');
+  if (!el) return;
+  const sorted = [...metrics].sort((a, b) => ((b.oos + b.critical) - (a.oos + a.critical)) || (b.total - a.total));
+  if (sorted.length === 0) { el.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--text2);">No data</div>'; return; }
+  const rows = sorted.map(m => {
+    const t = m.total || 1;
+    const oosW = (m.oos / t) * 100;
+    const critW = (m.critical / t) * 100;
+    const overW = (m.overstock / t) * 100;
+    const deadW = (m.deadStock / t) * 100;
+    const hlW = (m.healthy / t) * 100;
+    const nfW = (m.notFound / t) * 100;
+    const oosLbl = m.oos > 0 && oosW >= 5 ? '<span style="color:#fff;font-size:10px;font-weight:700;text-shadow:0 0 2px rgba(0,0,0,0.6);">' + fmt(m.oos) + '</span>' : '';
+    const critLbl = m.critical > 0 && critW >= 5 ? '<span style="color:#1c1917;font-size:10px;font-weight:700;">' + fmt(m.critical) + '</span>' : '';
+    const oosPctStr = ((m.oos / t) * 100).toFixed(1);
+    const critPctStr = ((m.critical / t) * 100).toFixed(1);
+    const storeLbl = m.storeNumber + ' - ' + (m.storeName || '');
+    return '<div style="display:grid;grid-template-columns:190px 1fr 150px;gap:8px;align-items:center;padding:3px 0;font-size:11px;line-height:1.1;">' +
+      '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(storeLbl) + '">' + esc(storeLbl) + '</div>' +
+      '<div style="height:18px;background:rgba(255,255,255,0.03);border-radius:3px;display:flex;overflow:hidden;">' +
+        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;display:flex;align-items:center;justify-content:center;" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
+        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;display:flex;align-items:center;justify-content:center;" title="Critical: ' + fmt(m.critical) + ' (' + critPctStr + '%)">' + critLbl + '</div>' +
+        '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;" title="Overstock: ' + fmt(m.overstock) + '"></div>' +
+        '<div style="width:' + deadW.toFixed(2) + '%;background:#8b949e;" title="Dead: ' + fmt(m.deadStock) + '"></div>' +
+        '<div style="width:' + hlW.toFixed(2) + '%;background:#3fb950;" title="Healthy: ' + fmt(m.healthy) + '"></div>' +
+        '<div style="width:' + nfW.toFixed(2) + '%;background:#6e7681;" title="Not Found: ' + fmt(m.notFound) + '"></div>' +
+      '</div>' +
+      '<div style="text-align:right;font-size:11px;font-family:monospace;">' +
+        '<span style="color:#f85149;font-weight:700;">' + oosPctStr + '%</span> OOS &nbsp;' +
+        '<span style="color:#e3b341;font-weight:700;">' + critPctStr + '%</span> Crit' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML = rows;
 }
 
 // ─── RICE STOCK REVIEW ────────────────────────────────────────────────────────
@@ -6011,6 +6104,7 @@ function renderFromCache(key) {
   // Tabs that render all rows at once (no pagination — internal scroll)
   if (key === 'rice') { renderRiceBody(); return true; }
   if (key === 'problemInv') { renderProblemInvBody(); return true; }
+  if (key === 'top300') { renderTop300Body(); return true; }
   const tableId = tableKeyToId[key];
   if (!tableId) return false;
   const cfg = getTableConfig(tableId);
