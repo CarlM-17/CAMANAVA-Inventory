@@ -5112,28 +5112,44 @@ function renderTop300Analytics(metrics) {
     const deadW = (m.deadStock / t) * 100;
     const hlW = (m.healthy / t) * 100;
     const nfW = (m.notFound / t) * 100;
-    const oosLbl = m.oos > 0 && oosW >= 5 ? '<span style="color:#fff;font-size:10px;font-weight:700;text-shadow:0 0 2px rgba(0,0,0,0.6);">' + fmt(m.oos) + '</span>' : '';
-    const critLbl = m.critical > 0 && critW >= 5 ? '<span style="color:#1c1917;font-size:10px;font-weight:700;">' + fmt(m.critical) + '</span>' : '';
+    // Data label helper — shows count when segment is wide enough to fit ~2 characters.
+    // Uses text color that contrasts with each background.
+    const lbl = (count, w, darkText) => {
+      if (count <= 0 || w < 3) return '';
+      const color = darkText ? '#1c1917' : '#fff';
+      const shadow = darkText ? '' : 'text-shadow:0 0 2px rgba(0,0,0,0.6);';
+      return '<span style="color:' + color + ';font-size:10px;font-weight:700;' + shadow + '">' + fmt(count) + '</span>';
+    };
+    const oosLbl = lbl(m.oos, oosW, false);
+    const critLbl = lbl(m.critical, critW, true);
+    const overLbl = lbl(m.overstock, overW, true);
+    const deadLbl = lbl(m.deadStock, deadW, false);
+    const hlLbl = lbl(m.healthy, hlW, false);
+    const nfLbl = lbl(m.notFound, nfW, false);
+    const seg = 'display:flex;align-items:center;justify-content:center;overflow:hidden;';
     const oosPctStr = ((m.oos / t) * 100).toFixed(1);
     const critPctStr = ((m.critical / t) * 100).toFixed(1);
     const storeLbl = m.storeNumber + ' - ' + (m.storeName || '');
-    return '<div style="display:grid;grid-template-columns:190px 1fr 150px;gap:8px;align-items:center;padding:3px 0;font-size:11px;line-height:1.1;">' +
+    return '<div style="display:grid;grid-template-columns:150px 1fr 110px;gap:6px;align-items:center;padding:2px 0;font-size:10px;line-height:1.1;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(storeLbl) + '">' + esc(storeLbl) + '</div>' +
-      '<div style="height:18px;background:rgba(255,255,255,0.03);border-radius:3px;display:flex;overflow:hidden;">' +
-        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;display:flex;align-items:center;justify-content:center;" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
-        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;display:flex;align-items:center;justify-content:center;" title="Critical: ' + fmt(m.critical) + ' (' + critPctStr + '%)">' + critLbl + '</div>' +
-        '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;" title="Overstock: ' + fmt(m.overstock) + '"></div>' +
-        '<div style="width:' + deadW.toFixed(2) + '%;background:#8b949e;" title="Dead: ' + fmt(m.deadStock) + '"></div>' +
-        '<div style="width:' + hlW.toFixed(2) + '%;background:#3fb950;" title="Healthy: ' + fmt(m.healthy) + '"></div>' +
-        '<div style="width:' + nfW.toFixed(2) + '%;background:#6e7681;" title="Not Found: ' + fmt(m.notFound) + '"></div>' +
+      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
+        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;' + seg + '" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
+        '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;' + seg + '" title="Critical: ' + fmt(m.critical) + ' (' + critPctStr + '%)">' + critLbl + '</div>' +
+        '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;' + seg + '" title="Overstock: ' + fmt(m.overstock) + '">' + overLbl + '</div>' +
+        '<div style="width:' + deadW.toFixed(2) + '%;background:#8b949e;' + seg + '" title="Dead: ' + fmt(m.deadStock) + '">' + deadLbl + '</div>' +
+        '<div style="width:' + hlW.toFixed(2) + '%;background:#3fb950;' + seg + '" title="Healthy: ' + fmt(m.healthy) + '">' + hlLbl + '</div>' +
+        '<div style="width:' + nfW.toFixed(2) + '%;background:#6e7681;' + seg + '" title="Not Found: ' + fmt(m.notFound) + '">' + nfLbl + '</div>' +
       '</div>' +
-      '<div style="text-align:right;font-size:11px;font-family:monospace;">' +
-        '<span style="color:#f85149;font-weight:700;">' + oosPctStr + '%</span> OOS &nbsp;' +
-        '<span style="color:#e3b341;font-weight:700;">' + critPctStr + '%</span> Crit' +
+      '<div style="text-align:right;font-size:10px;font-family:monospace;">' +
+        '<span style="color:#f85149;font-weight:700;">' + oosPctStr + '%</span>' +
+        ' <span style="color:var(--text2);">O</span>&nbsp;&nbsp;' +
+        '<span style="color:#e3b341;font-weight:700;">' + critPctStr + '%</span>' +
+        ' <span style="color:var(--text2);">C</span>' +
       '</div>' +
     '</div>';
   }).join('');
-  el.innerHTML = rows;
+  // Constrain overall chart width so screenshots stay compact & Messenger-friendly.
+  el.innerHTML = '<div style="max-width:900px;margin:0 auto;">' + rows + '</div>';
 }
 
 // ─── RICE STOCK REVIEW ────────────────────────────────────────────────────────
