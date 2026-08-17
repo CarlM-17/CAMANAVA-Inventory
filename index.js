@@ -3164,6 +3164,54 @@ canvas { max-height:260px; }
   #sku-upc-msg { display: block; width: 100%; }
 }
 
+/* Top 300 SKU Blitz — Status by Store chart (responsive) */
+.blitz-chart { width: 100%; }
+.blitz-row {
+  display: grid;
+  grid-template-columns: 170px 1fr 130px;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 0;
+  font-size: 11px;
+  line-height: 1.1;
+}
+.blitz-row .blitz-store {
+  color: var(--text1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.blitz-row .blitz-bar {
+  height: 18px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 3px;
+  display: flex;
+  overflow: hidden;
+}
+.blitz-row .blitz-stats { text-align: right; font-family: monospace; font-size: 11px; }
+.blitz-row .blitz-stats .lbl { color: var(--text2); }
+.blitz-row .blitz-stats .oos { color: #f85149; font-weight: 700; }
+.blitz-row .blitz-stats .crit { color: #e3b341; font-weight: 700; }
+/* Tablet */
+@media (max-width: 900px) {
+  .blitz-row { grid-template-columns: 130px 1fr 115px; font-size: 10px; gap: 6px; }
+  .blitz-row .blitz-bar { height: 16px; }
+  .blitz-row .blitz-stats { font-size: 10px; }
+}
+/* Phone — stack store label above bar so full store name is visible */
+@media (max-width: 600px) {
+  .blitz-row {
+    grid-template-columns: 1fr auto;
+    grid-template-areas: "store stats" "bar bar";
+    row-gap: 3px;
+    padding: 6px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .blitz-row .blitz-store { grid-area: store; font-size: 11px; font-weight: 600; }
+  .blitz-row .blitz-bar   { grid-area: bar; height: 18px; }
+  .blitz-row .blitz-stats { grid-area: stats; font-size: 11px; }
+}
+
 /* Phone (narrow) — extra tightening */
 @media (max-width: 480px) {
   .header-logo h1 { font-size: 12px; }
@@ -5130,9 +5178,9 @@ function renderTop300Analytics(metrics) {
     const oosPctStr = ((m.oos / t) * 100).toFixed(1);
     const critPctStr = ((m.critical / t) * 100).toFixed(1);
     const storeLbl = m.storeNumber + ' - ' + (m.storeName || '');
-    return '<div style="display:grid;grid-template-columns:150px 1fr 110px;gap:6px;align-items:center;padding:2px 0;font-size:10px;line-height:1.1;">' +
-      '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(storeLbl) + '">' + esc(storeLbl) + '</div>' +
-      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
+    return '<div class="blitz-row">' +
+      '<div class="blitz-store" title="' + esc(storeLbl) + '">' + esc(storeLbl) + '</div>' +
+      '<div class="blitz-bar">' +
         '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;' + seg + '" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
         '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;' + seg + '" title="Critical: ' + fmt(m.critical) + ' (' + critPctStr + '%)">' + critLbl + '</div>' +
         '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;' + seg + '" title="Overstock: ' + fmt(m.overstock) + '">' + overLbl + '</div>' +
@@ -5140,16 +5188,15 @@ function renderTop300Analytics(metrics) {
         '<div style="width:' + hlW.toFixed(2) + '%;background:#3fb950;' + seg + '" title="Healthy: ' + fmt(m.healthy) + '">' + hlLbl + '</div>' +
         '<div style="width:' + nfW.toFixed(2) + '%;background:#6e7681;' + seg + '" title="Not Found: ' + fmt(m.notFound) + '">' + nfLbl + '</div>' +
       '</div>' +
-      '<div style="text-align:right;font-size:10px;font-family:monospace;">' +
-        '<span style="color:#f85149;font-weight:700;">' + oosPctStr + '%</span>' +
-        ' <span style="color:var(--text2);">O</span>&nbsp;&nbsp;' +
-        '<span style="color:#e3b341;font-weight:700;">' + critPctStr + '%</span>' +
-        ' <span style="color:var(--text2);">C</span>' +
+      '<div class="blitz-stats">' +
+        '<span class="oos">' + oosPctStr + '%</span> <span class="lbl">OOS</span>' +
+        ' &nbsp; ' +
+        '<span class="crit">' + critPctStr + '%</span> <span class="lbl">Crit</span>' +
       '</div>' +
     '</div>';
   }).join('');
-  // Constrain overall chart width so screenshots stay compact & Messenger-friendly.
-  el.innerHTML = '<div style="max-width:900px;margin:0 auto;">' + rows + '</div>';
+  // Full-width in desktop, responsive stack on mobile (see .blitz-row CSS).
+  el.innerHTML = '<div class="blitz-chart">' + rows + '</div>';
 }
 
 // ─── RICE STOCK REVIEW ────────────────────────────────────────────────────────
