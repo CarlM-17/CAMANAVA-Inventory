@@ -4015,9 +4015,12 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('top300-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportTop300AnalyticsJPG()" id="top300-jpg-btn">📷 Export Analytics JPG</button>
             <button class="btn btn-sm" onclick="exportTop300Excel()" id="top300-export-btn">⬇ Export Excel</button>
           </div>
         </div>
+        <!-- ANALYTICS CAPTURE ZONE (this is what the JPG export renders) -->
+        <div id="top300-analytics-capture" style="background:var(--bg1);padding:8px;border-radius:8px;">
         <!-- KPI STRIP -->
         <div class="kpi-grid" id="top300-kpi-grid" style="margin-bottom:12px;"></div>
         <!-- STATUS PER STORE CHART -->
@@ -4034,6 +4037,7 @@ canvas { max-height:260px; }
           </div>
           <div class="summary-card-body" id="top300-store-chart" style="max-height:none;overflow:visible;padding:8px 12px;"></div>
         </div>
+        </div><!-- /top300-analytics-capture -->
         <div class="table-wrap" style="max-height:600px;overflow:auto;">
           <table id="top300-table">
             <thead><tr>
@@ -5166,24 +5170,35 @@ function renderTop300Analytics(metrics) {
       if (count <= 0 || w < 3) return '';
       const color = darkText ? '#1c1917' : '#fff';
       const shadow = darkText ? '' : 'text-shadow:0 0 2px rgba(0,0,0,0.6);';
-      return '<span style="color:' + color + ';font-size:10px;font-weight:700;' + shadow + '">' + fmt(count) + '</span>';
+      return '<span style="color:' + color + ';font-size:10px;font-weight:700;' + shadow + 'white-space:nowrap;">' + fmt(count) + '</span>';
     };
-    const oosLbl = lbl(m.oos, oosW, false);
+    // For OOS and Overstock we ALWAYS show the label even in very narrow segments
+    // — the label is allowed to spill onto the neighboring bar so it's readable.
+    // (Rendered above the neighboring segment via z-index.)
+    const spillLbl = (count, darkText) => {
+      if (count <= 0) return '';
+      const color = darkText ? '#1c1917' : '#fff';
+      const shadow = darkText ? '' : 'text-shadow:0 0 3px rgba(0,0,0,0.85), 0 0 2px rgba(0,0,0,0.85);';
+      return '<span style="color:' + color + ';font-size:10px;font-weight:700;' + shadow + 'white-space:nowrap;position:relative;z-index:2;padding:0 2px;">' + fmt(count) + '</span>';
+    };
+    const oosLbl = spillLbl(m.oos, false);
     const critLbl = lbl(m.critical, critW, true);
-    const overLbl = lbl(m.overstock, overW, true);
+    const overLbl = spillLbl(m.overstock, true);
     const deadLbl = lbl(m.deadStock, deadW, false);
     const hlLbl = lbl(m.healthy, hlW, false);
     const nfLbl = lbl(m.notFound, nfW, false);
     const seg = 'display:flex;align-items:center;justify-content:center;overflow:hidden;';
+    // OOS + Overstock segments allow their label to spill onto adjacent segments.
+    const segSpill = 'display:flex;align-items:center;justify-content:center;overflow:visible;position:relative;';
     const oosPctStr = ((m.oos / t) * 100).toFixed(1);
     const critPctStr = ((m.critical / t) * 100).toFixed(1);
     const storeLbl = m.storeNumber + ' - ' + (m.storeName || '');
     return '<div class="blitz-row">' +
       '<div class="blitz-store" title="' + esc(storeLbl) + '">' + esc(storeLbl) + '</div>' +
-      '<div class="blitz-bar">' +
-        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;' + seg + '" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
+      '<div class="blitz-bar" style="overflow:visible;">' +
+        '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;' + segSpill + '" title="OOS: ' + fmt(m.oos) + ' (' + oosPctStr + '%)">' + oosLbl + '</div>' +
         '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;' + seg + '" title="Critical: ' + fmt(m.critical) + ' (' + critPctStr + '%)">' + critLbl + '</div>' +
-        '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;' + seg + '" title="Overstock: ' + fmt(m.overstock) + '">' + overLbl + '</div>' +
+        '<div style="width:' + overW.toFixed(2) + '%;background:#d29922;' + segSpill + '" title="Overstock: ' + fmt(m.overstock) + '">' + overLbl + '</div>' +
         '<div style="width:' + deadW.toFixed(2) + '%;background:#8b949e;' + seg + '" title="Dead: ' + fmt(m.deadStock) + '">' + deadLbl + '</div>' +
         '<div style="width:' + hlW.toFixed(2) + '%;background:#3fb950;' + seg + '" title="Healthy: ' + fmt(m.healthy) + '">' + hlLbl + '</div>' +
         '<div style="width:' + nfW.toFixed(2) + '%;background:#6e7681;' + seg + '" title="Not Found: ' + fmt(m.notFound) + '">' + nfLbl + '</div>' +
@@ -6376,6 +6391,52 @@ async function exportTop300Excel() {
     document.body.removeChild(a);
   } catch (e) {
     alert('Export failed: ' + e.message);
+  } finally {
+    setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
+  }
+}
+
+// Lazy-load html2canvas on first click (avoids loading ~150KB on every page load).
+function loadHtml2Canvas() {
+  if (window.html2canvas) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('Failed to load image capture library'));
+    document.head.appendChild(s);
+  });
+}
+async function exportTop300AnalyticsJPG() {
+  const btn = document.getElementById('top300-jpg-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Capturing...'; btn.disabled = true; }
+  try {
+    await loadHtml2Canvas();
+    const el = document.getElementById('top300-analytics-capture');
+    if (!el) throw new Error('Analytics section not found');
+    // Match the app's dark theme background so the JPG doesn't have a white halo.
+    const bg = getComputedStyle(document.body).backgroundColor || '#0d1117';
+    const canvas = await window.html2canvas(el, {
+      backgroundColor: bg,
+      scale: 2,          // sharper, especially for phones re-sharing to Messenger
+      useCORS: true,
+      logging: false
+    });
+    canvas.toBlob(blob => {
+      if (!blob) { alert('Could not build image'); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const today = new Date().toISOString().split('T')[0];
+      a.href = url;
+      a.download = 'Top300_SKU_Blitz_Analytics_' + today + '.jpg';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 'image/jpeg', 0.92);
+  } catch (e) {
+    alert('JPG export failed: ' + e.message);
   } finally {
     setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800);
   }
