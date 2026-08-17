@@ -4020,7 +4020,15 @@ canvas { max-height:260px; }
           </div>
         </div>
         <!-- ANALYTICS CAPTURE ZONE (this is what the JPG export renders) -->
-        <div id="top300-analytics-capture" style="background:var(--bg1);padding:8px;border-radius:8px;">
+        <div id="top300-analytics-capture" style="background:var(--bg1);padding:12px;border-radius:8px;">
+        <!-- Mini header — mirrors the section title/totals so the JPG is self-contained -->
+        <div id="top300-capture-header" style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);">
+          <div style="display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;color:var(--text1);">
+            ⭐ Top 300 SKU Blitz
+            <span class="badge badge-green" id="top300-capture-count">0</span>
+          </div>
+          <div id="top300-capture-totals" style="font-size:12px;color:var(--text2);"></div>
+        </div>
         <!-- KPI STRIP -->
         <div class="kpi-grid" id="top300-kpi-grid" style="margin-bottom:12px;"></div>
         <!-- STATUS PER STORE CHART -->
@@ -5105,12 +5113,25 @@ async function loadTop300() {
   if (!Array.isArray(data)) return;
   tableData.top300 = data;
   document.getElementById('top300-count').textContent = fmt(data.length);
+  const tOnHand = data.reduce((s, x) => s + (Number(x.onHand) || 0), 0);
+  const tIncomingPO = data.reduce((s, x) => s + (Number(x.incomingPO) || 0), 0);
   const totals = document.getElementById('top300-totals');
   if (totals) {
-    const tOnHand = data.reduce((s, x) => s + (Number(x.onHand) || 0), 0);
-    const tIncomingPO = data.reduce((s, x) => s + (Number(x.incomingPO) || 0), 0);
     totals.innerHTML = '<span class="tp-label">Total On Hand:</span> <span class="tp-value">' + fmt(tOnHand) +
                        '</span> &nbsp;|&nbsp; <span class="tp-label">Total Incoming PO:</span> <span class="tp-value">' + fmt(tIncomingPO) + '</span>';
+  }
+  // Populate the JPG-capture mini header (mirrors the on-screen header info so
+  // the exported image is self-contained).
+  const capCount = document.getElementById('top300-capture-count');
+  if (capCount) capCount.textContent = fmt(data.length);
+  const capTotals = document.getElementById('top300-capture-totals');
+  if (capTotals) {
+    capTotals.innerHTML =
+      '<span style="color:var(--text2);">Total On Hand:</span> <span style="color:var(--text1);font-weight:600;">' + fmt(tOnHand) + '</span>' +
+      ' &nbsp;|&nbsp; ' +
+      '<span style="color:var(--text2);">Total Incoming PO:</span> <span style="color:var(--text1);font-weight:600;">' + fmt(tIncomingPO) + '</span>' +
+      ' &nbsp;|&nbsp; ' +
+      '<span style="color:var(--text2);">As of:</span> <span style="color:var(--text1);font-weight:600;">' + new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + '</span>';
   }
   renderTop300Analytics(Array.isArray(metrics) ? metrics : []);
   renderTop300Body();
