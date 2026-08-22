@@ -5185,7 +5185,7 @@ async function loadTop300() {
       ' &nbsp;|&nbsp; ' +
       '<span style="color:var(--text2);">As of:</span> <span style="color:var(--text1);font-weight:600;">' + new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) + '</span>';
   }
-  renderTop300Analytics(Array.isArray(metrics) ? metrics : []);
+  renderTop300Analytics(Array.isArray(metrics) ? metrics : [], data);
   renderTop300Body();
 }
 // Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
@@ -5203,7 +5203,7 @@ function renderTop300Body() {
     ? '<tr><td colspan="21" class="empty">No data found</td></tr>'
     : view.map(renderTop300Row).join('');
 }
-function renderTop300Analytics(metrics) {
+function renderTop300Analytics(metrics, items) {
   // ── KPI STRIP: totals + OOS% + Critical% (global across all stores in scope)
   const total = metrics.reduce((s, m) => s + (m.total || 0), 0);
   const oos = metrics.reduce((s, m) => s + (m.oos || 0), 0);
@@ -5213,6 +5213,12 @@ function renderTop300Analytics(metrics) {
   const oosPct = total > 0 ? (oos / total * 100) : 0;
   const critPct = total > 0 ? (critical / total * 100) : 0;
   const healthyPct = total > 0 ? (healthy / total * 100) : 0;
+  // Aggregate Sales/Inv Ratio across the whole Top 300 scope:
+  //   (Σ Ave Weekly Sales) / (Σ Inv Value) × 100
+  const rowsArr = Array.isArray(items) ? items : [];
+  const totInvValue = rowsArr.reduce((s, x) => s + (Number(x.invValue) || 0), 0);
+  const totWklySales = rowsArr.reduce((s, x) => s + (Number(x.aveWklySales) || 0), 0);
+  const totSalesInvRatio = totInvValue > 0 ? (totWklySales / totInvValue * 100) : null;
   const grid = document.getElementById('top300-kpi-grid');
   if (grid) {
     grid.innerHTML = [
@@ -5221,7 +5227,11 @@ function renderTop300Analytics(metrics) {
       kpiCard('Critical', fmt(critical), critPct.toFixed(1) + '% of Top 300', 'red'),
       kpiCard('Healthy', fmt(healthy), healthyPct.toFixed(1) + '% of Top 300', 'green'),
       kpiCard('Overstock', fmt(overstock), (total > 0 ? (overstock / total * 100).toFixed(1) : '0') + '% of Top 300', 'yellow'),
-      kpiCard('Affected Stores', fmt(metrics.filter(m => (m.oos + m.critical) > 0).length), 'w/ OOS or Critical', 'yellow')
+      kpiCard('Affected Stores', fmt(metrics.filter(m => (m.oos + m.critical) > 0).length), 'w/ OOS or Critical', 'yellow'),
+      kpiCard('Total Sales/Inv Ratio',
+        totSalesInvRatio != null ? totSalesInvRatio.toFixed(2) + '%' : '—',
+        '₱' + fmtM(totWklySales) + ' / ₱' + fmtM(totInvValue) + ' per week',
+        'green')
     ].join('');
   }
   // ── STACKED BAR PER STORE (sorted by OOS+Critical desc; show all stores in scope)
