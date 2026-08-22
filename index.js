@@ -1549,6 +1549,8 @@ app.get('/api/top300skus', (req, res) => {
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
       qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
+      // Ave Weekly Sales = wkAveNet × avgCost (weekly sales value in ₱)
+      aveWklySales: inv ? +(inv.wkAveNet * inv.avgCost).toFixed(2) : null,
       invValue: inv ? inv.onHandValue : null,
       salesInvRatio: inv ? inv.salesInvRatio : null,
       p8ave: inv ? inv.p8ave : null,
@@ -2646,6 +2648,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
       qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
+      aveWklySales: inv ? +(inv.wkAveNet * inv.avgCost).toFixed(2) : null,
       invValue: inv ? inv.onHandValue : null,
       salesInvRatio: inv && inv.salesInvRatio != null ? inv.salesInvRatio : null,
       p8ave: inv ? +(inv.p8ave || 0).toFixed(2) : null,
@@ -2675,6 +2678,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
     { header: 'Supplier', key: 'supplier', width: 28 },
     { header: 'On Hand', key: 'onHand', width: 10 },
     { header: 'Qty in Cases', key: 'qtyCases', width: 12 },
+    { header: 'Ave Weekly Sales', key: 'aveWklySales', width: 16 },
     { header: 'Inv Value', key: 'invValue', width: 14 },
     { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
     { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
@@ -4102,18 +4106,19 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('top300-table',5)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('top300-table',6)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('top300-table',7)">Qty in Cases</th>
-              <th data-field="invValue" onclick="sortTable('top300-table',8)">Inv Value</th>
-              <th data-field="salesInvRatio" onclick="sortTable('top300-table',9)">Sales/Inv Ratio</th>
-              <th data-field="p8ave" onclick="sortTable('top300-table',10)">P8 Ave/Week</th>
-              <th data-field="daysCover" onclick="sortTable('top300-table',11)">Days Cover</th>
-              <th data-field="status" onclick="sortTable('top300-table',12)">Status</th>
-              <th data-field="incomingPO" onclick="sortTable('top300-table',13)">Incoming PO</th>
-              <th data-field="lostSalesPerWeek" onclick="sortTable('top300-table',14)">Lost Sales/Wk</th>
-              <th data-field="ico" onclick="sortTable('top300-table',15)">ICO</th>
-              <th data-field="dateLastSold" onclick="sortTable('top300-table',16)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('top300-table',17)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('top300-table',18)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('top300-table',19)">Transfer Out</th>
+              <th data-field="aveWklySales" onclick="sortTable('top300-table',8)">Ave Weekly Sales</th>
+              <th data-field="invValue" onclick="sortTable('top300-table',9)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('top300-table',10)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('top300-table',11)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('top300-table',12)">Days Cover</th>
+              <th data-field="status" onclick="sortTable('top300-table',13)">Status</th>
+              <th data-field="incomingPO" onclick="sortTable('top300-table',14)">Incoming PO</th>
+              <th data-field="lostSalesPerWeek" onclick="sortTable('top300-table',15)">Lost Sales/Wk</th>
+              <th data-field="ico" onclick="sortTable('top300-table',16)">ICO</th>
+              <th data-field="dateLastSold" onclick="sortTable('top300-table',17)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('top300-table',18)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('top300-table',19)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('top300-table',20)">Transfer Out</th>
             </tr></thead>
             <tbody id="top300-body"></tbody>
           </table>
@@ -5188,14 +5193,14 @@ function renderTop300Body() {
   const tbody = document.getElementById('top300-body');
   if (!tbody) return;
   const q = (tableSearch.top300 || '').toLowerCase().trim();
-  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
+  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
   const data = tableData.top300 || [];
   const view = q
     ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
     : data;
   document.getElementById('top300-count').textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="20" class="empty">No data found</td></tr>'
+    ? '<tr><td colspan="21" class="empty">No data found</td></tr>'
     : view.map(renderTop300Row).join('');
 }
 function renderTop300Analytics(metrics) {
@@ -6109,6 +6114,7 @@ function renderTop300Row(r) {
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono"' + onHandStyle + '>' + onHand + '</td>' +
     '<td class="mono">' + qtyCases + '</td>' +
+    '<td class="mono">' + (r.aveWklySales != null ? '₱' + fmtN(r.aveWklySales) : '—') + '</td>' +
     '<td class="mono">' + (r.invValue != null ? '₱' + fmtN(r.invValue) : '—') + '</td>' +
     '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + p8 + '</td>' +
@@ -6329,7 +6335,7 @@ function getTableConfig(tableId) {
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
       cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
-      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
       cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] },
     'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
