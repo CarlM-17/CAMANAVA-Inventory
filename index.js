@@ -613,7 +613,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const wtsNet = num(row[COL.wtsNet]);
     const onHand = num(row[COL.onHand]);
     const onHandValue = num(row[COL.onHandValue]);
-    const p8ave = num(row[COL.p8aveGross]);
+    // P8 Ave/Week now reads Week Ave Sales Net Wholesale (column AU) instead of gross (AJ)
+    const p8ave = num(row[COL.wkAveNet]);
     const wkAveNet = num(row[COL.wkAveNet]);
     const currentWkSales = num(row[COL.currentWkSales]);
     const totalPO = num(row[COL.totalPONet]);
@@ -704,6 +705,10 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       // Per-SKU metrics for SKU Analysis tab
       skuWTS: p8ave > 0 ? onHand / p8ave : null,
       skuDaysCover,
+      // Sales/Inv Ratio (weekly %): (wkAveNet × avgCost / onHandValue) × 100
+      // Interpretation: percent of on-hand inventory value that turns over in a week.
+      // null when inventory is 0 (nothing to turn); 0 when no sales.
+      salesInvRatio: onHandValue > 0 ? +((wkAveNet * avgCost / onHandValue) * 100).toFixed(2) : null,
       supplierCode: row[COL.supplierCode] || '',
       supplierName: row[COL.supplierName] || '',
       delivMode: row[COL.delivMode] || '',
@@ -1206,6 +1211,7 @@ app.get('/api/critical', (req, res) => {
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand, onHandValue: r.onHandValue,
       currentWkSales: r.currentWkSales, p8ave: r.p8ave,
+      salesInvRatio: r.salesInvRatio,
       wtsNet: r.wtsNet, totalPO: r.totalPO,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -1229,7 +1235,9 @@ app.get('/api/overstock', (req, res) => {
       return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave,
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -1254,7 +1262,9 @@ app.get('/api/aging', (req, res) => {
       return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -1279,7 +1289,9 @@ app.get('/api/blackinventory', (req, res) => {
       return {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
       skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue, p8ave: r.p8ave,
+      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave,
       daysCover: r.skuDaysCover,
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -1311,6 +1323,7 @@ app.get('/api/negativeskus', (req, res) => {
         onHand: r.onHand,
         qtyCases,
         onHandValue: r.onHandValue,
+        salesInvRatio: r.salesInvRatio,
         p8ave: r.p8ave,
         dateLastSold: formatDate(r.dateLastSold),
         dateLastReceived: formatDate(r.dateLastReceived),
@@ -1536,6 +1549,8 @@ app.get('/api/top300skus', (req, res) => {
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
       qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
+      invValue: inv ? inv.onHandValue : null,
+      salesInvRatio: inv ? inv.salesInvRatio : null,
       p8ave: inv ? inv.p8ave : null,
       daysCover: inv ? inv.skuDaysCover : null,
       status,
@@ -1620,6 +1635,8 @@ app.get('/api/deadstock', (req, res) => {
         store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
         skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
         onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
+        salesInvRatio: r.salesInvRatio,
+        p8ave: r.p8ave,
         weeksToSell: wtsItem,
         daysCover: dcItem,
         dateLastSold: formatDate(r.dateLastSold),
@@ -1646,6 +1663,7 @@ app.get('/api/outofstock', (req, res) => {
         storeNumber: r.storeNumber, storeName: r.storeName, area: r.area,
         skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
         onHand: r.onHand, stdPack: r.stdPack, qtyCases, invValue: r.onHandValue,
+        salesInvRatio: r.salesInvRatio,
         p8ave: r.p8ave,
         weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
         daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
@@ -1727,6 +1745,7 @@ app.get('/api/skus', (req, res) => {
       qtyCasesNum: r.qtyCasesNum,
       stdPack: r.stdPack,
       invValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
       weeksToSell: r.skuWTS,
       skuWTS: r.skuWTS,
       daysCover: r.skuDaysCover,
@@ -2010,7 +2029,8 @@ app.get('/api/export/:type', async (req, res) => {
     title = 'Critical Stock — CAMANAVA Inventory';
     data = baseRows.filter(r => r.isCritical).sort((a, b) => a.wtsNet - b.wtsNet).map(r => ({
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue, currentWkSales: r.currentWkSales, p8ave: r.p8ave, wtsNet: r.wtsNet,
+      onHand: r.onHand, onHandValue: r.onHandValue, salesInvRatio: r.salesInvRatio,
+      currentWkSales: r.currentWkSales, p8ave: r.p8ave, wtsNet: r.wtsNet,
       totalPO: r.totalPO, dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: r.poOrderGR > 0 || r.trfOrderGR > 0 ? 'PO Incoming' : 'URGENT: Place PO'
@@ -2019,7 +2039,8 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Store', key: 'store' }, { header: 'Area', key: 'area' },
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
-      { header: 'Cur Wk Sales', key: 'currentWkSales', format: 'integer' }, { header: 'P8 Ave', key: 'p8ave', format: 'decimal' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
+      { header: 'Cur Wk Sales', key: 'currentWkSales', format: 'integer' }, { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' },
       { header: 'WTS Net', key: 'wtsNet', format: 'decimal' }, { header: 'Total PO', key: 'totalPO', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -2033,7 +2054,8 @@ app.get('/api/export/:type', async (req, res) => {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand,
       qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
-      onHandValue: r.onHandValue, p8ave: r.p8ave, wtsNet: r.wtsNet,
+      onHandValue: r.onHandValue, salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave, wtsNet: r.wtsNet,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
@@ -2043,7 +2065,8 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
       { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
-      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'WTS Net', key: 'wtsNet', format: 'decimal' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
+      { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' }, { header: 'WTS Net', key: 'wtsNet', format: 'decimal' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
       { header: 'Action', key: 'action' }
@@ -2056,7 +2079,8 @@ app.get('/api/export/:type', async (req, res) => {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand,
       qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
-      onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      onHandValue: r.onHandValue, salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: 'For Stop Booking'
@@ -2066,7 +2090,8 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
       { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
-      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
+      { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
       { header: 'Action', key: 'action' }
@@ -2079,7 +2104,8 @@ app.get('/api/export/:type', async (req, res) => {
       store: `${r.storeNumber} - ${r.storeName}`, area: r.area, skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
       onHand: r.onHand,
       qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
-      onHandValue: r.onHandValue, p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      onHandValue: r.onHandValue, salesInvRatio: r.salesInvRatio,
+      p8ave: r.p8ave, daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
       lastTransferIn: formatDate(r.lastTransferIn), lastTransferOut: formatDate(r.lastTransferOut),
       action: 'Investigate / Liquidate'
@@ -2089,7 +2115,8 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
       { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
-      { header: 'P8 Ave', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
+      { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
       { header: 'Action', key: 'action' }
@@ -2103,6 +2130,7 @@ app.get('/api/export/:type', async (req, res) => {
       onHand: r.onHand,
       qtyCases: r.stdPack > 0 && r.stdPack === r.onHand ? 'Per Piece' : (r.stdPack > 0 && r.onHand !== 0 ? +(r.onHand / r.stdPack).toFixed(2) : 'Per Piece'),
       onHandValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
       weeksToSell: r.p8ave > 0 ? r.onHand / r.p8ave : null,
       daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
       dateLastSold: formatDate(r.dateLastSold), dateLastReceived: formatDate(r.dateLastReceived),
@@ -2114,6 +2142,7 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Qty in Cases', key: 'qtyCases' },
       { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
       { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
       { header: 'Last Sold', key: 'dateLastSold', format: 'date' }, { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
       { header: 'Transfer In', key: 'lastTransferIn', format: 'date' }, { header: 'Transfer Out', key: 'lastTransferOut', format: 'date' },
@@ -2132,6 +2161,7 @@ app.get('/api/export/:type', async (req, res) => {
         storeNumber: r.storeNumber, storeName: r.storeName, area: r.area,
         skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
         onHand: r.onHand, stdPack: r.stdPack, qtyCases, invValue: r.onHandValue,
+        salesInvRatio: r.salesInvRatio,
         p8ave: r.p8ave, weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
         daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
         status: 'OOS', lostSalesPerWeek: r.lostSalesPerWeek,
@@ -2145,7 +2175,8 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'SKU Code', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
       { header: 'On Hand', key: 'onHand', format: 'integer' }, { header: 'Std Pack', key: 'stdPack', format: 'integer' },
       { header: 'Qty Cases', key: 'qtyCases' }, { header: 'Inv Value', key: 'invValue', format: 'currency' },
-      { header: 'P8 Ave/Wk', key: 'p8ave', format: 'decimal' }, { header: 'WTS', key: 'weeksToSell', format: 'decimal' },
+      { header: 'Sales/Inv Ratio', key: 'salesInvRatio', format: 'decimal' },
+      { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' }, { header: 'WTS', key: 'weeksToSell', format: 'decimal' },
       { header: 'Days Cover', key: 'daysCover', format: 'integer' }, { header: 'Status', key: 'status' },
       { header: 'Lost Sales/Wk', key: 'lostSalesPerWeek', format: 'currency' }, { header: 'ICO', key: 'ico' },
       { header: 'PO On Order', key: 'poOrderGR', format: 'integer' }, { header: 'Trf On Order', key: 'trfOrderGR', format: 'integer' },
@@ -2404,7 +2435,8 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'Std Pack', key: 'stdPack', width: 10 },
     { header: 'Qty Cases', key: 'qtyCases', width: 10 },
     { header: 'Inv Value', key: 'invValue', width: 14 },
-    { header: 'P8 Ave/Wk', key: 'p8ave', width: 12 },
+    { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
+    { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
     { header: 'WTS', key: 'weeksToSell', width: 10 },
     { header: 'Days Cover', key: 'daysCover', width: 12 },
     { header: 'Status', key: 'status', width: 12 },
@@ -2519,7 +2551,8 @@ app.get('/api/export-negativeskus-xlsx', async (req, res) => {
     { header: 'On Hand', key: 'onHand', width: 12 },
     { header: 'Qty in Cases', key: 'qtyCases', width: 14 },
     { header: 'Inv Value', key: 'onHandValue', width: 14 },
-    { header: 'P8 Ave/Wk', key: 'p8ave', width: 12 },
+    { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
+    { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
     { header: 'Last Sold', key: 'dateLastSold', width: 14 },
     { header: 'Last Received', key: 'dateLastReceived', width: 14 }
   ];
@@ -2613,6 +2646,8 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
       supplier: inv ? inv.supplierName : '',
       onHand: inv ? inv.onHand : null,
       qtyCases: inv ? (inv.stdPack > 0 && inv.stdPack === inv.onHand ? 'Per Piece' : (inv.stdPack > 0 && inv.onHand !== 0 ? +(inv.onHand / inv.stdPack).toFixed(2) : 'Per Piece')) : null,
+      invValue: inv ? inv.onHandValue : null,
+      salesInvRatio: inv && inv.salesInvRatio != null ? inv.salesInvRatio : null,
       p8ave: inv ? +(inv.p8ave || 0).toFixed(2) : null,
       daysCover: inv && inv.skuDaysCover != null ? +inv.skuDaysCover.toFixed(0) : null,
       status,
@@ -2640,7 +2675,9 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
     { header: 'Supplier', key: 'supplier', width: 28 },
     { header: 'On Hand', key: 'onHand', width: 10 },
     { header: 'Qty in Cases', key: 'qtyCases', width: 12 },
-    { header: 'P8 Ave', key: 'p8ave', width: 12 },
+    { header: 'Inv Value', key: 'invValue', width: 14 },
+    { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
+    { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
     { header: 'Days Cover', key: 'daysCover', width: 12 },
     { header: 'Status', key: 'status', width: 12 },
     { header: 'Incoming PO', key: 'incomingPO', width: 12 },
@@ -3573,15 +3610,16 @@ canvas { max-height:260px; }
               <th data-field="skuDesc" onclick="sortTable('critical-table',3)">Description</th>
               <th data-field="supplier" onclick="sortTable('critical-table',4)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('critical-table',5)">On Hand</th>
-              <th data-field="onHandValue" onclick="sortTable('critical-table',6)">Value</th>
-              <th data-field="currentWkSales" onclick="sortTable('critical-table',7)">Cur Wk Sales</th>
-              <th data-field="p8ave" onclick="sortTable('critical-table',8)">P8 Ave</th>
-              <th data-field="wtsNet" onclick="sortTable('critical-table',9)">WTS Net</th>
-              <th data-field="totalPO" onclick="sortTable('critical-table',10)">Total PO</th>
-              <th data-field="dateLastSold" onclick="sortTable('critical-table',11)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('critical-table',12)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('critical-table',13)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('critical-table',14)">Transfer Out</th>
+              <th data-field="onHandValue" onclick="sortTable('critical-table',6)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('critical-table',7)">Sales/Inv Ratio</th>
+              <th data-field="currentWkSales" onclick="sortTable('critical-table',8)">Cur Wk Sales</th>
+              <th data-field="p8ave" onclick="sortTable('critical-table',9)">P8 Ave/Week</th>
+              <th data-field="wtsNet" onclick="sortTable('critical-table',10)">WTS Net</th>
+              <th data-field="totalPO" onclick="sortTable('critical-table',11)">Total PO</th>
+              <th data-field="dateLastSold" onclick="sortTable('critical-table',12)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('critical-table',13)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('critical-table',14)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('critical-table',15)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="critical-body"></tbody>
@@ -3613,13 +3651,14 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('overstock-table',4)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('overstock-table',5)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('overstock-table',6)">Qty in Cases</th>
-              <th data-field="onHandValue" onclick="sortTable('overstock-table',7)">Value</th>
-              <th data-field="p8ave" onclick="sortTable('overstock-table',8)">P8 Ave</th>
-              <th data-field="wtsNet" onclick="sortTable('overstock-table',9)">WTS Net</th>
-              <th data-field="dateLastSold" onclick="sortTable('overstock-table',10)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('overstock-table',11)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('overstock-table',12)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('overstock-table',13)">Transfer Out</th>
+              <th data-field="onHandValue" onclick="sortTable('overstock-table',7)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('overstock-table',8)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('overstock-table',9)">P8 Ave/Week</th>
+              <th data-field="wtsNet" onclick="sortTable('overstock-table',10)">WTS Net</th>
+              <th data-field="dateLastSold" onclick="sortTable('overstock-table',11)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('overstock-table',12)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('overstock-table',13)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('overstock-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="overstock-body"></tbody>
@@ -3651,13 +3690,14 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('aging-table',4)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('aging-table',5)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('aging-table',6)">Qty in Cases</th>
-              <th data-field="onHandValue" onclick="sortTable('aging-table',7)">Value</th>
-              <th data-field="p8ave" onclick="sortTable('aging-table',8)">P8 Ave</th>
-              <th data-field="daysCover" onclick="sortTable('aging-table',9)">Days Cover</th>
-              <th data-field="dateLastSold" onclick="sortTable('aging-table',10)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('aging-table',11)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('aging-table',12)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('aging-table',13)">Transfer Out</th>
+              <th data-field="onHandValue" onclick="sortTable('aging-table',7)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('aging-table',8)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('aging-table',9)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('aging-table',10)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('aging-table',11)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('aging-table',12)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('aging-table',13)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('aging-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="aging-body"></tbody>
@@ -3689,13 +3729,14 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('blackinv-table',4)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('blackinv-table',5)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('blackinv-table',6)">Qty in Cases</th>
-              <th data-field="onHandValue" onclick="sortTable('blackinv-table',7)">Value</th>
-              <th data-field="p8ave" onclick="sortTable('blackinv-table',8)">P8 Ave</th>
-              <th data-field="daysCover" onclick="sortTable('blackinv-table',9)">Days Cover</th>
-              <th data-field="dateLastSold" onclick="sortTable('blackinv-table',10)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('blackinv-table',11)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('blackinv-table',12)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('blackinv-table',13)">Transfer Out</th>
+              <th data-field="onHandValue" onclick="sortTable('blackinv-table',7)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('blackinv-table',8)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('blackinv-table',9)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('blackinv-table',10)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('blackinv-table',11)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('blackinv-table',12)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('blackinv-table',13)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('blackinv-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="blackinv-body"></tbody>
@@ -3758,9 +3799,10 @@ canvas { max-height:260px; }
               <th data-field="onHand" onclick="sortTable('negsku-table',4)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('negsku-table',5)">Qty in Cases</th>
               <th data-field="onHandValue" onclick="sortTable('negsku-table',6)">Inv Value</th>
-              <th data-field="p8ave" onclick="sortTable('negsku-table',7)">P8 Ave/Wk</th>
-              <th data-field="dateLastSold" onclick="sortTable('negsku-table',8)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('negsku-table',9)">Last Received</th>
+              <th data-field="salesInvRatio" onclick="sortTable('negsku-table',7)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('negsku-table',8)">P8 Ave/Week</th>
+              <th data-field="dateLastSold" onclick="sortTable('negsku-table',9)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('negsku-table',10)">Last Received</th>
             </tr></thead>
             <tbody id="negsku-body"></tbody>
           </table>
@@ -3791,13 +3833,14 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('deadstock-table',4)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('deadstock-table',5)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('deadstock-table',6)">Qty in Cases</th>
-              <th data-field="onHandValue" onclick="sortTable('deadstock-table',7)">Value</th>
-              <th data-field="weeksToSell" onclick="sortTable('deadstock-table',8)">WTS</th>
-              <th data-field="daysCover" onclick="sortTable('deadstock-table',9)">Days Cover</th>
-              <th data-field="dateLastSold" onclick="sortTable('deadstock-table',10)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('deadstock-table',11)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('deadstock-table',12)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('deadstock-table',13)">Transfer Out</th>
+              <th data-field="onHandValue" onclick="sortTable('deadstock-table',7)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('deadstock-table',8)">Sales/Inv Ratio</th>
+              <th data-field="weeksToSell" onclick="sortTable('deadstock-table',9)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('deadstock-table',10)">Days Cover</th>
+              <th data-field="dateLastSold" onclick="sortTable('deadstock-table',11)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('deadstock-table',12)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('deadstock-table',13)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('deadstock-table',14)">Transfer Out</th>
               <th>Action</th>
             </tr></thead>
             <tbody id="deadstock-body"></tbody>
@@ -3830,18 +3873,19 @@ canvas { max-height:260px; }
               <th data-field="stdPack" onclick="sortTable('outofstock-table',7)">Std Pack</th>
               <th data-field="qtyCases" onclick="sortTable('outofstock-table',8)">Qty Cases</th>
               <th data-field="invValue" onclick="sortTable('outofstock-table',9)">Inv Value</th>
-              <th data-field="p8ave" onclick="sortTable('outofstock-table',10)">P8 Ave/Wk</th>
-              <th data-field="weeksToSell" onclick="sortTable('outofstock-table',11)">WTS</th>
-              <th data-field="daysCover" onclick="sortTable('outofstock-table',12)">Days Cover</th>
-              <th data-field="status" onclick="sortTable('outofstock-table',13)">Status</th>
-              <th data-field="lostSalesPerWeek" onclick="sortTable('outofstock-table',14)">Lost Sales/Wk</th>
-              <th data-field="ico" onclick="sortTable('outofstock-table',15)">ICO</th>
-              <th data-field="poOrderGR" onclick="sortTable('outofstock-table',16)">PO On Order</th>
-              <th data-field="trfOrderGR" onclick="sortTable('outofstock-table',17)">Trf On Order</th>
-              <th data-field="dateLastSold" onclick="sortTable('outofstock-table',18)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('outofstock-table',19)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('outofstock-table',20)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('outofstock-table',21)">Transfer Out</th>
+              <th data-field="salesInvRatio" onclick="sortTable('outofstock-table',10)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('outofstock-table',11)">P8 Ave/Week</th>
+              <th data-field="weeksToSell" onclick="sortTable('outofstock-table',12)">WTS</th>
+              <th data-field="daysCover" onclick="sortTable('outofstock-table',13)">Days Cover</th>
+              <th data-field="status" onclick="sortTable('outofstock-table',14)">Status</th>
+              <th data-field="lostSalesPerWeek" onclick="sortTable('outofstock-table',15)">Lost Sales/Wk</th>
+              <th data-field="ico" onclick="sortTable('outofstock-table',16)">ICO</th>
+              <th data-field="poOrderGR" onclick="sortTable('outofstock-table',17)">PO On Order</th>
+              <th data-field="trfOrderGR" onclick="sortTable('outofstock-table',18)">Trf On Order</th>
+              <th data-field="dateLastSold" onclick="sortTable('outofstock-table',19)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('outofstock-table',20)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('outofstock-table',21)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('outofstock-table',22)">Transfer Out</th>
             </tr></thead>
             <tbody id="outofstock-body"></tbody>
           </table>
@@ -3906,7 +3950,7 @@ canvas { max-height:260px; }
               <th onclick="sortSupplierRisk(0)">Supplier</th>
               <th onclick="sortSupplierRisk(1)">SKUs</th>
               <th onclick="sortSupplierRisk(2)">Inv Value</th>
-              <th onclick="sortSupplierRisk(3)">P8 Ave/Wk</th>
+              <th onclick="sortSupplierRisk(3)">P8 Ave/Week</th>
               <th onclick="sortSupplierRisk(4)">Days Cover</th>
               <th onclick="sortSupplierRisk(5)">Critical %</th>
               <th onclick="sortSupplierRisk(6)">OOS %</th>
@@ -3934,7 +3978,7 @@ canvas { max-height:260px; }
               <th data-field="supplierCode" onclick="sortTable('suppliers-table',0)">Supplier Code</th>
               <th data-field="supplierName" onclick="sortTable('suppliers-table',1)">Supplier Name</th>
               <th data-field="totalValue" onclick="sortTable('suppliers-table',2)">Inv Value</th>
-              <th data-field="totalP8Ave" onclick="sortTable('suppliers-table',3)">P8 Ave/Wk</th>
+              <th data-field="totalP8Ave" onclick="sortTable('suppliers-table',3)">P8 Ave/Week</th>
               <th data-field="totalOnHand" onclick="sortTable('suppliers-table',4)">On Hand</th>
               <th data-field="totalSKUs" onclick="sortTable('suppliers-table',5)">SKUs</th>
               <th data-field="weeksToSell" onclick="sortTable('suppliers-table',6)">WTS</th>
@@ -3985,9 +4029,10 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('onHand')">On Hand <span class="sort-ind" data-key="onHand"></span></th>
               <th onclick="sortSKUs('qtyCasesNum')">Qty in Cases <span class="sort-ind" data-key="qtyCasesNum"></span></th>
               <th onclick="sortSKUs('invValue')">Inv Value <span class="sort-ind" data-key="invValue"></span></th>
+              <th onclick="sortSKUs('salesInvRatio')">Sales/Inv Ratio <span class="sort-ind" data-key="salesInvRatio"></span></th>
               <th onclick="sortSKUs('skuWTS')">WTS <span class="sort-ind" data-key="skuWTS"></span></th>
               <th onclick="sortSKUs('skuDaysCover')">Days Cover <span class="sort-ind" data-key="skuDaysCover"></span></th>
-              <th onclick="sortSKUs('p8ave')">P8 Ave/Wk <span class="sort-ind" data-key="p8ave"></span></th>
+              <th onclick="sortSKUs('p8ave')">P8 Ave/Week <span class="sort-ind" data-key="p8ave"></span></th>
               <th onclick="sortSKUs('status')">Status <span class="sort-ind" data-key="status"></span></th>
               <th onclick="sortSKUs('lostSalesPerWeek')">Lost Sales/Wk <span class="sort-ind" data-key="lostSalesPerWeek"></span></th>
               <th onclick="sortSKUs('ico')">ICO <span class="sort-ind" data-key="ico"></span></th>
@@ -4057,16 +4102,18 @@ canvas { max-height:260px; }
               <th data-field="supplier" onclick="sortTable('top300-table',5)">Supplier</th>
               <th data-field="onHand" onclick="sortTable('top300-table',6)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('top300-table',7)">Qty in Cases</th>
-              <th data-field="p8ave" onclick="sortTable('top300-table',8)">P8 Ave</th>
-              <th data-field="daysCover" onclick="sortTable('top300-table',9)">Days Cover</th>
-              <th data-field="status" onclick="sortTable('top300-table',10)">Status</th>
-              <th data-field="incomingPO" onclick="sortTable('top300-table',11)">Incoming PO</th>
-              <th data-field="lostSalesPerWeek" onclick="sortTable('top300-table',12)">Lost Sales/Wk</th>
-              <th data-field="ico" onclick="sortTable('top300-table',13)">ICO</th>
-              <th data-field="dateLastSold" onclick="sortTable('top300-table',14)">Last Sold</th>
-              <th data-field="dateLastReceived" onclick="sortTable('top300-table',15)">Last Received</th>
-              <th data-field="lastTransferIn" onclick="sortTable('top300-table',16)">Transfer In</th>
-              <th data-field="lastTransferOut" onclick="sortTable('top300-table',17)">Transfer Out</th>
+              <th data-field="invValue" onclick="sortTable('top300-table',8)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('top300-table',9)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('top300-table',10)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('top300-table',11)">Days Cover</th>
+              <th data-field="status" onclick="sortTable('top300-table',12)">Status</th>
+              <th data-field="incomingPO" onclick="sortTable('top300-table',13)">Incoming PO</th>
+              <th data-field="lostSalesPerWeek" onclick="sortTable('top300-table',14)">Lost Sales/Wk</th>
+              <th data-field="ico" onclick="sortTable('top300-table',15)">ICO</th>
+              <th data-field="dateLastSold" onclick="sortTable('top300-table',16)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('top300-table',17)">Last Received</th>
+              <th data-field="lastTransferIn" onclick="sortTable('top300-table',18)">Transfer In</th>
+              <th data-field="lastTransferOut" onclick="sortTable('top300-table',19)">Transfer Out</th>
             </tr></thead>
             <tbody id="top300-body"></tbody>
           </table>
@@ -5141,14 +5188,14 @@ function renderTop300Body() {
   const tbody = document.getElementById('top300-body');
   if (!tbody) return;
   const q = (tableSearch.top300 || '').toLowerCase().trim();
-  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
+  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
   const data = tableData.top300 || [];
   const view = q
     ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
     : data;
   document.getElementById('top300-count').textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="18" class="empty">No data found</td></tr>'
+    ? '<tr><td colspan="20" class="empty">No data found</td></tr>'
     : view.map(renderTop300Row).join('');
 }
 function renderTop300Analytics(metrics) {
@@ -5810,7 +5857,7 @@ async function loadSKUs(page) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="20" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="21" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -5833,6 +5880,7 @@ function renderSKUTable(rows) {
       '<td class="mono">' + fmt(r.onHand) + '</td>' +
       '<td class="mono">' + qtyCasesDisplay + '</td>' +
       '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.invValue) + '</td>' +
+      '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
       '<td class="mono">' + wts + '</td>' +
       '<td class="mono">' + dc + '</td>' +
       '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
@@ -5944,6 +5992,7 @@ function renderCriticalRow(r) {
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + fmt(r.currentWkSales) + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmtN(r.wtsNet) + '</td>' +
@@ -5966,6 +6015,7 @@ function renderOverstockRow(r) {
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + r.wtsNet + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
@@ -5986,6 +6036,7 @@ function renderAgingRow(r) {
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + dc + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
@@ -6007,6 +6058,7 @@ function renderBlackInventoryRow(r) {
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + dc + '</td>' +
     '<td class="mono">' + lastSold + '</td>' +
@@ -6025,6 +6077,7 @@ function renderNegativeSKURow(r) {
     '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + esc(r.qtyCases) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
     '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
@@ -6056,6 +6109,8 @@ function renderTop300Row(r) {
     '<td>' + esc(r.supplier) + '</td>' +
     '<td class="mono"' + onHandStyle + '>' + onHand + '</td>' +
     '<td class="mono">' + qtyCases + '</td>' +
+    '<td class="mono">' + (r.invValue != null ? '₱' + fmtN(r.invValue) : '—') + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + p8 + '</td>' +
     '<td class="mono" style="' + dcColor + '">' + dc + '</td>' +
     '<td><span class="' + statusClass + '">' + esc(r.status) + '</span></td>' +
@@ -6080,6 +6135,7 @@ function renderDeadstockRow(r) {
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
     '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono" style="color:var(--text2);">' + wts + '</td>' +
     '<td class="mono" style="color:var(--text2);">' + dc + '</td>' +
     '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
@@ -6105,6 +6161,7 @@ function renderOutOfStockRow(r) {
     '<td class="mono">' + fmt(r.stdPack) + '</td>' +
     '<td class="mono">' + qtyCases + '</td>' +
     '<td class="mono">₱' + fmtN(r.invValue) + '</td>' +
+    '<td class="mono">' + (r.salesInvRatio != null ? fmtN(r.salesInvRatio) + '%' : '—') + '</td>' +
     '<td class="mono">' + p8 + '</td>' +
     '<td class="mono">' + wts + '</td>' +
     '<td class="mono">' + dc + '</td>' +
@@ -6254,25 +6311,25 @@ let sortState = {};
 function getTableConfig(tableId) {
   const configs = {
     'critical-table':   { key: 'critical',   render: renderCriticalRow,   pagination: 'critical-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','salesInvRatio','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'aging-table':      { key: 'aging',      render: renderAgingRow,      pagination: 'aging-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
-      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
-      cols: ['storeNumber','storeName','area','skuCode','skuDesc','supplier','onHand','stdPack','qtyCases','invValue','p8ave','weeksToSell','daysCover','status','lostSalesPerWeek','ico','poOrderGR','trfOrderGR','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['storeNumber','storeName','area','skuCode','skuDesc','supplier','onHand','stdPack','qtyCases','invValue','salesInvRatio','p8ave','weeksToSell','daysCover','status','lostSalesPerWeek','ico','poOrderGR','trfOrderGR','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
       cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
-      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','invValue','salesInvRatio','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
       cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] },
     'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
