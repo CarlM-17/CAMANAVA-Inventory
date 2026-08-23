@@ -831,7 +831,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     //  4 Idle                  — onHand ≤ 0 AND no sales history
     //  5 Black Inventory       — has stock, no sales ≥180d, last stock-in ≥180d ago
     //  6 P8 Weeks No Sales     — has stock, no sales ≥8 weeks (recent-delivery bucket)
-    //  7 Aging                 — DOS > 180, last stock-in ≥180d (strictly aged excess stock)
+    //  7 Aging                 — DOS > 180, last stock-in ≥365d / 1 year (strictly aged excess stock)
     //  8 Overstock             — DOS > 90, last stock-in ≥30d (over-cover including mid-zone items)
     //  9 Critical              — 0 < DOS < 14 (replenishment risk)
     // 10 Healthy               — 14 ≤ DOS ≤ 60 (target zone)
@@ -844,7 +844,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     else if (onHand <= 0) status = 'Idle';
     else if ((daysNoSales == null || daysNoSales >= 180) && daysSinceLastStockIn != null && daysSinceLastStockIn >= 180) status = 'Black';
     else if (p8ave === 0 || (daysNoSales != null && daysNoSales >= 56)) status = 'P8NoSales';
-    else if (_dos != null && _dos > 180 && daysSinceLastStockIn != null && daysSinceLastStockIn >= 180) status = 'Aging';
+    else if (_dos != null && _dos > 180 && daysSinceLastStockIn != null && daysSinceLastStockIn >= 365) status = 'Aging';
     else if (_dos != null && _dos > 90 && daysSinceLastStockIn != null && daysSinceLastStockIn >= 30) status = 'Overstock';
     else if (_dos != null && _dos > 0 && _dos < 14) status = 'Critical';
     else if (_dos != null && _dos >= 14 && _dos <= 60) status = 'Healthy';
