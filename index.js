@@ -1923,6 +1923,101 @@ app.get('/api/overview-store-issues', (req, res) => {
   res.json({ stores, totals });
 });
 
+// ─── AGING & BLACK INVENTORY SUMMARY REPORT ──────────────────────────────────
+// Per-area top-10 for Aging and Black Inventory (top-10 is computed WITHIN
+// each area, never globally, so smaller areas still surface).
+app.get('/api/aging-black-summary', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const rows = applyFilters(cache.rows, filters);
+
+  // ── KPIs ────────────────────────────────────────────────────────────────
+  const totalValuation = rows.reduce((s, r) => s + (r.onHandValue || 0), 0);
+  const totalOnHand = rows.reduce((s, r) => s + (r.onHand || 0), 0);
+  const agingRows = rows.filter(r => r.isAging);
+  const blackRows = rows.filter(r => r.isBlackInventory);
+  const agingValue = agingRows.reduce((s, r) => s + (r.onHandValue || 0), 0);
+  const blackValue = blackRows.reduce((s, r) => s + (r.onHandValue || 0), 0);
+  const agingCount = agingRows.length;
+  const blackCount = blackRows.length;
+  const agingPct = totalValuation > 0 ? (agingValue / totalValuation * 100) : 0;
+  const blackPct = totalValuation > 0 ? (blackValue / totalValuation * 100) : 0;
+  const problemPct = totalValuation > 0 ? ((agingValue + blackValue) / totalValuation * 100) : 0;
+
+  // ── PER-AREA BREAKDOWN (for chart + area totals) ────────────────────────
+  const areaAgg = {};
+  for (const r of rows) {
+    const key = r.area || '(Unknown)';
+    if (!areaAgg[key]) areaAgg[key] = { area: key, totalValue: 0, agingValue: 0, blackValue: 0, agingCount: 0, blackCount: 0 };
+    const g = areaAgg[key];
+    g.totalValue += r.onHandValue || 0;
+    if (r.isAging) { g.agingValue += r.onHandValue || 0; g.agingCount++; }
+    if (r.isBlackInventory) { g.blackValue += r.onHandValue || 0; g.blackCount++; }
+  }
+  const byArea = Object.values(areaAgg)
+    .map(g => ({
+      ...g,
+      agingPct: g.totalValue > 0 ? (g.agingValue / g.totalValue * 100) : 0,
+      blackPct: g.totalValue > 0 ? (g.blackValue / g.totalValue * 100) : 0
+    }))
+    .sort((a, b) => (b.agingValue + b.blackValue) - (a.agingValue + a.blackValue));
+
+  // ── TOP 10 PER AREA (Aging & Black separately) ──────────────────────────
+  const toItem = (r) => {
+    let qtyCases;
+    if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+    else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+    else qtyCases = 'Per Piece';
+    return {
+      area: r.area,
+      store: r.storeNumber + ' - ' + r.storeName,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      qtyCases,
+      onHand: r.onHand,
+      onHandValue: r.onHandValue,
+      weeksToSell: r.p8ave > 0 ? +(r.onHand / r.p8ave).toFixed(2) : null,
+      p8ave: r.p8ave,
+      dateLastReceived: formatDate(r.dateLastReceived),
+      dateLastSold: formatDate(r.dateLastSold)
+    };
+  };
+  const groupTop10 = (source) => {
+    const grouped = {};
+    for (const r of source) {
+      const key = r.area || '(Unknown)';
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(r);
+    }
+    const out = [];
+    for (const area of Object.keys(grouped).sort()) {
+      const top = grouped[area]
+        .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+        .slice(0, 10)
+        .map(toItem);
+      out.push(...top);
+    }
+    return out;
+  };
+  const agingItems = groupTop10(agingRows);
+  const blackItems = groupTop10(blackRows);
+
+  res.json({
+    kpis: {
+      totalValuation, totalOnHand,
+      agingValue, agingCount, agingPct,
+      blackValue, blackCount, blackPct,
+      problemValue: agingValue + blackValue,
+      problemPct,
+      areasScope: Object.keys(areaAgg).length
+    },
+    byArea,
+    agingItems,
+    blackItems
+  });
+});
+
 app.post('/api/refresh', async (req, res) => {
   refreshData(true);
   res.json({ message: 'Refresh triggered' });
@@ -2284,6 +2379,60 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'OOS', key: 'oosCount', format: 'integer' },
       { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
       { header: 'Dead', key: 'deadCount', format: 'integer' }
+    ];
+  }
+  else if (type === 'agingblack') {
+    // Combined Aging + Black Inventory report, single sheet (top-10 per area for each)
+    sheetName = 'Aging & Black Summary';
+    title = 'Aging & Black Inventory Summary — Top 10 per Area';
+    const groupTop10 = (source) => {
+      const grouped = {};
+      for (const r of source) {
+        const key = r.area || '(Unknown)';
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(r);
+      }
+      const out = [];
+      for (const area of Object.keys(grouped).sort()) {
+        const top = grouped[area]
+          .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+          .slice(0, 10);
+        out.push(...top);
+      }
+      return out;
+    };
+    const toRow = (r, category) => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
+        category,
+        area: r.area,
+        store: r.storeNumber + ' - ' + r.storeName,
+        skuCode: r.skuCode,
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        qtyCases,
+        onHandValue: r.onHandValue,
+        weeksToSell: r.p8ave > 0 ? +(r.onHand / r.p8ave).toFixed(2) : null,
+        p8ave: r.p8ave,
+        dateLastReceived: formatDate(r.dateLastReceived),
+        dateLastSold: formatDate(r.dateLastSold)
+      };
+    };
+    const agingTop = groupTop10(baseRows.filter(r => r.isAging)).map(r => toRow(r, 'Aging'));
+    const blackTop = groupTop10(baseRows.filter(r => r.isBlackInventory)).map(r => toRow(r, 'Black Inventory'));
+    data = [...agingTop, ...blackTop];
+    columns = [
+      { header: 'Category', key: 'category' }, { header: 'Area', key: 'area' }, { header: 'Store', key: 'store' },
+      { header: 'SKU', key: 'skuCode' }, { header: 'Description', key: 'skuDesc' }, { header: 'Supplier', key: 'supplier' },
+      { header: 'Qty in Cases', key: 'qtyCases' },
+      { header: 'Inv Value', key: 'onHandValue', format: 'currency' },
+      { header: 'Weeks to Sell', key: 'weeksToSell', format: 'decimal' },
+      { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' },
+      { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }
     ];
   }
   else if (type === 'problem-inv') {
@@ -3471,6 +3620,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
       <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU Blitz</div>
       <div class="tab" onclick="showTab('ricereview')">🌾 Rice Stock Review</div>
+      <div class="tab" onclick="showTab('agingblack')">📉 Aging & Black Summary</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
 
@@ -4244,6 +4394,89 @@ canvas { max-height:260px; }
       </div>
     </div>
 
+    <!-- AGING & BLACK INVENTORY SUMMARY REPORT TAB -->
+    <div id="tab-agingblack" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">📉 Aging &amp; Black Inventory Summary Report
+            <span style="font-size:11px;color:var(--text2);margin-left:8px;font-weight:normal;">Top-10 per area (calculated within each area, not globally)</span>
+          </div>
+          <div class="section-actions">
+            <select id="agingblack-area-filter" class="table-search" style="max-width:220px;" onchange="onAgingBlackAreaChange(this.value)">
+              <option value="">All Areas (Total Region)</option>
+            </select>
+            <button class="btn btn-sm" onclick="exportAgingBlackExcel()" id="agingblack-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <!-- KPI STRIP -->
+        <div class="kpi-grid" id="agingblack-kpi-grid" style="margin-bottom:12px;"></div>
+        <!-- CHART: per-area Aging + Black amounts -->
+        <div class="summary-card" style="margin-bottom:12px;">
+          <div class="summary-card-title">Per-Area Breakdown — Aging &amp; Black Inventory Value
+            <span style="font-size:10px;color:var(--text2);margin-left:8px;font-weight:normal;">
+              <span style="color:#e3b341;">🟨 Aging</span> &nbsp;
+              <span style="color:#f85149;">🟥 Black</span>
+            </span>
+          </div>
+          <div class="summary-card-body" id="agingblack-area-chart" style="max-height:none;overflow:visible;padding:8px 12px;"></div>
+        </div>
+        <!-- AGING TABLE -->
+        <div class="section-header" style="margin-top:8px;">
+          <div class="section-title" style="font-size:14px;color:#e3b341;">📅 Aging Items — Top 10 per Area
+            <span class="badge badge-yellow" id="agingblack-aging-count" style="margin-left:8px;">0</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Filter aging..." oninput="filterAgingBlackTable('aging',this.value)"/>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:420px;overflow:auto;">
+          <table id="agingblack-aging-table">
+            <thead><tr>
+              <th data-field="area" onclick="sortTable('agingblack-aging-table',0)">Area</th>
+              <th data-field="store" onclick="sortTable('agingblack-aging-table',1)">Store</th>
+              <th data-field="skuCode" onclick="sortTable('agingblack-aging-table',2)">SKU</th>
+              <th data-field="skuDesc" onclick="sortTable('agingblack-aging-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('agingblack-aging-table',4)">Supplier</th>
+              <th data-field="qtyCases" onclick="sortTable('agingblack-aging-table',5)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('agingblack-aging-table',6)">Inv Value</th>
+              <th data-field="weeksToSell" onclick="sortTable('agingblack-aging-table',7)">Weeks to Sell</th>
+              <th data-field="p8ave" onclick="sortTable('agingblack-aging-table',8)">P8 Ave/Week</th>
+              <th data-field="dateLastReceived" onclick="sortTable('agingblack-aging-table',9)">Last Received</th>
+              <th data-field="dateLastSold" onclick="sortTable('agingblack-aging-table',10)">Last Sold</th>
+            </tr></thead>
+            <tbody id="agingblack-aging-body"></tbody>
+          </table>
+        </div>
+        <!-- BLACK INVENTORY TABLE -->
+        <div class="section-header" style="margin-top:16px;">
+          <div class="section-title" style="font-size:14px;color:#f85149;">⬛ Black Inventory Items — Top 10 per Area
+            <span class="badge badge-red" id="agingblack-black-count" style="margin-left:8px;">0</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Filter black inv..." oninput="filterAgingBlackTable('black',this.value)"/>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:420px;overflow:auto;">
+          <table id="agingblack-black-table">
+            <thead><tr>
+              <th data-field="area" onclick="sortTable('agingblack-black-table',0)">Area</th>
+              <th data-field="store" onclick="sortTable('agingblack-black-table',1)">Store</th>
+              <th data-field="skuCode" onclick="sortTable('agingblack-black-table',2)">SKU</th>
+              <th data-field="skuDesc" onclick="sortTable('agingblack-black-table',3)">Description</th>
+              <th data-field="supplier" onclick="sortTable('agingblack-black-table',4)">Supplier</th>
+              <th data-field="qtyCases" onclick="sortTable('agingblack-black-table',5)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('agingblack-black-table',6)">Inv Value</th>
+              <th data-field="weeksToSell" onclick="sortTable('agingblack-black-table',7)">Weeks to Sell</th>
+              <th data-field="p8ave" onclick="sortTable('agingblack-black-table',8)">P8 Ave/Week</th>
+              <th data-field="dateLastReceived" onclick="sortTable('agingblack-black-table',9)">Last Received</th>
+              <th data-field="dateLastSold" onclick="sortTable('agingblack-black-table',10)">Last Sold</th>
+            </tr></thead>
+            <tbody id="agingblack-black-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
     <!-- ACTIVITY LOG TAB (admin only) -->
     <div id="tab-logs" style="display:none;">
       <div class="section">
@@ -4282,7 +4515,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1, agingblackAging:1, agingblackBlack:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -5064,6 +5297,7 @@ async function loadTabData() {
   if (activeTab === 'skus') await loadSKUs(1);
   if (activeTab === 'top300') await loadTop300();
   if (activeTab === 'ricereview') await loadRiceReview();
+  if (activeTab === 'agingblack') await loadAgingBlack();
   if (activeTab === 'logs') await loadLogs();
 }
 
@@ -5448,6 +5682,133 @@ async function exportProblemInventory() {
     const params = new URLSearchParams(activeFilters);
     if (authToken) params.set('token', authToken);
     const url = '/api/export/problem-inv?' + params.toString();
+    const a = document.createElement('a');
+    a.href = url; a.download = '';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  } catch (e) { alert('Export failed: ' + e.message); }
+  finally { setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800); }
+}
+
+// ─── AGING & BLACK INVENTORY SUMMARY ─────────────────────────────────────────
+let agingBlackAreaOverride = ''; // Tab-specific area override (empty = use top-level or all)
+async function loadAgingBlack() {
+  // Build request URL with area override honored (falls back to global filters)
+  const baseParams = new URLSearchParams(activeFilters);
+  if (agingBlackAreaOverride) baseParams.set('area', agingBlackAreaOverride);
+  if (authToken) baseParams.set('token', authToken);
+  const r = await fetch('/api/aging-black-summary?' + baseParams.toString());
+  const data = await r.json();
+  if (data.error) return;
+  populateAgingBlackAreaFilter(data.byArea);
+  renderAgingBlackKPIs(data.kpis);
+  renderAgingBlackAreaChart(data.byArea);
+  tableData.agingblackAging = data.agingItems || [];
+  tableData.agingblackBlack = data.blackItems || [];
+  document.getElementById('agingblack-aging-count').textContent = fmt(tableData.agingblackAging.length);
+  document.getElementById('agingblack-black-count').textContent = fmt(tableData.agingblackBlack.length);
+  renderAgingBlackBody('aging');
+  renderAgingBlackBody('black');
+}
+function populateAgingBlackAreaFilter(byArea) {
+  const sel = document.getElementById('agingblack-area-filter');
+  if (!sel) return;
+  const current = agingBlackAreaOverride;
+  const areas = (byArea || []).map(a => a.area).filter(Boolean).sort();
+  sel.innerHTML = '<option value="">All Areas (Total Region)</option>' +
+    areas.map(a => '<option value="' + esc(a) + '"' + (a === current ? ' selected' : '') + '>' + esc(a) + '</option>').join('');
+}
+function onAgingBlackAreaChange(v) {
+  agingBlackAreaOverride = v || '';
+  loadAgingBlack();
+}
+function renderAgingBlackKPIs(k) {
+  const grid = document.getElementById('agingblack-kpi-grid');
+  if (!grid || !k) return;
+  const problemColor = k.problemPct >= 15 ? 'red' : k.problemPct >= 8 ? 'yellow' : 'green';
+  grid.innerHTML = [
+    kpiCard('Total Valuation', '₱' + fmtM(k.totalValuation), fmt(k.totalOnHand) + ' units on hand', 'blue'),
+    kpiCard('Total Aging Value', '₱' + fmtM(k.agingValue), fmt(k.agingCount) + ' SKUs', 'yellow'),
+    kpiCard('Total Black Value', '₱' + fmtM(k.blackValue), fmt(k.blackCount) + ' SKUs', 'red'),
+    kpiCard('Aging % of Valuation', k.agingPct.toFixed(2) + '%', 'of total inv value', k.agingPct >= 10 ? 'red' : k.agingPct >= 5 ? 'yellow' : 'green'),
+    kpiCard('Black % of Valuation', k.blackPct.toFixed(2) + '%', 'of total inv value', k.blackPct >= 5 ? 'red' : k.blackPct >= 2 ? 'yellow' : 'green'),
+    kpiCard('Aging + Black %', k.problemPct.toFixed(2) + '%', '₱' + fmtM(k.problemValue) + ' at risk', problemColor),
+    kpiCard('Areas in Scope', fmt(k.areasScope), agingBlackAreaOverride ? 'filtered' : 'all areas', 'blue')
+  ].join('');
+}
+function renderAgingBlackAreaChart(byArea) {
+  const el = document.getElementById('agingblack-area-chart');
+  if (!el) return;
+  if (!byArea || byArea.length === 0) { el.innerHTML = '<div class="empty" style="padding:24px;text-align:center;color:var(--text2);">No data</div>'; return; }
+  const maxTotal = Math.max(...byArea.map(a => (a.agingValue + a.blackValue)), 1);
+  const rows = byArea.map(a => {
+    const total = a.agingValue + a.blackValue;
+    const w = (total / maxTotal) * 100;
+    const agingW = total > 0 ? (a.agingValue / total) * w : 0;
+    const blackW = total > 0 ? (a.blackValue / total) * w : 0;
+    return '<div style="display:grid;grid-template-columns:160px 1fr 200px;gap:8px;align-items:center;padding:3px 0;font-size:11px;line-height:1.1;">' +
+      '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(a.area) + '">' + esc(a.area) + '</div>' +
+      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
+        '<div style="width:' + agingW.toFixed(2) + '%;background:#e3b341;" title="Aging: ₱' + fmtN(a.agingValue) + ' (' + a.agingPct.toFixed(1) + '%)"></div>' +
+        '<div style="width:' + blackW.toFixed(2) + '%;background:#f85149;" title="Black: ₱' + fmtN(a.blackValue) + ' (' + a.blackPct.toFixed(1) + '%)"></div>' +
+      '</div>' +
+      '<div style="text-align:right;font-family:monospace;font-size:11px;">' +
+        '<span style="color:#e3b341;font-weight:700;">₱' + fmtM(a.agingValue) + '</span> &nbsp; ' +
+        '<span style="color:#f85149;font-weight:700;">₱' + fmtM(a.blackValue) + '</span>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  el.innerHTML = rows;
+}
+function renderAgingBlackRow(r) {
+  const qtyCases = r.qtyCases === 'Per Piece'
+    ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>'
+    : fmtN(r.qtyCases);
+  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
+  return '<tr>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td>' + esc(r.store) + '</td>' +
+    '<td class="mono">' + esc(r.skuCode) + '</td>' +
+    '<td>' + esc(r.skuDesc) + '</td>' +
+    '<td>' + esc(r.supplier) + '</td>' +
+    '<td class="mono">' + qtyCases + '</td>' +
+    '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.onHandValue) + '</td>' +
+    '<td class="mono">' + wts + '</td>' +
+    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+    '<td class="mono">' + esc(r.dateLastReceived || '—') + '</td>' +
+    '<td class="mono">' + esc(r.dateLastSold || '<span style="color:var(--text2);font-style:italic;">Never</span>') + '</td>' +
+    '</tr>';
+}
+function renderAgingBlackBody(which) {
+  const tableKey = which === 'aging' ? 'agingblackAging' : 'agingblackBlack';
+  const bodyId = which === 'aging' ? 'agingblack-aging-body' : 'agingblack-black-body';
+  const tbody = document.getElementById(bodyId);
+  if (!tbody) return;
+  const q = (tableSearch[tableKey] || '').toLowerCase().trim();
+  const cols = ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'];
+  const data = tableData[tableKey] || [];
+  const view = q
+    ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
+    : data;
+  const countEl = document.getElementById(which === 'aging' ? 'agingblack-aging-count' : 'agingblack-black-count');
+  if (countEl) countEl.textContent = fmt(view.length);
+  tbody.innerHTML = view.length === 0
+    ? '<tr><td colspan="11" class="empty">No ' + (which === 'aging' ? 'aging' : 'black inventory') + ' items in this scope</td></tr>'
+    : view.map(renderAgingBlackRow).join('');
+}
+function filterAgingBlackTable(which, q) {
+  const key = which === 'aging' ? 'agingblackAging' : 'agingblackBlack';
+  tableSearch[key] = q || '';
+  renderAgingBlackBody(which);
+}
+async function exportAgingBlackExcel() {
+  const btn = document.getElementById('agingblack-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const params = new URLSearchParams(activeFilters);
+    if (authToken) params.set('token', authToken);
+    if (agingBlackAreaOverride) params.set('area', agingBlackAreaOverride);
+    const url = '/api/export/agingblack?' + params.toString();
     const a = document.createElement('a');
     a.href = url; a.download = '';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
@@ -6298,7 +6659,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','agingblack','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -6328,7 +6689,9 @@ const tableKeyToId = {
   suppliers: 'suppliers-table',
   top300: 'top300-table',
   rice: 'rice-table',
-  problemInv: 'problem-inv-table'
+  problemInv: 'problem-inv-table',
+  agingblackAging: 'agingblack-aging-table',
+  agingblackBlack: 'agingblack-black-table'
 };
 
 // Re-render a table from cached data, applying current search filter
@@ -6337,6 +6700,8 @@ function renderFromCache(key) {
   if (key === 'rice') { renderRiceBody(); return true; }
   if (key === 'problemInv') { renderProblemInvBody(); return true; }
   if (key === 'top300') { renderTop300Body(); return true; }
+  if (key === 'agingblackAging') { renderAgingBlackBody('aging'); return true; }
+  if (key === 'agingblackBlack') { renderAgingBlackBody('black'); return true; }
   const tableId = tableKeyToId[key];
   if (!tableId) return false;
   const cfg = getTableConfig(tableId);
@@ -6409,7 +6774,11 @@ function getTableConfig(tableId) {
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
       cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] },
     'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
-      cols: ['storeNumber','storeName','area','blackCount','blackOnHand','blackValue','agingCount','agingOnHand','agingValue','overstockCount','overstockOnHand','overstockValue','totalProblemValue'] }
+      cols: ['storeNumber','storeName','area','blackCount','blackOnHand','blackValue','agingCount','agingOnHand','agingValue','overstockCount','overstockOnHand','overstockValue','totalProblemValue'] },
+    'agingblack-aging-table': { key: 'agingblackAging', render: renderAgingBlackRow, pagination: 'agingblack-aging-pagination',
+      cols: ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'] },
+    'agingblack-black-table': { key: 'agingblackBlack', render: renderAgingBlackRow, pagination: 'agingblack-black-pagination',
+      cols: ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'] }
   };
   return configs[tableId];
 }
