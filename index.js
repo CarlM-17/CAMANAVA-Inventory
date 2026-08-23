@@ -615,7 +615,7 @@ function daysSince(d) {
 
 // Human-readable status label mapping (shared between backend + frontend rendering)
 const STATUS_LABELS = {
-  Excluded: 'Excluded (Merch P)',
+  Excluded: 'Promo Items',
   Negative: 'Negative Stock',
   OOS: 'OOS',
   Idle: 'Idle',
@@ -4462,7 +4462,7 @@ canvas { max-height:260px; }
               <option value="Critical">⚠ Critical</option>
               <option value="Healthy">✅ Healthy</option>
               <option value="WellStocked">🟢 Well Stocked</option>
-              <option value="Excluded">⚫ Excluded (Merch P)</option>
+              <option value="Excluded">⚫ Promo Items</option>
               <option value="Undetermined">❓ Undetermined</option>
             </select>
             <input type="text" class="table-search" id="sku-search-input" placeholder="Search SKU / Store / Supplier..." oninput="debouncedSKUSearch()"/>
@@ -7382,7 +7382,7 @@ function statusClassFor(label) {
     case 'P8 Weeks No Sales':      return 'status-p8';
     case 'Dead Stock':             return 'status-dead';
     case 'Idle':                   return 'status-idle';
-    case 'Excluded (Merch P)':     return 'status-excluded';
+    case 'Promo Items':            return 'status-excluded';
     case 'Well Stocked':           return 'status-wellstocked';
     case 'Healthy':                return 'status-healthy';
     case 'Not Found':              return 'status-idle';
