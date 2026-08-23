@@ -1866,11 +1866,26 @@ app.get('/api/skus', (req, res) => {
   if (s && !s.isAdmin && s.area) filters.area = s.area;
   let rows = applyFilters(cache.rows, filters);
   // Status filter
-  if (status === 'critical') rows = rows.filter(r => r.isCritical);
-  else if (status === 'oos') rows = rows.filter(r => r.isOutOfStock);
-  else if (status === 'overstock') rows = rows.filter(r => r.isOverstock);
-  else if (status === 'deadstock') rows = rows.filter(r => r.isDeadStock);
-  else if (status === 'normal') rows = rows.filter(r => !r.isCritical && !r.isOutOfStock && !r.isOverstock && !r.isDeadStock);
+  // SKU Analysis status filter — matches internal status codes from buildAnalytics.
+  // Legacy short codes (critical/oos/overstock/deadstock/normal) also supported
+  // for backward compatibility with any older cached links.
+  if (status) {
+    const legacy = {
+      critical: 'Critical', oos: 'OOS', overstock: 'Overstock',
+      deadstock: 'P8NoSales', normal: null  // 'normal' → any non-problem status
+    };
+    if (legacy.hasOwnProperty(status)) {
+      const target = legacy[status];
+      if (target === null) {
+        rows = rows.filter(r => ['Healthy','WellStocked','Undetermined'].includes(r.status));
+      } else {
+        rows = rows.filter(r => r.status === target);
+      }
+    } else {
+      // Direct match on internal status code
+      rows = rows.filter(r => r.status === status);
+    }
+  }
 
   // Search across SKU code + description + supplier + store name
   if (search) {
@@ -2795,11 +2810,26 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
   if (s && !s.isAdmin && s.area) filters.area = s.area;
 
   let rows = applyFilters(cache.rows, filters);
-  if (status === 'critical') rows = rows.filter(r => r.isCritical);
-  else if (status === 'oos') rows = rows.filter(r => r.isOutOfStock);
-  else if (status === 'overstock') rows = rows.filter(r => r.isOverstock);
-  else if (status === 'deadstock') rows = rows.filter(r => r.isDeadStock);
-  else if (status === 'normal') rows = rows.filter(r => !r.isCritical && !r.isOutOfStock && !r.isOverstock && !r.isDeadStock);
+  // SKU Analysis status filter — matches internal status codes from buildAnalytics.
+  // Legacy short codes (critical/oos/overstock/deadstock/normal) also supported
+  // for backward compatibility with any older cached links.
+  if (status) {
+    const legacy = {
+      critical: 'Critical', oos: 'OOS', overstock: 'Overstock',
+      deadstock: 'P8NoSales', normal: null  // 'normal' → any non-problem status
+    };
+    if (legacy.hasOwnProperty(status)) {
+      const target = legacy[status];
+      if (target === null) {
+        rows = rows.filter(r => ['Healthy','WellStocked','Undetermined'].includes(r.status));
+      } else {
+        rows = rows.filter(r => r.status === target);
+      }
+    } else {
+      // Direct match on internal status code
+      rows = rows.filter(r => r.status === status);
+    }
+  }
 
   if (search) {
     const q = search.toLowerCase();
@@ -4420,13 +4450,20 @@ canvas { max-height:260px; }
             <span class="badge badge-blue" id="skus-total-count" style="margin-left:8px;">0</span>
           </div>
           <div class="section-actions">
-            <select class="filter-select" id="sku-status-filter" onchange="loadSKUs(1)" style="width:140px;">
+            <select class="filter-select" id="sku-status-filter" onchange="loadSKUs(1)" style="width:170px;">
               <option value="">All Status</option>
-              <option value="critical">Critical</option>
-              <option value="oos">Out of Stock</option>
-              <option value="overstock">Overstock</option>
-              <option value="deadstock">Dead Stock</option>
-              <option value="normal">Normal</option>
+              <option value="Negative">⚠ Negative Stock</option>
+              <option value="OOS">🚫 Out of Stock</option>
+              <option value="Idle">💤 Idle</option>
+              <option value="Black">⬛ Black Inventory</option>
+              <option value="P8NoSales">📆 P8 Weeks No Sales</option>
+              <option value="Aging">📅 Aging</option>
+              <option value="Overstock">📦 Overstock</option>
+              <option value="Critical">⚠ Critical</option>
+              <option value="Healthy">✅ Healthy</option>
+              <option value="WellStocked">🟢 Well Stocked</option>
+              <option value="Excluded">⚫ Excluded (Merch P)</option>
+              <option value="Undetermined">❓ Undetermined</option>
             </select>
             <input type="text" class="table-search" id="sku-search-input" placeholder="Search SKU / Store / Supplier..." oninput="debouncedSKUSearch()"/>
             <input type="text" class="table-search" id="sku-upc-input" placeholder="📷 Scan/enter UPC" onkeydown="if(event.key==='Enter')lookupUPC()" style="width:180px;"/>
