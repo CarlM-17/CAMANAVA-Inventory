@@ -5996,11 +5996,11 @@ function renderAgingBlackRow(r) {
     planCell =
       '<div style="font-size:11px;color:var(--text1);line-height:1.3;">' + esc(preview) + '</div>' +
       '<div style="font-size:10px;color:var(--text2);margin-top:2px;">' +
-        '<a href="#" onclick="openActionPlanModal(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--blue);">Edit</a> · ' +
-        '<a href="#" onclick="deleteActionPlan(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--red-light);">Delete</a>' + meta +
+        '<a href="#" onclick="openActionPlanModal(\\'' + type + '\\',\\'' + sn + '\\',\\'' + sku + '\\');return false;" style="color:var(--blue);">Edit</a> · ' +
+        '<a href="#" onclick="deleteActionPlan(\\'' + type + '\\',\\'' + sn + '\\',\\'' + sku + '\\');return false;" style="color:var(--red-light);">Delete</a>' + meta +
       '</div>';
   } else {
-    planCell = '<a href="#" onclick="openActionPlanModal(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--blue);font-size:11px;">+ Add Plan</a>';
+    planCell = '<a href="#" onclick="openActionPlanModal(\\'' + type + '\\',\\'' + sn + '\\',\\'' + sku + '\\');return false;" style="color:var(--blue);font-size:11px;">+ Add Plan</a>';
   }
   return '<tr>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
