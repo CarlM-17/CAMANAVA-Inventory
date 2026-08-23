@@ -1727,6 +1727,7 @@ app.get('/api/top300skus', (req, res) => {
       daysCover: inv ? inv.skuDaysCover : null,
       status,
       incomingPO: inv ? inv.poOrderGR : null,
+      trfOnOrder: inv ? inv.trfOrderGR : null,
       lostSalesPerWeek: inv ? inv.lostSalesPerWeek : null,
       ico: inv ? inv.ico : '',
       dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
@@ -3120,6 +3121,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
       daysCover: inv && inv.skuDaysCover != null ? +inv.skuDaysCover.toFixed(0) : null,
       status,
       incomingPO: inv ? inv.poOrderGR : null,
+      trfOnOrder: inv ? inv.trfOrderGR : null,
       lostSalesPerWeek: inv ? +(inv.lostSalesPerWeek || 0).toFixed(2) : null,
       ico: inv ? inv.ico : '',
       dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
@@ -4648,6 +4650,33 @@ canvas { max-height:260px; }
           </div>
           <div class="summary-card-body" id="top300-store-chart" style="max-height:none;overflow:visible;padding:8px 12px;"></div>
         </div>
+        <!-- SUMMARY PER STORE — Sales/Inv Ratio rollup for Top 300 SKUs only -->
+        <div class="section-header" style="margin-top:8px;">
+          <div class="section-title" style="font-size:14px;">📊 Sales/Inv Ratio Summary per Store
+            <span class="badge badge-blue" id="top300-sir-count" style="margin-left:8px;">0</span>
+            <span style="font-size:11px;color:var(--text2);margin-left:8px;font-weight:normal;">Aggregated across each store's Top 300 SKUs only</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Filter store..." oninput="searchTable('top300-sir-table',this.value)"/>
+          </div>
+        </div>
+        <div class="table-wrap" style="max-height:520px;overflow:auto;">
+          <table id="top300-sir-table">
+            <thead><tr>
+              <th data-field="area" onclick="sortTable('top300-sir-table',0)">Area</th>
+              <th data-field="storeName" onclick="sortTable('top300-sir-table',1)">Store Name</th>
+              <th data-field="onHand" onclick="sortTable('top300-sir-table',2)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('top300-sir-table',3)">Qty in Cases</th>
+              <th data-field="invValue" onclick="sortTable('top300-sir-table',4)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('top300-sir-table',5)">Sales/Inv Ratio</th>
+              <th data-field="zone" onclick="sortTable('top300-sir-table',6)">Zone</th>
+              <th data-field="p8ave" onclick="sortTable('top300-sir-table',7)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('top300-sir-table',8)">Days Cover</th>
+              <th data-field="onOrderTotal" onclick="sortTable('top300-sir-table',9)">On Order + TRF</th>
+            </tr></thead>
+            <tbody id="top300-sir-body"></tbody>
+          </table>
+        </div>
         </div><!-- /top300-analytics-capture -->
         <div class="table-wrap" style="max-height:600px;overflow:auto;">
           <table id="top300-table">
@@ -4903,7 +4932,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, negpromo:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1, agingblackAging:1, agingblackBlack:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, negpromo:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, top300Sir:1, rice:1, problemInv:1, agingblackAging:1, agingblackBlack:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -5925,6 +5954,89 @@ async function loadTop300() {
   }
   renderTop300Analytics(Array.isArray(metrics) ? metrics : [], data);
   renderTop300Body();
+  buildTop300SirSummary(data);
+}
+// ── Sales/Inv Ratio summary per store (Top 300 SKUs only) ───────────────────
+function buildTop300SirSummary(items) {
+  const byStore = {};
+  for (const r of items || []) {
+    const key = r.storeName || '(Unknown)';
+    if (!byStore[key]) byStore[key] = {
+      area: r.area || '', storeName: key,
+      onHand: 0, qtyCasesSum: 0, invValue: 0, aveWklySales: 0, p8ave: 0,
+      poOnOrder: 0, trfOnOrder: 0, hasAnyStock: false
+    };
+    const g = byStore[key];
+    g.onHand += Number(r.onHand) || 0;
+    // Sum numeric qtyCases only (skip 'Per Piece' strings)
+    if (typeof r.qtyCases === 'number') g.qtyCasesSum += r.qtyCases;
+    g.invValue += Number(r.invValue) || 0;
+    g.aveWklySales += Number(r.aveWklySales) || 0;
+    g.p8ave += Number(r.p8ave) || 0;
+    g.poOnOrder += Number(r.incomingPO) || 0;
+    g.trfOnOrder += Number(r.trfOnOrder) || 0;
+    if ((r.onHand || 0) > 0) g.hasAnyStock = true;
+  }
+  const zoneCode = (r) => {
+    if (r == null) return '—';
+    if (r <= 0) return 'Dead';
+    if (r < 6) return 'Overstocked';
+    if (r < 10) return 'Watch';
+    if (r < 15.6) return 'Healthy';
+    return 'Excellent';
+  };
+  const rows = Object.values(byStore).map(g => {
+    const sir = g.invValue > 0 ? +((g.aveWklySales / g.invValue) * 100).toFixed(2) : null;
+    const dc = g.aveWklySales > 0 ? Math.round((g.invValue * 7) / g.aveWklySales) : null;
+    return {
+      area: g.area,
+      storeName: g.storeName,
+      onHand: g.onHand,
+      qtyCases: +g.qtyCasesSum.toFixed(2),
+      invValue: g.invValue,
+      aveWklySales: g.aveWklySales,
+      salesInvRatio: sir,
+      zone: zoneCode(sir),
+      p8ave: g.p8ave,
+      daysCover: dc,
+      onOrderTotal: g.poOnOrder + g.trfOnOrder
+    };
+  }).sort((a, b) => (a.salesInvRatio == null ? -1 : (b.salesInvRatio == null ? 1 : a.salesInvRatio - b.salesInvRatio)));
+  tableData.top300Sir = rows;
+  const countEl = document.getElementById('top300-sir-count');
+  if (countEl) countEl.textContent = fmt(rows.length);
+  renderTop300SirBody();
+}
+function renderTop300SirRow(r) {
+  const zi = zoneInfo(r.salesInvRatio, r.zone);
+  const ratioCell = r.salesInvRatio == null ? '—'
+    : '<span style="color:' + zi.color + ';font-weight:600;">' + fmtN(r.salesInvRatio) + '%</span>';
+  const zoneBadge = '<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' + zi.bg + ';color:' + zi.color + ';font-size:11px;font-weight:700;white-space:nowrap;">' + esc(zi.label) + '</span>';
+  const dc = r.daysCover != null ? r.daysCover + 'd' : '—';
+  return '<tr>' +
+    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td>' + esc(r.storeName) + '</td>' +
+    '<td class="mono">' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + fmtN(r.qtyCases) + '</td>' +
+    '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.invValue) + '</td>' +
+    '<td class="mono">' + ratioCell + '</td>' +
+    '<td>' + zoneBadge + '</td>' +
+    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+    '<td class="mono">' + dc + '</td>' +
+    '<td class="mono">' + fmt(r.onOrderTotal) + '</td>' +
+  '</tr>';
+}
+function renderTop300SirBody() {
+  const tbody = document.getElementById('top300-sir-body');
+  if (!tbody) return;
+  const q = (tableSearch.top300Sir || '').toLowerCase().trim();
+  const data = tableData.top300Sir || [];
+  const view = q ? data.filter(r => (r.storeName || '').toLowerCase().includes(q) || (r.area || '').toLowerCase().includes(q)) : data;
+  const countEl = document.getElementById('top300-sir-count');
+  if (countEl) countEl.textContent = fmt(view.length);
+  tbody.innerHTML = view.length === 0
+    ? '<tr><td colspan="10" class="empty">No data</td></tr>'
+    : view.map(renderTop300SirRow).join('');
 }
 // Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
 function renderTop300Body() {
@@ -7225,6 +7337,7 @@ const tableKeyToId = {
   stores: 'stores-table',
   suppliers: 'suppliers-table',
   top300: 'top300-table',
+  top300Sir: 'top300-sir-table',
   rice: 'rice-table',
   problemInv: 'problem-inv-table',
   agingblackAging: 'agingblack-aging-table',
@@ -7237,6 +7350,7 @@ function renderFromCache(key) {
   if (key === 'rice') { renderRiceBody(); return true; }
   if (key === 'problemInv') { renderProblemInvBody(); return true; }
   if (key === 'top300') { renderTop300Body(); return true; }
+  if (key === 'top300Sir') { renderTop300SirBody(); return true; }
   if (key === 'agingblackAging') { renderAgingBlackBody('aging'); return true; }
   if (key === 'agingblackBlack') { renderAgingBlackBody('black'); return true; }
   const tableId = tableKeyToId[key];
@@ -7301,6 +7415,8 @@ function getTableConfig(tableId) {
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
       cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
+    'top300-sir-table': { key: 'top300Sir', render: renderTop300SirRow, pagination: 'top300-sir-pagination',
+      cols: ['area','storeName','onHand','qtyCases','invValue','salesInvRatio','zone','p8ave','daysCover','onOrderTotal'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
       cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
