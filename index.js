@@ -614,7 +614,7 @@ function daysSince(d) {
 }
 
 // ─── BUILD ANALYTICS FROM ROWS ────────────────────────────────────────────────
-function buildAnalytics(rawRows, storeMap, catMap = {}) {
+async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // rawRows[0] = header
   if (rawRows.length < 2) return null;
 
@@ -717,7 +717,13 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // GLOBAL FILTER: Only include rows with STS Number (column BN)
   const enriched = [];
   let skippedNoSTS = 0;
+  // Yield to the Node event loop periodically so HTTP requests (login, status,
+  // page serves) stay responsive during the enrichment of ~100k+ rows.
+  const YIELD_EVERY = 5000;
+  const yieldToEventLoop = () => new Promise(r => setImmediate(r));
+  let _processed = 0;
   for (const row of dataRows) {
+    if (++_processed % YIELD_EVERY === 0) await yieldToEventLoop();
     if (!row || row.length < 10) continue;
     // STS Number filter - skip blank/empty STS rows
     const stsNumber = (row[COL.stsNumber] || '').toString().trim();
@@ -781,6 +787,8 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     // Sales/Inv Ratio (weekly %). Computed once, reused by both salesInvRatio
     // and salesInvZone fields below to keep per-row work minimal.
     const _sir = onHandValue > 0 ? +((wkAveNet * avgCost / onHandValue) * 100).toFixed(2) : null;
+    // Parse stdPack once per row (previously parsed 3× inside the object literal).
+    const _stdPack = num(row[COL.stdPack]);
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
@@ -804,9 +812,10 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       onHand,
       onHandValue,
       avgCost,
-      stdPack: num(row[COL.stdPack]),
-      // Pre-computed for sorting (numeric, null when "Per Piece")
-      qtyCasesNum: (num(row[COL.stdPack]) > 0 && num(row[COL.stdPack]) !== onHand) ? (onHand / num(row[COL.stdPack])) : null,
+      stdPack: _stdPack,
+      // Pre-computed for sorting (numeric, null when "Per Piece"). Uses _stdPack
+      // captured above to avoid parsing the column 3× per row.
+      qtyCasesNum: (_stdPack > 0 && _stdPack !== onHand) ? (onHand / _stdPack) : null,
       ico: (row[COL.ico] || '').toString().trim(),
       merchGro: (row[COL.merchGro] || '').toString().trim().toUpperCase(),
       totalPO,
@@ -1037,7 +1046,7 @@ async function refreshData(force = false) {
     console.log(`[Cache] Parsed ${rawRows.length} rows.`);
 
     console.log('[Cache] Building analytics...');
-    const analytics = buildAnalytics(rawRows, storeMap, catMap);
+    const analytics = await buildAnalytics(rawRows, storeMap, catMap);
     if (!analytics) throw new Error('Analytics build failed - no data.');
 
     // Atomic swap
