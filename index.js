@@ -630,6 +630,44 @@ const STATUS_LABELS = {
 };
 function statusLabel(code) { return STATUS_LABELS[code] || code || 'Undetermined'; }
 
+// Standard item row (matches SKU Analysis column set) — used by all tabs that display
+// per-SKU details: Critical, Out of Stock, Overstock, Aging, Black Inv, Negative SKU,
+// P8 Weeks No Sales. Each endpoint can extend the returned object with tab-specific
+// fields like `action`.
+function standardItemRow(r) {
+  let qtyCases;
+  if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+  else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+  else qtyCases = 'Per Piece';
+  return {
+    area: r.area,
+    store: r.storeNumber + ' - ' + r.storeName,
+    storeNumber: r.storeNumber,
+    storeName: r.storeName,
+    catName: r.catName || 'Uncategorized',
+    skuCode: r.skuCode,
+    skuDesc: r.skuDesc,
+    supplier: r.supplierName,
+    onHand: r.onHand,
+    qtyCases,
+    onHandValue: r.onHandValue,
+    salesInvRatio: r.salesInvRatio,
+    salesInvZone: r.salesInvZone,
+    weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
+    daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+    p8ave: r.p8ave,
+    lostSalesPerWeek: r.lostSalesPerWeek,
+    ico: r.ico,
+    poOrderGR: r.poOrderGR,
+    trfOrderGR: r.trfOrderGR,
+    dateLastOrdered: formatDate(r.dateLastOrdered),
+    dateLastSold: formatDate(r.dateLastSold),
+    dateLastReceived: formatDate(r.dateLastReceived),
+    lastTransferIn: formatDate(r.lastTransferIn),
+    lastTransferOut: formatDate(r.lastTransferOut)
+  };
+}
+
 // ─── BUILD ANALYTICS FROM ROWS ────────────────────────────────────────────────
 async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // rawRows[0] = header
@@ -1407,17 +1445,10 @@ app.get('/api/critical', (req, res) => {
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isCritical)
     .sort((a, b) => a.wtsNet - b.wtsNet)
     .map(r => ({
-      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, onHandValue: r.onHandValue,
-      currentWkSales: r.currentWkSales, p8ave: r.p8ave,
-      salesInvRatio: r.salesInvRatio,
-      salesInvZone: r.salesInvZone,
-      wtsNet: r.wtsNet, totalPO: r.totalPO,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
+      ...standardItemRow(r),
+      wtsNet: r.wtsNet,
+      currentWkSales: r.currentWkSales,
+      totalPO: r.totalPO,
       action: r.totalPO > 0 ? 'PO Incoming' : r.p8ave > 0 ? 'URGENT: Place PO' : 'Review'
     }));
   res.json(filtered);
@@ -1428,26 +1459,11 @@ app.get('/api/overstock', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOverstock)
     .sort((a, b) => b.wtsNet - a.wtsNet)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
-      salesInvRatio: r.salesInvRatio,
-      salesInvZone: r.salesInvZone,
-      p8ave: r.p8ave,
+    .map(r => ({
+      ...standardItemRow(r),
       wtsNet: r.wtsNet === 999 ? 'Dead Stock' : r.wtsNet.toFixed(1),
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
       action: r.wtsNet > 26 ? 'Consider Markdown' : 'Monitor / Transfer'
-      };
-    });
+    }));
   res.json(filtered);
 });
 
@@ -1456,26 +1472,10 @@ app.get('/api/aging', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isAging)
     .sort((a, b) => (b.skuDaysCover || 0) - (a.skuDaysCover || 0))
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
-      salesInvRatio: r.salesInvRatio,
-      salesInvZone: r.salesInvZone,
-      p8ave: r.p8ave,
-      daysCover: r.skuDaysCover,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
+    .map(r => ({
+      ...standardItemRow(r),
       action: 'For Stop Booking'
-      };
-    });
+    }));
   res.json(filtered);
 });
 
@@ -1484,26 +1484,10 @@ app.get('/api/blackinventory', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isBlackInventory)
     .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-      store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-      skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-      onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
-      salesInvRatio: r.salesInvRatio,
-      salesInvZone: r.salesInvZone,
-      p8ave: r.p8ave,
-      daysCover: r.skuDaysCover,
-      dateLastSold: formatDate(r.dateLastSold),
-      dateLastReceived: formatDate(r.dateLastReceived),
-      lastTransferIn: formatDate(r.lastTransferIn),
-      lastTransferOut: formatDate(r.lastTransferOut),
+    .map(r => ({
+      ...standardItemRow(r),
       action: 'Investigate / Liquidate'
-      };
-    });
+    }));
   res.json(filtered);
 });
 
@@ -1512,30 +1496,7 @@ app.get('/api/negativeskus', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativeStock)
     .sort((a, b) => a.onHand - b.onHand)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        storeName: `${r.storeNumber} - ${r.storeName}`,
-        area: r.area,
-        catName: r.catName || 'Uncategorized',
-        skuCode: r.skuCode,
-        skuDesc: r.skuDesc,
-        supplier: r.supplierName,
-        onHand: r.onHand,
-        qtyCases,
-        onHandValue: r.onHandValue,
-        salesInvRatio: r.salesInvRatio,
-        salesInvZone: r.salesInvZone,
-        p8ave: r.p8ave,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut)
-      };
-    });
+    .map(r => ({ ...standardItemRow(r), storeName: r.storeNumber + ' - ' + r.storeName }));
   res.json(filtered);
 });
 
@@ -1546,30 +1507,7 @@ app.get('/api/negativepromoskus', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativePromo)
     .sort((a, b) => a.onHand - b.onHand)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        storeName: `${r.storeNumber} - ${r.storeName}`,
-        area: r.area,
-        catName: r.catName || 'Uncategorized',
-        skuCode: r.skuCode,
-        skuDesc: r.skuDesc,
-        supplier: r.supplierName,
-        onHand: r.onHand,
-        qtyCases,
-        onHandValue: r.onHandValue,
-        salesInvRatio: r.salesInvRatio,
-        salesInvZone: r.salesInvZone,
-        p8ave: r.p8ave,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut)
-      };
-    });
+    .map(r => ({ ...standardItemRow(r), storeName: r.storeNumber + ' - ' + r.storeName }));
   res.json(filtered);
 });
 
@@ -1858,29 +1796,11 @@ app.get('/api/deadstock', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isDeadStock)
     .sort((a, b) => b.onHandValue - a.onHandValue)
-    .map(r => {
-      const wtsItem = r.p8ave > 0 ? r.onHand / r.p8ave : null;
-      const dcItem = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.onHandValue * 7) / (r.wkAveNet * r.avgCost) : null;
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        store: `${r.storeNumber} - ${r.storeName}`, area: r.area,
-        skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-        onHand: r.onHand, qtyCases, onHandValue: r.onHandValue,
-        salesInvRatio: r.salesInvRatio,
-        salesInvZone: r.salesInvZone,
-        p8ave: r.p8ave,
-        weeksToSell: wtsItem,
-        daysCover: dcItem,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut),
-        action: 'No Sales 8 Wks - Review/Markdown'
-      };
-    });
+    .map(r => ({
+      ...standardItemRow(r),
+      weeksToSell: r.p8ave > 0 ? r.onHand / r.p8ave : null,
+      action: 'No Sales 8 Wks - Review/Markdown'
+    }));
   res.json(filtered);
 });
 
@@ -1889,28 +1809,12 @@ app.get('/api/outofstock', (req, res) => {
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isOutOfStock)
     .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
-    .map(r => {
-      let qtyCases;
-      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
-      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
-      else qtyCases = 'Per Piece';
-      return {
-        storeNumber: r.storeNumber, storeName: r.storeName, area: r.area,
-        skuCode: r.skuCode, skuDesc: r.skuDesc, supplier: r.supplierName,
-        onHand: r.onHand, stdPack: r.stdPack, qtyCases, invValue: r.onHandValue,
-        salesInvRatio: r.salesInvRatio,
-        salesInvZone: r.salesInvZone,
-        p8ave: r.p8ave,
-        weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
-        daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
-        status: 'OOS', lostSalesPerWeek: r.lostSalesPerWeek,
-        ico: r.ico, poOrderGR: r.poOrderGR, trfOrderGR: r.trfOrderGR,
-        dateLastSold: formatDate(r.dateLastSold),
-        dateLastReceived: formatDate(r.dateLastReceived),
-        lastTransferIn: formatDate(r.lastTransferIn),
-        lastTransferOut: formatDate(r.lastTransferOut)
-      };
-    });
+    .map(r => ({
+      ...standardItemRow(r),
+      stdPack: r.stdPack,
+      invValue: r.onHandValue,
+      status: 'OOS'
+    }));
   res.json(filtered);
 });
 
