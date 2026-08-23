@@ -6996,107 +6996,98 @@ function zoneCell(r) {
   return '<td><span style="display:inline-block;padding:2px 8px;border-radius:10px;background:' + zi.bg + ';color:' + zi.color + ';font-size:11px;font-weight:700;white-space:nowrap;">' + esc(zi.label) + '</span></td>';
 }
 
-function renderCriticalRow(r) {
-  const ac = r.action === 'URGENT: Place PO' ? 'action-urgent' : r.action === 'PO Incoming' ? 'action-po' : 'action-review';
-  return '<tr>' +
-    '<td>' + esc(r.store) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + fmt(r.currentWkSales) + '</td>' +
-    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmtN(r.wtsNet) + '</td>' +
-    '<td class="mono">' + fmt(r.totalPO) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
-    '</tr>';
+// ─── STANDARD ITEM TABLE (Critical / OOS / Overstock / Aging / Black / Neg / Deadstock) ──
+// One column order everywhere, matches SKU Analysis. Optionally appends an Action cell.
+// Column order: Area | Store | SKU | Description | Supplier | On Hand | Qty in Cases |
+// Inv Value | Sales/Inv Ratio | WTS | Days Cover | P8 Ave/Week | Lost Sales/Wk | ICO |
+// PO On Order | Trf On Order | Date Last Ordered | Last Sold | Last Received | Transfer In | Transfer Out | Action?
+const STANDARD_ITEM_COLS = ['area','store','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','weeksToSell','daysCover','p8ave','lostSalesPerWeek','ico','poOrderGR','trfOrderGR','dateLastOrdered','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
+// Generates the <thead><tr>...</tr></thead> markup for any tab using this layout.
+function standardItemHeaderHtml(tableId, hasAction) {
+  const cols = [
+    ['area', 'Area'], ['store', 'Store'], ['skuCode', 'SKU'], ['skuDesc', 'Description'],
+    ['supplier', 'Supplier'], ['onHand', 'On Hand'], ['qtyCases', 'Qty in Cases'],
+    ['onHandValue', 'Inv Value'], ['salesInvRatio', 'Sales/Inv Ratio'],
+    ['weeksToSell', 'WTS'], ['daysCover', 'Days Cover'], ['p8ave', 'P8 Ave/Week'],
+    ['lostSalesPerWeek', 'Lost Sales/Wk'], ['ico', 'ICO'],
+    ['poOrderGR', 'PO On Order'], ['trfOrderGR', 'Trf On Order'],
+    ['dateLastOrdered', 'Date Last Ordered'], ['dateLastSold', 'Last Sold'],
+    ['dateLastReceived', 'Last Received'], ['lastTransferIn', 'Transfer In'],
+    ['lastTransferOut', 'Transfer Out']
+  ];
+  let html = cols.map((c, i) =>
+    '<th data-field="' + c[0] + '" onclick="sortTable(\\'' + tableId + '\\',' + i + ')">' + c[1] + '</th>'
+  ).join('');
+  if (hasAction) html += '<th>Action</th>';
+  return html;
 }
-function renderOverstockRow(r) {
-  const ac = r.action === 'Consider Markdown' ? 'action-markdown' : 'action-monitor';
+// Renders one <tr> in the standard shape. tabHints lets a tab customize display
+// (e.g. Overstock WTS as pre-formatted string, Black shows "Never" for missing Last Sold).
+function renderStandardItemRow(r, opts) {
+  opts = opts || {};
+  const qtyCases = r.qtyCases === 'Per Piece'
+    ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>'
+    : (r.qtyCases == null || r.qtyCases === '' ? '—' : fmtN(r.qtyCases));
+  // WTS display: some tabs pass a pre-formatted wtsNet override (e.g. Overstock's 'Dead Stock' sentinel)
+  let wtsDisplay;
+  if (opts.wtsOverride != null) {
+    wtsDisplay = opts.wtsOverride;
+  } else if (r.weeksToSell == null) {
+    wtsDisplay = '—';
+  } else if (typeof r.weeksToSell === 'number') {
+    wtsDisplay = r.weeksToSell.toFixed(1);
+  } else {
+    wtsDisplay = String(r.weeksToSell);
+  }
+  const dc = r.daysCover == null ? '—' : (Math.round(r.daysCover) + 'd');
+  const lastSold = r.dateLastSold ? esc(r.dateLastSold) : (opts.neverLabel ? '<span style="color:var(--text2);font-style:italic;">Never</span>' : '—');
+  const lastReceived = r.dateLastReceived ? esc(r.dateLastReceived) : '—';
+  const onHandCls = (r.onHand != null && r.onHand < 0) ? ' style="color:var(--red-light);font-weight:600;"' : '';
+  const lostSalesCell = (r.lostSalesPerWeek != null && r.lostSalesPerWeek > 0)
+    ? '<span style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.lostSalesPerWeek) + '</span>'
+    : '—';
+  const ratioZi = zoneInfo(r.salesInvRatio);
+  const ratioCell = r.salesInvRatio == null ? '—'
+    : '<span style="color:' + ratioZi.color + ';font-weight:600;">' + fmtN(r.salesInvRatio) + '%</span>';
+  let actionCell = '';
+  if (opts.hasAction) {
+    const cls = opts.actionClass || 'action-review';
+    actionCell = '<td><span class="action-badge ' + cls + '">' + esc(r.action || '') + '</span></td>';
+  }
   return '<tr>' +
-    '<td>' + esc(r.store) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
+    '<td><span class="badge badge-blue">' + esc(r.area || '') + '</span></td>' +
+    '<td>' + esc(r.store || (r.storeNumber + ' - ' + (r.storeName || ''))) + '</td>' +
     '<td class="mono">' + esc(r.skuCode) + '</td>' +
     '<td>' + esc(r.skuDesc) + '</td>' +
     '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + r.wtsNet + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '<td><span class="action-badge ' + ac + '">' + esc(r.action) + '</span></td>' +
-    '</tr>';
-}
-function renderAgingRow(r) {
-  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
-  return '<tr>' +
-    '<td>' + esc(r.store) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono" style="color:var(--yellow-light);font-weight:600;">' + dc + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
-    '</tr>';
-}
-function renderBlackInventoryRow(r) {
-  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
-  const lastSold = r.dateLastSold || '<span style="color:var(--text2);font-style:italic;">Never</span>';
-  return '<tr>' +
-    '<td>' + esc(r.store) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono" style="color:var(--red-light);font-weight:600;">' + dc + '</td>' +
+    '<td class="mono"' + onHandCls + '>' + fmt(r.onHand) + '</td>' +
+    '<td class="mono">' + qtyCases + '</td>' +
+    '<td class="mono" style="color:var(--green-bright);">' + (r.onHandValue != null ? '₱' + fmtN(r.onHandValue) : '—') + '</td>' +
+    '<td class="mono">' + ratioCell + '</td>' +
+    '<td class="mono">' + wtsDisplay + '</td>' +
+    '<td class="mono">' + dc + '</td>' +
+    '<td class="mono">' + (r.p8ave != null ? fmtN(r.p8ave) : '—') + '</td>' +
+    '<td class="mono">' + lostSalesCell + '</td>' +
+    '<td class="mono">' + esc(r.ico || '—') + '</td>' +
+    '<td class="mono">' + fmt(r.poOrderGR || 0) + '</td>' +
+    '<td class="mono">' + fmt(r.trfOrderGR || 0) + '</td>' +
+    '<td class="mono">' + (r.dateLastOrdered ? esc(r.dateLastOrdered) : '—') + '</td>' +
     '<td class="mono">' + lastSold + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '<td><span class="action-badge action-urgent">' + esc(r.action) + '</span></td>' +
-    '</tr>';
+    '<td class="mono">' + lastReceived + '</td>' +
+    '<td class="mono">' + (r.lastTransferIn ? esc(r.lastTransferIn) : '—') + '</td>' +
+    '<td class="mono">' + (r.lastTransferOut ? esc(r.lastTransferOut) : '—') + '</td>' +
+    actionCell +
+  '</tr>';
 }
-function renderNegativeSKURow(r) {
-  return '<tr>' +
-    '<td>' + esc(r.storeName) + '</td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono" style="color:var(--red-light);font-weight:600;">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + esc(r.qtyCases) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '</tr>';
-}
+
+
+// Tab-specific action-class helpers (used by the standard renderer)
+function _criticalActionCls(a) { return a === 'URGENT: Place PO' ? 'action-urgent' : a === 'PO Incoming' ? 'action-po' : 'action-review'; }
+function renderCriticalRow(r)        { return renderStandardItemRow(r, { hasAction: true, actionClass: _criticalActionCls(r.action) }); }
+function renderOverstockRow(r)       { return renderStandardItemRow(r, { hasAction: true, actionClass: r.action === 'Consider Markdown' ? 'action-markdown' : 'action-monitor', wtsOverride: r.wtsNet }); }
+function renderAgingRow(r)           { return renderStandardItemRow(r, { hasAction: true, actionClass: 'action-markdown' }); }
+function renderBlackInventoryRow(r)  { return renderStandardItemRow(r, { hasAction: true, actionClass: 'action-urgent', neverLabel: true }); }
+function renderNegativeSKURow(r)     { return renderStandardItemRow(r, { hasAction: false }); }
 function renderTop300Row(r) {
   const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
   const p8 = r.p8ave != null ? fmtN(r.p8ave) : '—';
@@ -7133,58 +7124,30 @@ function renderTop300Row(r) {
     '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
     '</tr>';
 }
-function renderDeadstockRow(r) {
-  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : 'No Sales';
-  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : 'No Sales';
-  return '<tr>' +
-    '<td>' + esc(r.store) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + (r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases)) + '</td>' +
-    '<td class="mono">₱' + fmtN(r.onHandValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono" style="color:var(--text2);">' + wts + '</td>' +
-    '<td class="mono" style="color:var(--text2);">' + dc + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '<td><span class="action-badge action-markdown">' + esc(r.action) + '</span></td>' +
-    '</tr>';
-}
-function renderOutOfStockRow(r) {
-  const qtyCases = r.qtyCases === 'Per Piece' ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>' : fmtN(r.qtyCases);
-  const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(2) : '0.00';
-  const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
-  const p8 = r.p8ave != null ? fmtN(r.p8ave) : '—';
-  return '<tr>' +
-    '<td class="mono" style="font-weight:600;">' + esc(r.storeNumber) + '</td>' +
-    '<td>' + esc(r.storeName) + '</td>' +
-    '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
-    '<td class="mono">' + esc(r.skuCode) + '</td>' +
-    '<td>' + esc(r.skuDesc) + '</td>' +
-    '<td>' + esc(r.supplier) + '</td>' +
-    '<td class="mono">' + fmt(r.onHand) + '</td>' +
-    '<td class="mono">' + fmt(r.stdPack) + '</td>' +
-    '<td class="mono">' + qtyCases + '</td>' +
-    '<td class="mono">₱' + fmtN(r.invValue) + '</td>' +
-    salesInvRatioCell(r) +
-    '<td class="mono">' + p8 + '</td>' +
-    '<td class="mono">' + wts + '</td>' +
-    '<td class="mono">' + dc + '</td>' +
-    '<td><span class="status-oos">OOS</span></td>' +
-    '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.lostSalesPerWeek) + '</td>' +
-    '<td class="mono">' + esc(r.ico || '—') + '</td>' +
-    '<td class="mono">' + fmt(r.poOrderGR) + '</td>' +
-    '<td class="mono">' + fmt(r.trfOrderGR) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferIn) + '</td>' +
-    '<td class="mono">' + esc(r.lastTransferOut) + '</td>' +
-    '</tr>';
+function renderDeadstockRow(r)       { return renderStandardItemRow(r, { hasAction: true, actionClass: 'action-markdown' }); }
+function renderOutOfStockRow(r)      { return renderStandardItemRow(r, { hasAction: false }); }
+
+// One-time header standardization — swaps the <thead> of the 7 problem-status tables
+// to the SKU-Analysis-aligned column order. Runs at DOMContentLoaded so hard-coded
+// HTML thead blocks are replaced before any data renders.
+function initStandardHeaders() {
+  const spec = [
+    { id: 'critical-table',    hasAction: true },
+    { id: 'overstock-table',   hasAction: true },
+    { id: 'aging-table',       hasAction: true },
+    { id: 'blackinv-table',    hasAction: true },
+    { id: 'negsku-table',      hasAction: false },
+    { id: 'negpromo-table',    hasAction: false },
+    { id: 'deadstock-table',   hasAction: true },
+    { id: 'outofstock-table',  hasAction: false }
+  ];
+  for (const s of spec) {
+    const tbl = document.getElementById(s.id);
+    if (!tbl) continue;
+    const thead = tbl.querySelector('thead');
+    if (!thead) continue;
+    thead.innerHTML = '<tr>' + standardItemHeaderHtml(s.id, s.hasAction) + '</tr>';
+  }
 }
 function renderStoreRow(r) {
   const oo = r.oosCount > 0 ? '<span style="color:var(--red-light);font-weight:600;">' + fmt(r.oosCount) + '</span>' : '0';
@@ -7325,22 +7288,15 @@ let sortState = {};
 // Field == '' means that column is not sortable. Column order MUST match the <th> order in the table.
 function getTableConfig(tableId) {
   const configs = {
-    'critical-table':   { key: 'critical',   render: renderCriticalRow,   pagination: 'critical-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','onHandValue','salesInvRatio','currentWkSales','p8ave','wtsNet','totalPO','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'overstock-table':  { key: 'overstock',  render: renderOverstockRow,  pagination: 'overstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','wtsNet','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'aging-table':      { key: 'aging',      render: renderAgingRow,      pagination: 'aging-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
-      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'negpromo-table':   { key: 'negpromo',   render: renderNegativeSKURow,    pagination: 'negpromo-pagination',
-      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
-      cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
-    'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow, pagination: 'outofstock-pagination',
-      cols: ['storeNumber','storeName','area','skuCode','skuDesc','supplier','onHand','stdPack','qtyCases','invValue','salesInvRatio','p8ave','weeksToSell','daysCover','status','lostSalesPerWeek','ico','poOrderGR','trfOrderGR','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+    // All 7 problem-status tables use the STANDARD_ITEM_COLS order — matches SKU Analysis.
+    'critical-table':   { key: 'critical',   render: renderCriticalRow,       pagination: 'critical-pagination',   cols: STANDARD_ITEM_COLS },
+    'overstock-table':  { key: 'overstock',  render: renderOverstockRow,      pagination: 'overstock-pagination',  cols: STANDARD_ITEM_COLS },
+    'aging-table':      { key: 'aging',      render: renderAgingRow,          pagination: 'aging-pagination',      cols: STANDARD_ITEM_COLS },
+    'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',   cols: STANDARD_ITEM_COLS },
+    'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',     cols: STANDARD_ITEM_COLS },
+    'negpromo-table':   { key: 'negpromo',   render: renderNegativeSKURow,    pagination: 'negpromo-pagination',   cols: STANDARD_ITEM_COLS },
+    'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,      pagination: 'deadstock-pagination',  cols: STANDARD_ITEM_COLS },
+    'outofstock-table': { key: 'outofstock', render: renderOutOfStockRow,     pagination: 'outofstock-pagination', cols: STANDARD_ITEM_COLS },
     'stores-table':     { key: 'stores',     render: renderStoreRow,      pagination: 'stores-pagination',
       cols: ['storeNumber','storeName','area','totalValue','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','totalLostSales','criticalCount','overstockCount','deadCount'] },
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
@@ -7585,6 +7541,8 @@ function esc(s) {
 
 // ─── START ────────────────────────────────────────────────────────────────────
 function startInit() {
+  // Standardize the 7 problem-status table headers to the SKU Analysis column order
+  try { initStandardHeaders(); } catch (e) { console.warn('initStandardHeaders failed:', e); }
   init().catch(function(e) {
     console.error('Init error:', e);
     const loading = document.getElementById('loading-overlay');
