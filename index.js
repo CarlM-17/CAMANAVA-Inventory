@@ -613,6 +613,23 @@ function daysSince(d) {
   return Math.floor(ms / (1000 * 60 * 60 * 24));
 }
 
+// Human-readable status label mapping (shared between backend + frontend rendering)
+const STATUS_LABELS = {
+  Excluded: 'Excluded (Merch P)',
+  Negative: 'Negative Stock',
+  OOS: 'OOS',
+  Idle: 'Idle',
+  Black: 'Black Inventory',
+  P8NoSales: 'P8 Weeks No Sales',
+  Aging: 'Aging',
+  Overstock: 'Overstock',
+  Critical: 'Critical',
+  Healthy: 'Healthy',
+  WellStocked: 'Well Stocked',
+  Undetermined: 'Undetermined'
+};
+function statusLabel(code) { return STATUS_LABELS[code] || code || 'Undetermined'; }
+
 // ─── BUILD ANALYTICS FROM ROWS ────────────────────────────────────────────────
 async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // rawRows[0] = header
@@ -742,9 +759,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const poValue = num(row[COL.poValue]);
     const trfValue = num(row[COL.trfValue]);
 
-    const isCritical = wtsNet > 0 && wtsNet < 2 && onHand > 0;
-    // isOverstock computed below (after daysSince... calculations) to support 30-day stock-in exclusion
-    const isDeadStock = onHand > 0 && p8ave === 0 && currentWkSales === 0;
+    // ── DERIVED FIELDS (needed by the new status ladder) ────────────────
     const isZeroStock = onHand === 0;
     const skuCode = (row[COL.skuCode] || '').toString().trim();
     // Get avg cost from this row, fallback to SKU lookup from other stores
@@ -752,9 +767,6 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     if (avgCost === 0 && skuCode && skuCostLookup[skuCode]) {
       avgCost = skuCostLookup[skuCode];
     }
-    // Out of Stock = no stock + was selling = LOST SALES
-    const isOutOfStock = onHand === 0 && p8ave > 0;
-    const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
     const dateLastSold = row[COL.dateLastSold] || '';
     const dateLastReceived = row[COL.dateLastReceived] || '';
     const dateLastOrdered = row[COL.dateLastOrdered] || '';
@@ -768,21 +780,48 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     if (daysSinceReceived != null && daysSinceTransferIn != null) daysSinceLastStockIn = Math.min(daysSinceReceived, daysSinceTransferIn);
     else if (daysSinceReceived != null) daysSinceLastStockIn = daysSinceReceived;
     else if (daysSinceTransferIn != null) daysSinceLastStockIn = daysSinceTransferIn;
-    // Overstock: WTS > 12 weeks AND has stock AND last stock-in event was 30+ days ago (excludes fresh deliveries)
-    const isOverstock = wtsNet > 12 && onHand > 0 && (daysSinceLastStockIn == null || daysSinceLastStockIn >= 30);
-    // Per-SKU days cover (matches existing formula)
+    // Per-SKU days cover — the SINGLE source of truth for status math (uses our derived formula, not source wtsNet).
     const skuDaysCover = (wkAveNet > 0 && avgCost > 0) ? (onHandValue * 7) / (wkAveNet * avgCost) : null;
-    // Aging: stock projected to last 180+ days AND last received 180+ days ago
-    // (excludes recent deliveries which would otherwise look like aging due to high stock)
-    const isAging = onHand > 0
-      && skuDaysCover != null && skuDaysCover >= 180
-      && daysSinceLastStockIn != null && daysSinceLastStockIn >= 180;
-    // Black Inventory: on hand AND no sales 180+ days (or never sold) AND last received 180+ days ago
-    const isBlackInventory = onHand > 0
-      && (daysNoSales == null || daysNoSales >= 180)
-      && daysSinceReceived != null && daysSinceReceived >= 180;
-    // Negative SKU: on hand is negative (system error or data sync issue)
-    const isNegativeStock = onHand < 0;
+    // DOS = onHand / (p8ave / 7). Alternative expression; used for band gates.
+    const _dos = p8ave > 0 ? (onHand / (p8ave / 7)) : null;
+    const _merchP = (row[COL.merchGro] || '').toString().trim().toUpperCase() === 'P';
+
+    // ── STATUS PRIORITY LADDER (first match wins, mutually exclusive) ──
+    //  1 Excluded (Merch P)   — items excluded from all problem-status math
+    //  2 Negative              — onHand < 0 (data error)
+    //  3 OOS                   — onHand ≤ 0 AND was selling
+    //  4 Idle                  — onHand ≤ 0 AND no sales history
+    //  5 Black Inventory       — has stock, no sales ≥180d, delivery ≥180d ago
+    //  6 P8 Weeks No Sales     — has stock, no sales ≥8 weeks (recent-delivery bucket)
+    //  7 Aging                 — DOS > 180, delivery ≥60d (excessive stock, still moving)
+    //  8 Overstock             — 90 < DOS ≤ 180, delivery ≥30d (too much cover, moving OK)
+    //  9 Critical              — 0 < DOS < 14 (replenishment risk)
+    // 10 Healthy               — 14 ≤ DOS ≤ 60 (target zone)
+    // 11 Well Stocked          — DOS > 60 (catch-all incl. fresh deliveries)
+    // 12 Undetermined          — anything remaining (should be near zero)
+    let status;
+    if (_merchP) status = 'Excluded';
+    else if (onHand < 0) status = 'Negative';
+    else if (onHand <= 0 && p8ave > 0) status = 'OOS';
+    else if (onHand <= 0) status = 'Idle';
+    else if ((daysNoSales == null || daysNoSales >= 180) && daysSinceLastStockIn != null && daysSinceLastStockIn >= 180) status = 'Black';
+    else if (p8ave === 0 || (daysNoSales != null && daysNoSales >= 56)) status = 'P8NoSales';
+    else if (_dos != null && _dos > 180 && daysSinceLastStockIn != null && daysSinceLastStockIn >= 60) status = 'Aging';
+    else if (_dos != null && _dos > 90 && _dos <= 180 && daysSinceLastStockIn != null && daysSinceLastStockIn >= 30) status = 'Overstock';
+    else if (_dos != null && _dos > 0 && _dos < 14) status = 'Critical';
+    else if (_dos != null && _dos >= 14 && _dos <= 60) status = 'Healthy';
+    else if (_dos != null && _dos > 60) status = 'WellStocked';
+    else status = 'Undetermined';
+
+    // ── Derived boolean flags (kept for backward compat with existing endpoints) ──
+    const isCritical       = status === 'Critical';
+    const isOverstock      = status === 'Overstock';
+    const isDeadStock      = status === 'P8NoSales';   // the "P8 Weeks No Sales" tab
+    const isAging          = status === 'Aging';
+    const isBlackInventory = status === 'Black';
+    const isOutOfStock     = status === 'OOS';
+    const isNegativeStock  = status === 'Negative';
+    const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
 
     // Sales/Inv Ratio (weekly %). Computed once, reused by both salesInvRatio
     // and salesInvZone fields below to keep per-row work minimal.
@@ -859,7 +898,9 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
       isBlackInventory,
       isNegativeStock,
       isZeroStock,
-      isOutOfStock
+      isOutOfStock,
+      status,
+      merchGroP: _merchP
     });
   }
   console.log('[Filter] STS Number filter: ' + enriched.length + ' rows kept, ' + skippedNoSTS + ' rows skipped (no STS Number)');
@@ -1670,16 +1711,8 @@ app.get('/api/top300skus', (req, res) => {
     if (filters.cls && (!inv || inv.clsName !== filters.cls)) continue;
     if (filters.supplier && (!inv || inv.supplierName !== filters.supplier)) continue;
 
-    // Compute status
-    let status = 'Normal';
-    if (inv) {
-      if (inv.isCritical) status = 'Critical';
-      else if (inv.isOutOfStock) status = 'OOS';
-      else if (inv.isOverstock) status = 'Overstock';
-      else if (inv.isDeadStock) status = 'Dead Stock';
-    } else {
-      status = 'Not Found';
-    }
+    // Compute status — use unified status ladder from enriched row
+    const status = inv ? statusLabel(inv.status) : 'Not Found';
 
     out.push({
       area: t.area,
@@ -1898,7 +1931,7 @@ app.get('/api/skus', (req, res) => {
       daysCover: r.skuDaysCover,
       skuDaysCover: r.skuDaysCover,
       p8ave: r.p8ave,
-      status: r.isCritical ? 'Critical' : r.isOutOfStock ? 'OOS' : r.isOverstock ? 'Overstock' : r.isDeadStock ? 'Dead Stock' : 'Normal',
+      status: statusLabel(r.status),
       lostSalesPerWeek: r.lostSalesPerWeek,
       ico: r.ico,
       poOrderGR: r.poOrderGR,
@@ -1936,10 +1969,11 @@ app.get('/api/stores', (req, res) => {
   const result = Object.values(storeGroups).map(g => {
     const total = g.totalSKUs || 1;
     const nonP = g.nonPCount || 1;
+    // All percentages use nonP as denominator (Merch P excluded uniformly).
     g.criticalPct = (g.criticalCount / nonP) * 100;
     g.oosPct = (g.oosCount / nonP) * 100;
-    g.overstockPct = (g.overstockCount / total) * 100;
-    g.deadPct = (g.deadCount / total) * 100;
+    g.overstockPct = (g.overstockCount / nonP) * 100;
+    g.deadPct = (g.deadCount / nonP) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
     g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
     return g;
@@ -1971,10 +2005,11 @@ app.get('/api/suppliers', (req, res) => {
   const result = Object.values(supplierGroups).map(g => {
     const total = g.totalSKUs || 1;
     const nonP = g.nonPCount || 1;
+    // All percentages use nonP as denominator (Merch P excluded uniformly).
     g.criticalPct = (g.criticalCount / nonP) * 100;
     g.oosPct = (g.oosCount / nonP) * 100;
-    g.overstockPct = (g.overstockCount / total) * 100;
-    g.deadPct = (g.deadCount / total) * 100;
+    g.overstockPct = (g.overstockCount / nonP) * 100;
+    g.deadPct = (g.deadCount / nonP) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
     g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
     return g;
@@ -2876,7 +2911,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       p8ave: +(r.p8ave || 0).toFixed(2),
       weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
       daysCover: r.skuDaysCover != null ? +r.skuDaysCover.toFixed(0) : null,
-      status: r.isCritical ? 'Critical' : r.isOutOfStock ? 'OOS' : r.isOverstock ? 'Overstock' : r.isDeadStock ? 'Dead Stock' : 'Normal',
+      status: statusLabel(r.status),
       lostSalesPerWeek: +(r.lostSalesPerWeek || 0).toFixed(2),
       ico: r.ico,
       poOrderGR: r.poOrderGR,
@@ -3005,14 +3040,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
     const inv = idx[key];
     if (filters.category && (!inv || inv.catName !== filters.category)) continue;
     if (filters.supplier && (!inv || inv.supplierName !== filters.supplier)) continue;
-    let status = 'Not Found';
-    if (inv) {
-      if (inv.isCritical) status = 'Critical';
-      else if (inv.isOutOfStock) status = 'OOS';
-      else if (inv.isOverstock) status = 'Overstock';
-      else if (inv.isDeadStock) status = 'Dead Stock';
-      else status = 'Normal';
-    }
+    const status = inv ? statusLabel(inv.status) : 'Not Found';
     rows.push({
       area: t.area,
       storeName: t.storeName ? (t.storeNumber + ' - ' + t.storeName) : (inv ? `${inv.storeNumber} - ${inv.storeName}` : t.storeNumber),
@@ -3468,7 +3496,15 @@ tbody td.mono { font-family:'IBM Plex Mono',monospace; font-size:11px; }
 .status-critical { background:rgba(248,81,73,0.15); color:#f85149; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
 .status-oos { background:rgba(248,81,73,0.25); color:#f85149; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
 .status-overstock { background:rgba(227,179,65,0.15); color:#e3b341; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
+.status-aging { background:rgba(210,153,34,0.15); color:#d29922; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
+.status-black { background:rgba(48,54,61,0.6); color:#e6edf3; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; border:1px solid #30363d; }
+.status-p8 { background:rgba(139,148,158,0.2); color:#c9d1d9; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
 .status-dead { background:rgba(139,148,158,0.2); color:#8b949e; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
+.status-idle { background:rgba(110,118,129,0.2); color:#8b949e; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; font-style:italic; }
+.status-negative { background:rgba(218,54,51,0.3); color:#f85149; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:700; border:1px solid #da3633; }
+.status-excluded { background:rgba(88,166,255,0.1); color:#8b949e; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:500; font-style:italic; }
+.status-wellstocked { background:rgba(63,185,80,0.10); color:#7ce38b; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
+.status-healthy { background:rgba(63,185,80,0.15); color:#3fb950; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
 .status-normal { background:rgba(63,185,80,0.15); color:#3fb950; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600; }
 
 /* SEARCH IN TABLE */
@@ -6607,11 +6643,7 @@ function renderSKUTable(rows) {
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
-    let statusClass = 'status-normal';
-    if (r.status === 'Critical') statusClass = 'status-critical';
-    else if (r.status === 'OOS') statusClass = 'status-oos';
-    else if (r.status === 'Overstock') statusClass = 'status-overstock';
-    else if (r.status === 'Dead Stock') statusClass = 'status-dead';
+    const statusClass = statusClassFor(r.status);
     const qtyCasesDisplay = r.qtyCases === 'Per Piece'
       ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>'
       : r.qtyCases;
@@ -6855,13 +6887,7 @@ function renderTop300Row(r) {
   const onHand = r.onHand != null ? fmt(r.onHand) : '—';
   const incPO = r.incomingPO != null ? fmt(r.incomingPO) : '—';
   const lostSales = r.lostSalesPerWeek != null ? '₱' + fmtN(r.lostSalesPerWeek) : '—';
-  let statusClass = '';
-  if (r.status === 'Critical') statusClass = 'status-critical';
-  else if (r.status === 'OOS') statusClass = 'status-oos';
-  else if (r.status === 'Overstock') statusClass = 'status-overstock';
-  else if (r.status === 'Dead Stock') statusClass = 'status-dead';
-  else if (r.status === 'Not Found') statusClass = 'status-oos';
-  else statusClass = 'status-normal';
+  const statusClass = statusClassFor(r.status);
   const onHandStyle = (r.onHand !== null && r.onHand < 0) ? ' style="color:var(--red-light);font-weight:600;"' : '';
   const dcColor = r.daysCover != null && r.daysCover < 7 ? 'color:var(--red-light);' :
                   r.daysCover != null && r.daysCover > 90 ? 'color:var(--yellow-light);' : '';
@@ -7307,6 +7333,26 @@ async function triggerRefresh() {
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function fmt(n) { return (n||0).toLocaleString(); }
+// Map a status label (from backend statusLabel()) to the CSS class used for the pill
+function statusClassFor(label) {
+  switch ((label || '').toString()) {
+    case 'Critical':               return 'status-critical';
+    case 'OOS':                    return 'status-oos';
+    case 'Negative Stock':         return 'status-negative';
+    case 'Overstock':              return 'status-overstock';
+    case 'Aging':                  return 'status-aging';
+    case 'Black Inventory':        return 'status-black';
+    case 'P8 Weeks No Sales':      return 'status-p8';
+    case 'Dead Stock':             return 'status-dead';
+    case 'Idle':                   return 'status-idle';
+    case 'Excluded (Merch P)':     return 'status-excluded';
+    case 'Well Stocked':           return 'status-wellstocked';
+    case 'Healthy':                return 'status-healthy';
+    case 'Not Found':              return 'status-idle';
+    case 'Undetermined':           return 'status-normal';
+    default:                       return 'status-normal';
+  }
+}
 function fmtN(n) { return (Math.round(n*100)/100).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:2}); }
 function fmtM(n) {
   if (n >= 1e9) return (n/1e9).toFixed(2) + 'B';
