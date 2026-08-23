@@ -4667,12 +4667,13 @@ canvas { max-height:260px; }
               <th data-field="storeName" onclick="sortTable('top300-sir-table',1)">Store Name</th>
               <th data-field="onHand" onclick="sortTable('top300-sir-table',2)">On Hand</th>
               <th data-field="qtyCases" onclick="sortTable('top300-sir-table',3)">Qty in Cases</th>
-              <th data-field="invValue" onclick="sortTable('top300-sir-table',4)">Inv Value</th>
-              <th data-field="salesInvRatio" onclick="sortTable('top300-sir-table',5)">Sales/Inv Ratio</th>
-              <th data-field="zone" onclick="sortTable('top300-sir-table',6)">Zone</th>
-              <th data-field="p8ave" onclick="sortTable('top300-sir-table',7)">P8 Ave/Week</th>
-              <th data-field="daysCover" onclick="sortTable('top300-sir-table',8)">Days Cover</th>
-              <th data-field="onOrderTotal" onclick="sortTable('top300-sir-table',9)">On Order + TRF</th>
+              <th data-field="aveWklySales" onclick="sortTable('top300-sir-table',4)">Ave Weekly Sales</th>
+              <th data-field="invValue" onclick="sortTable('top300-sir-table',5)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('top300-sir-table',6)">Sales/Inv Ratio</th>
+              <th data-field="zone" onclick="sortTable('top300-sir-table',7)">Zone</th>
+              <th data-field="p8ave" onclick="sortTable('top300-sir-table',8)">P8 Ave/Week</th>
+              <th data-field="daysCover" onclick="sortTable('top300-sir-table',9)">Days Cover</th>
+              <th data-field="onOrderTotal" onclick="sortTable('top300-sir-table',10)">On Order + TRF</th>
             </tr></thead>
             <tbody id="top300-sir-body"></tbody>
           </table>
@@ -6018,6 +6019,7 @@ function renderTop300SirRow(r) {
     '<td>' + esc(r.storeName) + '</td>' +
     '<td class="mono">' + fmt(r.onHand) + '</td>' +
     '<td class="mono">' + fmtN(r.qtyCases) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.aveWklySales) + '</td>' +
     '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.invValue) + '</td>' +
     '<td class="mono">' + ratioCell + '</td>' +
     '<td>' + zoneBadge + '</td>' +
@@ -6035,7 +6037,7 @@ function renderTop300SirBody() {
   const countEl = document.getElementById('top300-sir-count');
   if (countEl) countEl.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="10" class="empty">No data</td></tr>'
+    ? '<tr><td colspan="11" class="empty">No data</td></tr>'
     : view.map(renderTop300SirRow).join('');
 }
 // Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
@@ -7416,7 +7418,7 @@ function getTableConfig(tableId) {
     'suppliers-table':  { key: 'suppliers',  render: renderSupplierRow,   pagination: 'suppliers-pagination',
       cols: ['supplierCode','supplierName','totalValue','totalP8Ave','totalOnHand','totalSKUs','weeksToSell','daysCover','oosCount','criticalCount','overstockCount','deadCount'] },
     'top300-sir-table': { key: 'top300Sir', render: renderTop300SirRow, pagination: 'top300-sir-pagination',
-      cols: ['area','storeName','onHand','qtyCases','invValue','salesInvRatio','zone','p8ave','daysCover','onOrderTotal'] },
+      cols: ['area','storeName','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','zone','p8ave','daysCover','onOrderTotal'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
       cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
