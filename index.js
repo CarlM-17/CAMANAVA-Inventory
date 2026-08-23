@@ -821,6 +821,9 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     const isBlackInventory = status === 'Black';
     const isOutOfStock     = status === 'OOS';
     const isNegativeStock  = status === 'Negative';
+    // Negative Promo — items with onHand < 0 that are also Merch Group P.
+    // These would otherwise be hidden inside "Promo Items"; surfaced separately.
+    const isNegativePromo  = _merchP && onHand < 0;
     const lostSalesPerWeek = isOutOfStock ? p8ave * avgCost : 0;
 
     // Sales/Inv Ratio (weekly %). Computed once, reused by both salesInvRatio
@@ -897,6 +900,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
       isAging,
       isBlackInventory,
       isNegativeStock,
+      isNegativePromo,
       isZeroStock,
       isOutOfStock,
       status,
@@ -914,12 +918,17 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   const agingCount = enriched.filter(r => r.isAging).length;
   const blackInventoryCount = enriched.filter(r => r.isBlackInventory).length;
   const negativeSkuCount = enriched.filter(r => r.isNegativeStock).length;
+  const negativePromoCount = enriched.filter(r => r.isNegativePromo).length;
   const outOfStockCount = enriched.filter(r => r.isOutOfStock).length;
   // Value totals per category
   const overstockValue = enriched.filter(r => r.isOverstock).reduce((s, r) => s + r.onHandValue, 0);
   const agingValue = enriched.filter(r => r.isAging).reduce((s, r) => s + r.onHandValue, 0);
   const blackInventoryValue = enriched.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
   const deadStockValue = enriched.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
+  const negativeSkuValue = enriched.filter(r => r.isNegativeStock).reduce((s, r) => s + r.onHandValue, 0);
+  const negativePromoValue = enriched.filter(r => r.isNegativePromo).reduce((s, r) => s + r.onHandValue, 0);
+  const negativeSkuQty = enriched.filter(r => r.isNegativeStock).reduce((s, r) => s + r.onHand, 0);
+  const negativePromoQty = enriched.filter(r => r.isNegativePromo).reduce((s, r) => s + r.onHand, 0);
   const totalLostSalesPerWeek = enriched.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   const activeStores = new Set(enriched.map(r => r.storeNumber)).size;
   const activeSuppliers = new Set(enriched.map(r => r.supplierCode).filter(Boolean)).size;
@@ -945,6 +954,11 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     blackInventoryCount,
     blackInventoryValue,
     negativeSkuCount,
+    negativePromoCount,
+    negativeSkuValue,
+    negativePromoValue,
+    negativeSkuQty,
+    negativePromoQty,
     outOfStockCount,
     totalLostSalesPerWeek,
     activeStores,
@@ -1343,6 +1357,12 @@ app.get('/api/kpis', (req, res) => {
   const agingValue = filtered.filter(r => r.isAging).reduce((s, r) => s + r.onHandValue, 0);
   const blackInventoryValue = filtered.filter(r => r.isBlackInventory).reduce((s, r) => s + r.onHandValue, 0);
   const deadStockValue = filtered.filter(r => r.isDeadStock).reduce((s, r) => s + r.onHandValue, 0);
+  const negativeSkuCount = filtered.filter(r => r.isNegativeStock).length;
+  const negativePromoCount = filtered.filter(r => r.isNegativePromo).length;
+  const negativeSkuValue = filtered.filter(r => r.isNegativeStock).reduce((s, r) => s + r.onHandValue, 0);
+  const negativePromoValue = filtered.filter(r => r.isNegativePromo).reduce((s, r) => s + r.onHandValue, 0);
+  const negativeSkuQty = filtered.filter(r => r.isNegativeStock).reduce((s, r) => s + r.onHand, 0);
+  const negativePromoQty = filtered.filter(r => r.isNegativePromo).reduce((s, r) => s + r.onHand, 0);
   const totalLostSalesPerWeek = filtered.reduce((s, r) => s + r.lostSalesPerWeek, 0);
   // Value-weighted: daysCover = (totalValue × 7) / Σ(wkAveNet × avgCost); avgWts = daysCover / 7
   const totalWklSalesValue = filtered.reduce((s, r) => s + (r.wkAveNet * r.avgCost), 0);
@@ -1352,6 +1372,9 @@ app.get('/api/kpis', (req, res) => {
     totalOnHandValue, totalOnHand, criticalCount, overstockCount, deadStockCount,
     agingCount, blackInventoryCount,
     overstockValue, agingValue, blackInventoryValue, deadStockValue,
+    negativeSkuCount, negativePromoCount,
+    negativeSkuValue, negativePromoValue,
+    negativeSkuQty, negativePromoQty,
     outOfStockCount, totalLostSalesPerWeek,
     activeStores: new Set(filtered.map(r => r.storeNumber)).size,
     activeSuppliers: new Set(filtered.map(r => r.supplierCode).filter(Boolean)).size,
@@ -1488,6 +1511,40 @@ app.get('/api/negativeskus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const filters = resolveFilters(req);
   const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativeStock)
+    .sort((a, b) => a.onHand - b.onHand)
+    .map(r => {
+      let qtyCases;
+      if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+      else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = (r.onHand / r.stdPack).toFixed(2);
+      else qtyCases = 'Per Piece';
+      return {
+        storeName: `${r.storeNumber} - ${r.storeName}`,
+        area: r.area,
+        catName: r.catName || 'Uncategorized',
+        skuCode: r.skuCode,
+        skuDesc: r.skuDesc,
+        supplier: r.supplierName,
+        onHand: r.onHand,
+        qtyCases,
+        onHandValue: r.onHandValue,
+        salesInvRatio: r.salesInvRatio,
+        salesInvZone: r.salesInvZone,
+        p8ave: r.p8ave,
+        dateLastSold: formatDate(r.dateLastSold),
+        dateLastReceived: formatDate(r.dateLastReceived),
+        lastTransferIn: formatDate(r.lastTransferIn),
+        lastTransferOut: formatDate(r.lastTransferOut)
+      };
+    });
+  res.json(filtered);
+});
+
+// Negative Promo SKU — items with onHand < 0 that are also Merch Group P
+// (which would otherwise be hidden inside the "Promo Items" status).
+app.get('/api/negativepromoskus', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const filters = resolveFilters(req);
+  const filtered = applyFilters(cache.rows, filters).filter(r => r.isNegativePromo)
     .sort((a, b) => a.onHand - b.onHand)
     .map(r => {
       let qtyCases;
@@ -2972,6 +3029,77 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
 });
 
 // Negative SKU Excel export — items with onHand < 0
+// Shared XLSX renderer for Negative SKU / Negative Promo — differs only in filter + sheet name
+async function writeNegativeSkusXlsx(res, filterFn, sheetName, titlePrefix, filters) {
+  let rows = applyFilters(cache.rows, filters).filter(filterFn);
+  rows.sort((a, b) => a.onHand - b.onHand);
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CAMANAVA Inventory Dashboard';
+  wb.created = new Date();
+  const ws = wb.addWorksheet(sheetName);
+  const DARK_GREEN = 'FF1B5E20';
+  const headers = [
+    { header: 'Store Name', key: 'storeName', width: 26 },
+    { header: 'SKU', key: 'skuCode', width: 14 },
+    { header: 'Description', key: 'skuDesc', width: 36 },
+    { header: 'Supplier', key: 'supplier', width: 28 },
+    { header: 'On Hand', key: 'onHand', width: 12 },
+    { header: 'Qty in Cases', key: 'qtyCases', width: 14 },
+    { header: 'Inv Value', key: 'onHandValue', width: 14 },
+    { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
+    { header: 'Zone', key: 'salesInvZone', width: 12 },
+    { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
+    { header: 'Last Sold', key: 'dateLastSold', width: 14 },
+    { header: 'Last Received', key: 'dateLastReceived', width: 14 }
+  ];
+  ws.mergeCells(1, 1, 1, headers.length);
+  const titleCell = ws.getCell(1, 1);
+  titleCell.value = titlePrefix + ' as of ' + new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  titleCell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 13, name: 'Calibri' };
+  titleCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  ws.getRow(1).height = 26;
+  ws.columns = headers;
+  const headerRow = ws.getRow(2);
+  headers.forEach((h, i) => { headerRow.getCell(i + 1).value = h.header; });
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11, name: 'Calibri' };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+  for (const r of rows) {
+    let qtyCases;
+    if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
+    else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
+    else qtyCases = 'Per Piece';
+    ws.addRow({
+      storeName: r.storeNumber + ' - ' + r.storeName,
+      skuCode: r.skuCode,
+      skuDesc: r.skuDesc,
+      supplier: r.supplierName,
+      onHand: r.onHand,
+      qtyCases,
+      onHandValue: r.onHandValue,
+      salesInvRatio: r.salesInvRatio,
+      salesInvZone: r.salesInvZone,
+      p8ave: r.p8ave,
+      dateLastSold: formatDate(r.dateLastSold),
+      dateLastReceived: formatDate(r.dateLastReceived)
+    });
+  }
+  const filename = sheetName.replace(/[^a-zA-Z0-9]+/g, '_') + '_' + new Date().toISOString().split('T')[0] + '.xlsx';
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+}
+
+app.get('/api/export-negativepromoskus-xlsx', async (req, res) => {
+  if (!cache.ready) return res.status(503).send('Cache not ready');
+  const filters = resolveFilters(req);
+  return writeNegativeSkusXlsx(res, r => r.isNegativePromo, 'Negative Promo SKU', 'Negative Promo SKU Report', filters);
+});
+
 app.get('/api/export-negativeskus-xlsx', async (req, res) => {
   if (!cache.ready) return res.status(503).send('Cache not ready');
   const filters = resolveFilters(req);
@@ -4256,6 +4384,69 @@ canvas { max-height:260px; }
         </div>
         <div class="pagination" id="negsku-pagination"></div>
       </div>
+
+      <!-- NEGATIVE PROMO SKU (Merch Group P items with negative stock) -->
+      <div class="section" style="margin-top:12px;">
+        <div class="section-header">
+          <div class="section-title">🎁 Negative Promo SKU <span class="badge badge-yellow" id="negpromo-count">0</span>
+            <span class="totals-pill" id="negpromo-totals"></span>
+            <span style="font-size:11px;color:var(--text2);margin-left:8px;font-weight:normal;">Promo items with onHand &lt; 0 — normally hidden inside "Promo Items"</span>
+          </div>
+          <div class="section-actions">
+            <input type="text" class="table-search" placeholder="Search..." oninput="searchTable('negpromo-table',this.value)"/>
+            <button class="btn btn-sm" onclick="exportNegativePromoSKUsExcel()" id="negpromo-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <div class="summary-grid">
+          <div class="summary-card">
+            <div class="summary-card-title">📍 Summary by Store</div>
+            <div class="summary-card-body">
+              <table class="summary-table">
+                <thead><tr>
+                  <th>Store</th>
+                  <th>On Hand</th>
+                  <th>Inv Value</th>
+                  <th>Count</th>
+                </tr></thead>
+                <tbody id="negpromo-summary-store"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="summary-card">
+            <div class="summary-card-title">🗂 Summary by Category</div>
+            <div class="summary-card-body">
+              <table class="summary-table">
+                <thead><tr>
+                  <th>Category</th>
+                  <th>On Hand</th>
+                  <th>Inv Value</th>
+                  <th>Count</th>
+                </tr></thead>
+                <tbody id="negpromo-summary-cat"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="negpromo-table">
+            <thead><tr>
+              <th data-field="storeName" onclick="sortTable('negpromo-table',0)">Store Name</th>
+              <th data-field="skuCode" onclick="sortTable('negpromo-table',1)">SKU</th>
+              <th data-field="skuDesc" onclick="sortTable('negpromo-table',2)">Description</th>
+              <th data-field="supplier" onclick="sortTable('negpromo-table',3)">Supplier</th>
+              <th data-field="onHand" onclick="sortTable('negpromo-table',4)">On Hand</th>
+              <th data-field="qtyCases" onclick="sortTable('negpromo-table',5)">Qty in Cases</th>
+              <th data-field="onHandValue" onclick="sortTable('negpromo-table',6)">Inv Value</th>
+              <th data-field="salesInvRatio" onclick="sortTable('negpromo-table',7)">Sales/Inv Ratio</th>
+              <th data-field="p8ave" onclick="sortTable('negpromo-table',8)">P8 Ave/Week</th>
+              <th data-field="dateLastSold" onclick="sortTable('negpromo-table',9)">Last Sold</th>
+              <th data-field="dateLastReceived" onclick="sortTable('negpromo-table',10)">Last Received</th>
+            </tr></thead>
+            <tbody id="negpromo-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="negpromo-pagination"></div>
+      </div>
     </div>
 
     <!-- DEAD STOCK TAB -->
@@ -4808,7 +4999,7 @@ canvas { max-height:260px; }
 let activeFilters = {};
 let activeTab = 'overview';
 let charts = {};
-let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1, agingblackAging:1, agingblackBlack:1 };
+let tablePages = { critical:1, overstock:1, aging:1, blackinv:1, negsku:1, negpromo:1, deadstock:1, outofstock:1, stores:1, suppliers:1, top300:1, rice:1, problemInv:1, agingblackAging:1, agingblackBlack:1 };
 const PAGE_SIZE = 50;
 
 // ─── AUTH STATE ───────────────────────────────────────────────────────────────
@@ -5316,7 +5507,34 @@ async function loadKPIs() {
     kpiCard('Dead Stock SKUs', fmt(d.deadStockCount), 'No sales 8 wks', 'red'),
     kpiCard('Black Inv Value', '₱' + fmtM(d.blackInventoryValue || 0), fmt(d.blackInventoryCount || 0) + ' SKUs, stagnant', 'red'),
     kpiCard('P8 Wks No Sales Val', '₱' + fmtM(d.deadStockValue || 0), fmt(d.deadStockCount || 0) + ' SKUs', 'red'),
+    negativeSkuCombinedCard(d),
   ].join('');
+}
+// Combined KPI card — Negative SKU + Negative Promo SKU, qty & amount for both in a single card
+function negativeSkuCombinedCard(d) {
+  const nCount = Number(d.negativeSkuCount || 0);
+  const nQty = Number(d.negativeSkuQty || 0);
+  const nVal = Number(d.negativeSkuValue || 0);
+  const pCount = Number(d.negativePromoCount || 0);
+  const pQty = Number(d.negativePromoQty || 0);
+  const pVal = Number(d.negativePromoValue || 0);
+  return '<div class="kpi-card red" style="grid-column:span 2;">' +
+    '<div class="kpi-label">Negative SKU (Data Errors)</div>' +
+    '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">' +
+      '<div>' +
+        '<div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;">Regular</div>' +
+        '<div style="font-size:20px;font-weight:700;color:var(--red-light);">' + fmt(nCount) + '</div>' +
+        '<div style="font-size:11px;color:var(--text2);">Qty: <span style="color:var(--text1);">' + fmt(nQty) + '</span></div>' +
+        '<div style="font-size:11px;color:var(--text2);">Amt: <span style="color:var(--text1);">₱' + fmtM(nVal) + '</span></div>' +
+      '</div>' +
+      '<div>' +
+        '<div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;">Promo</div>' +
+        '<div style="font-size:20px;font-weight:700;color:var(--yellow-light);">' + fmt(pCount) + '</div>' +
+        '<div style="font-size:11px;color:var(--text2);">Qty: <span style="color:var(--text1);">' + fmt(pQty) + '</span></div>' +
+        '<div style="font-size:11px;color:var(--text2);">Amt: <span style="color:var(--text1);">₱' + fmtM(pVal) + '</span></div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
 }
 
 function kpiCard(label, value, sub, type) {
@@ -5633,15 +5851,72 @@ async function loadBlackInventory() {
   renderTable('blackinv-body', data, renderBlackInventoryRow, 'blackinv-pagination', 'blackinv', tablePages.blackinv);
 }
 async function loadNegativeSKUs() {
-  const r = await fetch('/api/negativeskus' + filterQuery());
-  const data = await r.json();
+  // Fetch both regular and promo negatives in parallel
+  const q = filterQuery();
+  const [regRes, promoRes] = await Promise.all([
+    fetch('/api/negativeskus' + q),
+    fetch('/api/negativepromoskus' + q)
+  ]);
+  const data = await regRes.json();
+  const promoData = await promoRes.json();
   if (!Array.isArray(data)) return;
   tableData.negsku = data;
   document.getElementById('negsku-count').textContent = fmt(data.length);
   setTotalsPill('negsku-totals', data);
   renderTable('negsku-body', data, renderNegativeSKURow, 'negsku-pagination', 'negsku', tablePages.negsku);
-  // Build summaries
   buildNegSkuSummaries(data);
+  // Now the Promo section
+  if (Array.isArray(promoData)) {
+    tableData.negpromo = promoData;
+    document.getElementById('negpromo-count').textContent = fmt(promoData.length);
+    setTotalsPill('negpromo-totals', promoData);
+    renderTable('negpromo-body', promoData, renderNegativeSKURow, 'negpromo-pagination', 'negpromo', tablePages.negpromo);
+    buildNegPromoSummaries(promoData);
+  }
+}
+// Aggregates Negative Promo SKU data by store & category (mirrors buildNegSkuSummaries)
+function buildNegPromoSummaries(data) {
+  const byStore = {}, byCat = {};
+  for (const r of data) {
+    if (!byStore[r.storeName]) byStore[r.storeName] = { key: r.storeName, onHand: 0, value: 0, count: 0 };
+    byStore[r.storeName].onHand += Number(r.onHand) || 0;
+    byStore[r.storeName].value += Number(r.onHandValue) || 0;
+    byStore[r.storeName].count++;
+    const cat = r.catName || 'Uncategorized';
+    if (!byCat[cat]) byCat[cat] = { key: cat, onHand: 0, value: 0, count: 0 };
+    byCat[cat].onHand += Number(r.onHand) || 0;
+    byCat[cat].value += Number(r.onHandValue) || 0;
+    byCat[cat].count++;
+  }
+  const renderMini = (tbodyId, rows) => {
+    const tbody = document.getElementById(tbodyId);
+    if (!tbody) return;
+    const sorted = [...rows].sort((a, b) => b.value - a.value);
+    tbody.innerHTML = sorted.map(r =>
+      '<tr>' +
+        '<td>' + esc(r.key) + '</td>' +
+        '<td class="num neg">' + fmt(r.onHand) + '</td>' +
+        '<td class="num">₱' + fmtN(r.value) + '</td>' +
+        '<td class="num">' + fmt(r.count) + '</td>' +
+      '</tr>'
+    ).join('');
+  };
+  renderMini('negpromo-summary-store', Object.values(byStore));
+  renderMini('negpromo-summary-cat', Object.values(byCat));
+}
+async function exportNegativePromoSKUsExcel() {
+  const btn = document.getElementById('negpromo-export-btn');
+  const orig = btn ? btn.innerHTML : null;
+  if (btn) { btn.innerHTML = '⏳ Generating...'; btn.disabled = true; }
+  try {
+    const params = new URLSearchParams(activeFilters);
+    if (authToken) params.set('token', authToken);
+    const url = '/api/export-negativepromoskus-xlsx?' + params.toString();
+    const a = document.createElement('a');
+    a.href = url; a.download = '';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  } catch (e) { alert('Export failed: ' + e.message); }
+  finally { setTimeout(() => { if (btn) { btn.innerHTML = orig; btn.disabled = false; } }, 800); }
 }
 
 // Aggregates the Negative SKU data by store & category, renders both summary tables
@@ -7077,6 +7352,7 @@ const tableKeyToId = {
   aging: 'aging-table',
   blackinv: 'blackinv-table',
   negsku: 'negsku-table',
+  negpromo: 'negpromo-table',
   deadstock: 'deadstock-table',
   outofstock: 'outofstock-table',
   stores: 'stores-table',
@@ -7154,6 +7430,8 @@ function getTableConfig(tableId) {
     'blackinv-table':   { key: 'blackinv',   render: renderBlackInventoryRow, pagination: 'blackinv-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'negsku-table':     { key: 'negsku',     render: renderNegativeSKURow,    pagination: 'negsku-pagination',
+      cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+    'negpromo-table':   { key: 'negpromo',   render: renderNegativeSKURow,    pagination: 'negpromo-pagination',
       cols: ['storeName','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','p8ave','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'deadstock-table':  { key: 'deadstock',  render: renderDeadstockRow,  pagination: 'deadstock-pagination',
       cols: ['store','area','skuCode','skuDesc','supplier','onHand','qtyCases','onHandValue','salesInvRatio','weeksToSell','daysCover','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
