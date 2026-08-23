@@ -4650,6 +4650,51 @@ canvas { max-height:260px; }
           </div>
           <div class="summary-card-body" id="top300-store-chart" style="max-height:none;overflow:visible;padding:8px 12px;"></div>
         </div>
+        <!-- ZONE REFERENCE LEGEND — full breakdown before the Store summary -->
+        <div style="margin-top:12px;padding:10px 14px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;">
+          <div style="font-size:12px;font-weight:700;color:var(--text1);margin-bottom:8px;">📖 Sales/Inv Ratio Zone Reference — target 45-day cover (≈ 15.6%)</div>
+          <table style="width:100%;font-size:11px;border-collapse:collapse;">
+            <thead>
+              <tr style="color:var(--text2);text-transform:uppercase;letter-spacing:0.5px;font-size:10px;">
+                <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">Zone</th>
+                <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">Range</th>
+                <th style="text-align:left;padding:4px 8px;border-bottom:1px solid var(--border);">Meaning</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style="padding:5px 8px;"><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(63,185,80,0.25);color:#3fb950;font-weight:700;font-size:10px;">Excellent</span></td>
+                <td style="padding:5px 8px;color:var(--text1);">≥ 15.6% (≤ 45 days cover)</td>
+                <td style="padding:5px 8px;color:var(--text1);"><span style="color:#3fb950;">●</span> Fast turn</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 8px;"><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(63,185,80,0.15);color:#7ce38b;font-weight:700;font-size:10px;">Healthy</span></td>
+                <td style="padding:5px 8px;color:var(--text1);">10 – 15.6% (45 – 70 days)</td>
+                <td style="padding:5px 8px;color:var(--text1);"><span style="color:#7ce38b;">●</span> Comfortable</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 8px;"><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(227,179,65,0.18);color:#e3b341;font-weight:700;font-size:10px;">Watch</span></td>
+                <td style="padding:5px 8px;color:var(--text1);">6 – 10% (70 – 120 days)</td>
+                <td style="padding:5px 8px;color:var(--text1);"><span style="color:#e3b341;">●</span> Slowing</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 8px;"><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(248,81,73,0.18);color:#f85149;font-weight:700;font-size:10px;">Overstocked</span></td>
+                <td style="padding:5px 8px;color:var(--text1);">&lt; 6% (&gt; 120 days)</td>
+                <td style="padding:5px 8px;color:var(--text1);"><span style="color:#f85149;">●</span> Sitting</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 8px;"><span style="display:inline-block;padding:1px 8px;border-radius:10px;background:rgba(248,81,73,0.18);color:#f85149;font-weight:700;font-size:10px;">Dead</span></td>
+                <td style="padding:5px 8px;color:var(--text1);">0% (no sales)</td>
+                <td style="padding:5px 8px;color:var(--text1);"><span style="color:#f85149;">●</span> Not moving</td>
+              </tr>
+              <tr>
+                <td style="padding:5px 8px;color:var(--text2);">—</td>
+                <td style="padding:5px 8px;color:var(--text1);">No inventory</td>
+                <td style="padding:5px 8px;color:var(--text2);"><span style="color:var(--text2);">●</span> Gray</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
         <!-- SUMMARY PER STORE — Sales/Inv Ratio rollup for Top 300 SKUs only -->
         <div class="section-header" style="margin-top:8px;">
           <div class="section-title" style="font-size:14px;">📊 Sales/Inv Ratio Summary per Store
@@ -4679,6 +4724,12 @@ canvas { max-height:260px; }
           </table>
         </div>
         </div><!-- /top300-analytics-capture -->
+        <div class="section-header" style="margin-top:12px;">
+          <div class="section-title" style="font-size:14px;">🔎 Sales/Inv Ratio Summary per SKU
+            <span class="badge badge-green" id="top300-per-sku-count" style="margin-left:8px;">0</span>
+            <span style="font-size:11px;color:var(--text2);margin-left:8px;font-weight:normal;">Line-item detail for every Top 300 SKU × store row</span>
+          </div>
+        </div>
         <div class="table-wrap" style="max-height:600px;overflow:auto;">
           <table id="top300-table">
             <thead><tr>
@@ -6051,6 +6102,8 @@ function renderTop300Body() {
     ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
     : data;
   document.getElementById('top300-count').textContent = fmt(view.length);
+  const perSku = document.getElementById('top300-per-sku-count');
+  if (perSku) perSku.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
     ? '<tr><td colspan="22" class="empty">No data found</td></tr>'
     : view.map(renderTop300Row).join('');
