@@ -778,6 +778,10 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
     // Negative SKU: on hand is negative (system error or data sync issue)
     const isNegativeStock = onHand < 0;
 
+    // Sales/Inv Ratio (weekly %). Computed once, reused by both salesInvRatio
+    // and salesInvZone fields below to keep per-row work minimal.
+    const _sir = onHandValue > 0 ? +((wkAveNet * avgCost / onHandValue) * 100).toFixed(2) : null;
+
     enriched.push({
       regionCode: row[COL.regionCode] || '',
       regionName: storeInfo.region || row[COL.regionName] || '',
@@ -820,20 +824,15 @@ function buildAnalytics(rawRows, storeMap, catMap = {}) {
       // Per-SKU metrics for SKU Analysis tab
       skuWTS: p8ave > 0 ? onHand / p8ave : null,
       skuDaysCover,
-      // Sales/Inv Ratio (weekly %): (wkAveNet × avgCost / onHandValue) × 100
-      // Interpretation: percent of on-hand inventory value that turns over in a week.
-      // null when inventory is 0 (nothing to turn); 0 when no sales.
-      salesInvRatio: onHandValue > 0 ? +((wkAveNet * avgCost / onHandValue) * 100).toFixed(2) : null,
-      // Zone label derived from Sales/Inv Ratio (target ideal: 45-day cover = ~15.6%)
-      salesInvZone: (function(){
-        const r = onHandValue > 0 ? (wkAveNet * avgCost / onHandValue) * 100 : null;
-        if (r == null) return '—';
-        if (r <= 0) return 'Dead';
-        if (r < 6) return 'Overstocked';
-        if (r < 10) return 'Watch';
-        if (r < 15.6) return 'Healthy';
-        return 'Excellent';
-      })(),
+      // Sales/Inv Ratio + Zone — computed once via _sir helper above (avoids
+      // per-row IIFE allocation which was noticeably slow on 100k+ rows).
+      salesInvRatio: _sir,
+      salesInvZone: _sir == null ? '—'
+        : _sir <= 0 ? 'Dead'
+        : _sir < 6 ? 'Overstocked'
+        : _sir < 10 ? 'Watch'
+        : _sir < 15.6 ? 'Healthy'
+        : 'Excellent',
       supplierCode: row[COL.supplierCode] || '',
       supplierName: row[COL.supplierName] || '',
       delivMode: row[COL.delivMode] || '',
