@@ -30,6 +30,7 @@ const INV_FILE_NAME = process.env.INV_FILE_NAME || 'InvData.csv';
 const STORES_FILE_NAME = process.env.STORES_FILE_NAME || 'ListOfStores.xlsx';
 const REFRESH_INTERVAL_MINUTES = parseInt(process.env.REFRESH_INTERVAL_MINUTES || '10');
 const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
+const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -45,6 +46,8 @@ let cache = {
   upcMap: {},         // upc -> { sku, desc }
   top300: [],         // [{ area, storeNumber, storeName, rank, sku, desc }]
   storeSkuIndex: {},  // "storeNum_skuCode" -> enriched row (for fast lookup)
+  actionPlansAging: {},  // "storeNumber|skuCode" -> { actionPlan, user, updatedAt, rowNum }
+  actionPlansBlack: {},  // same shape as above
   kpis: {},
   // Derived per-category lists (criticalItems, overstockItems, agingItems,
   // blackInventoryItems, negativeSkuItems, deadStockItems, outOfStockItems,
@@ -232,6 +235,118 @@ async function clearLogs() {
     console.error('[Logs] Clear error:', e.message);
     return false;
   }
+}
+
+// ─── ACTION PLANS (Aging + Black Inventory) ──────────────────────────────────
+// Storage: dedicated Google Sheet with tabs "AgingActionPlans" and "BlackActionPlans".
+// Row schema (both tabs): A=Store#, B=StoreName, C=SKU, D=Description, E=Area, F=ActionPlan, G=User, H=UpdatedAt
+const ACTION_PLAN_TABS = { aging: 'AgingActionPlans', black: 'BlackActionPlans' };
+function actionPlanKey(storeNumber, skuCode) {
+  return String(storeNumber || '').trim() + '|' + String(skuCode || '').trim();
+}
+async function loadActionPlans() {
+  if (!ACTION_PLANS_SHEET_ID) {
+    console.warn('[ActionPlans] ACTION_PLANS_SHEET_ID not set, skipping load');
+    return;
+  }
+  try {
+    const sheets = await getSheetsClient();
+    for (const type of Object.keys(ACTION_PLAN_TABS)) {
+      const tab = ACTION_PLAN_TABS[type];
+      try {
+        const resp = await sheets.spreadsheets.values.get({
+          spreadsheetId: ACTION_PLANS_SHEET_ID,
+          range: tab + '!A2:H'
+        });
+        const rows = resp.data.values || [];
+        const map = {};
+        rows.forEach((row, i) => {
+          const storeNumber = (row[0] || '').toString().trim();
+          const skuCode = (row[2] || '').toString().trim();
+          const plan = (row[5] || '').toString();
+          if (!storeNumber || !skuCode || !plan.trim()) return;
+          map[actionPlanKey(storeNumber, skuCode)] = {
+            storeNumber,
+            storeName: (row[1] || '').toString(),
+            skuCode,
+            skuDesc: (row[3] || '').toString(),
+            area: (row[4] || '').toString(),
+            actionPlan: plan,
+            user: (row[6] || '').toString(),
+            updatedAt: (row[7] || '').toString(),
+            rowNum: i + 2  // sheet row number (header is row 1)
+          };
+        });
+        cache['actionPlans' + (type === 'aging' ? 'Aging' : 'Black')] = map;
+        console.log('[ActionPlans] Loaded ' + Object.keys(map).length + ' ' + type + ' plans');
+      } catch (e) {
+        console.warn('[ActionPlans] Could not load tab "' + tab + '":', e.message);
+      }
+    }
+  } catch (e) {
+    console.error('[ActionPlans] Load error:', e.message);
+  }
+}
+
+async function upsertActionPlan(type, entry) {
+  if (!ACTION_PLANS_SHEET_ID) throw new Error('ACTION_PLANS_SHEET_ID not configured');
+  const cacheKey = 'actionPlans' + (type === 'aging' ? 'Aging' : 'Black');
+  const tab = ACTION_PLAN_TABS[type];
+  if (!tab) throw new Error('Invalid type: ' + type);
+  const key = actionPlanKey(entry.storeNumber, entry.skuCode);
+  const now = new Date().toISOString();
+  const existing = cache[cacheKey][key];
+  const values = [[
+    entry.storeNumber, entry.storeName || '', entry.skuCode,
+    entry.skuDesc || '', entry.area || '', entry.actionPlan,
+    entry.user || '', now
+  ]];
+  const sheets = await getSheetsClient();
+  if (existing && existing.rowNum) {
+    // Update in place
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: ACTION_PLANS_SHEET_ID,
+      range: tab + '!A' + existing.rowNum + ':H' + existing.rowNum,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: { values }
+    });
+    cache[cacheKey][key] = { ...existing, ...entry, updatedAt: now };
+  } else {
+    // Append new
+    const resp = await sheets.spreadsheets.values.append({
+      spreadsheetId: ACTION_PLANS_SHEET_ID,
+      range: tab + '!A:H',
+      valueInputOption: 'USER_ENTERED',
+      insertDataOption: 'INSERT_ROWS',
+      requestBody: { values }
+    });
+    const updatedRange = resp.data.updates && resp.data.updates.updatedRange;
+    let rowNum = null;
+    if (updatedRange) {
+      const m = updatedRange.match(/!\w?(\d+):/);
+      if (m) rowNum = parseInt(m[1]);
+    }
+    cache[cacheKey][key] = { ...entry, updatedAt: now, rowNum };
+  }
+  return cache[cacheKey][key];
+}
+
+async function deleteActionPlan(type, storeNumber, skuCode) {
+  if (!ACTION_PLANS_SHEET_ID) throw new Error('ACTION_PLANS_SHEET_ID not configured');
+  const cacheKey = 'actionPlans' + (type === 'aging' ? 'Aging' : 'Black');
+  const tab = ACTION_PLAN_TABS[type];
+  if (!tab) throw new Error('Invalid type: ' + type);
+  const key = actionPlanKey(storeNumber, skuCode);
+  const existing = cache[cacheKey][key];
+  if (!existing || !existing.rowNum) return false;
+  const sheets = await getSheetsClient();
+  // Clear the row's content (leaves an empty row — safer than shifting all rows below)
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: ACTION_PLANS_SHEET_ID,
+    range: tab + '!A' + existing.rowNum + ':H' + existing.rowNum
+  });
+  delete cache[cacheKey][key];
+  return true;
 }
 
 
@@ -952,6 +1067,9 @@ async function refreshData(force = false) {
     cache.error = null;
 
     console.log(`[Cache] Ready. ${analytics.rows.length} SKU rows loaded. Critical: ${analytics.kpis.criticalCount}, Overstock: ${analytics.kpis.overstockCount}`);
+
+    // Load action plans in the background (don't block cache-ready signal)
+    loadActionPlans().catch(e => console.warn('[ActionPlans] Background load failed:', e.message));
   } catch (err) {
     console.error('[Cache] Refresh error:', err.message);
     cache.error = err.message;
@@ -1963,14 +2081,20 @@ app.get('/api/aging-black-summary', (req, res) => {
     .sort((a, b) => (b.agingValue + b.blackValue) - (a.agingValue + a.blackValue));
 
   // ── TOP 10 PER AREA (Aging & Black separately) ──────────────────────────
-  const toItem = (r) => {
+  const toItem = (r, type) => {
     let qtyCases;
     if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
     else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
     else qtyCases = 'Per Piece';
+    // Join existing action plan (if any) — key: storeNumber|skuCode
+    const cacheKey = type === 'aging' ? 'actionPlansAging' : 'actionPlansBlack';
+    const key = String(r.storeNumber || '').trim() + '|' + String(r.skuCode || '').trim();
+    const plan = (cache[cacheKey] || {})[key];
     return {
       area: r.area,
       store: r.storeNumber + ' - ' + r.storeName,
+      storeNumber: r.storeNumber,
+      storeName: r.storeName,
       skuCode: r.skuCode,
       skuDesc: r.skuDesc,
       supplier: r.supplierName,
@@ -1980,10 +2104,13 @@ app.get('/api/aging-black-summary', (req, res) => {
       weeksToSell: r.p8ave > 0 ? +(r.onHand / r.p8ave).toFixed(2) : null,
       p8ave: r.p8ave,
       dateLastReceived: formatDate(r.dateLastReceived),
-      dateLastSold: formatDate(r.dateLastSold)
+      dateLastSold: formatDate(r.dateLastSold),
+      actionPlan: plan ? plan.actionPlan : '',
+      actionPlanUser: plan ? plan.user : '',
+      actionPlanUpdatedAt: plan ? plan.updatedAt : ''
     };
   };
-  const groupTop10 = (source) => {
+  const groupTop10 = (source, type) => {
     const grouped = {};
     for (const r of source) {
       const key = r.area || '(Unknown)';
@@ -1995,13 +2122,13 @@ app.get('/api/aging-black-summary', (req, res) => {
       const top = grouped[area]
         .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
         .slice(0, 10)
-        .map(toItem);
+        .map(r => toItem(r, type));
       out.push(...top);
     }
     return out;
   };
-  const agingItems = groupTop10(agingRows);
-  const blackItems = groupTop10(blackRows);
+  const agingItems = groupTop10(agingRows, 'aging');
+  const blackItems = groupTop10(blackRows, 'black');
 
   res.json({
     kpis: {
@@ -2016,6 +2143,67 @@ app.get('/api/aging-black-summary', (req, res) => {
     agingItems,
     blackItems
   });
+});
+
+// ─── ACTION PLAN API (Aging + Black Inventory) ──────────────────────────────
+// Returns { aging: {key: plan, ...}, black: {key: plan, ...} }
+app.get('/api/action-plans', (req, res) => {
+  const token = req.query.token || '';
+  const s = sessions[token];
+  if (!s) return res.status(401).json({ error: 'Not logged in' });
+  res.json({
+    aging: cache.actionPlansAging || {},
+    black: cache.actionPlansBlack || {},
+    configured: !!ACTION_PLANS_SHEET_ID
+  });
+});
+
+// Save or update an action plan
+app.post('/api/action-plans/:type', async (req, res) => {
+  const token = (req.body && req.body.token) || req.query.token || '';
+  const s = sessions[token];
+  if (!s) return res.status(401).json({ error: 'Not logged in' });
+  const type = req.params.type;
+  if (type !== 'aging' && type !== 'black') return res.status(400).json({ error: 'Invalid type' });
+  if (!ACTION_PLANS_SHEET_ID) return res.status(503).json({ error: 'ACTION_PLANS_SHEET_ID not configured' });
+  const body = req.body || {};
+  if (!body.storeNumber || !body.skuCode) return res.status(400).json({ error: 'storeNumber and skuCode required' });
+  const plan = (body.actionPlan || '').toString().trim();
+  if (!plan) return res.status(400).json({ error: 'actionPlan cannot be empty' });
+  try {
+    const saved = await upsertActionPlan(type, {
+      storeNumber: String(body.storeNumber).trim(),
+      storeName: body.storeName || '',
+      skuCode: String(body.skuCode).trim(),
+      skuDesc: body.skuDesc || '',
+      area: body.area || '',
+      actionPlan: plan,
+      user: s.username
+    });
+    res.json({ ok: true, entry: saved });
+  } catch (e) {
+    console.error('[ActionPlans] Save error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete an action plan
+app.delete('/api/action-plans/:type', async (req, res) => {
+  const token = (req.body && req.body.token) || req.query.token || '';
+  const s = sessions[token];
+  if (!s) return res.status(401).json({ error: 'Not logged in' });
+  const type = req.params.type;
+  if (type !== 'aging' && type !== 'black') return res.status(400).json({ error: 'Invalid type' });
+  if (!ACTION_PLANS_SHEET_ID) return res.status(503).json({ error: 'ACTION_PLANS_SHEET_ID not configured' });
+  const body = req.body || {};
+  if (!body.storeNumber || !body.skuCode) return res.status(400).json({ error: 'storeNumber and skuCode required' });
+  try {
+    const ok = await deleteActionPlan(type, String(body.storeNumber).trim(), String(body.skuCode).trim());
+    res.json({ ok });
+  } catch (e) {
+    console.error('[ActionPlans] Delete error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post('/api/refresh', async (req, res) => {
@@ -2406,6 +2594,9 @@ app.get('/api/export/:type', async (req, res) => {
       if (r.stdPack > 0 && r.stdPack === r.onHand) qtyCases = 'Per Piece';
       else if (r.stdPack > 0 && r.onHand !== 0) qtyCases = +(r.onHand / r.stdPack).toFixed(2);
       else qtyCases = 'Per Piece';
+      const planCacheKey = category === 'Aging' ? 'actionPlansAging' : 'actionPlansBlack';
+      const planKey = String(r.storeNumber || '').trim() + '|' + String(r.skuCode || '').trim();
+      const plan = (cache[planCacheKey] || {})[planKey];
       return {
         category,
         area: r.area,
@@ -2418,7 +2609,10 @@ app.get('/api/export/:type', async (req, res) => {
         weeksToSell: r.p8ave > 0 ? +(r.onHand / r.p8ave).toFixed(2) : null,
         p8ave: r.p8ave,
         dateLastReceived: formatDate(r.dateLastReceived),
-        dateLastSold: formatDate(r.dateLastSold)
+        dateLastSold: formatDate(r.dateLastSold),
+        actionPlan: plan ? plan.actionPlan : '',
+        actionPlanUser: plan ? plan.user : '',
+        actionPlanUpdatedAt: plan ? plan.updatedAt : ''
       };
     };
     const agingTop = groupTop10(baseRows.filter(r => r.isAging)).map(r => toRow(r, 'Aging'));
@@ -2432,7 +2626,10 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Weeks to Sell', key: 'weeksToSell', format: 'decimal' },
       { header: 'P8 Ave/Week', key: 'p8ave', format: 'decimal' },
       { header: 'Last Received', key: 'dateLastReceived', format: 'date' },
-      { header: 'Last Sold', key: 'dateLastSold', format: 'date' }
+      { header: 'Last Sold', key: 'dateLastSold', format: 'date' },
+      { header: 'Action Plan', key: 'actionPlan' },
+      { header: 'Action Plan User', key: 'actionPlanUser' },
+      { header: 'Action Plan Updated', key: 'actionPlanUpdatedAt' }
     ];
   }
   else if (type === 'problem-inv') {
@@ -4443,6 +4640,7 @@ canvas { max-height:260px; }
               <th data-field="p8ave" onclick="sortTable('agingblack-aging-table',8)">P8 Ave/Week</th>
               <th data-field="dateLastReceived" onclick="sortTable('agingblack-aging-table',9)">Last Received</th>
               <th data-field="dateLastSold" onclick="sortTable('agingblack-aging-table',10)">Last Sold</th>
+              <th data-field="actionPlan" onclick="sortTable('agingblack-aging-table',11)">Action Plan</th>
             </tr></thead>
             <tbody id="agingblack-aging-body"></tbody>
           </table>
@@ -4470,6 +4668,7 @@ canvas { max-height:260px; }
               <th data-field="p8ave" onclick="sortTable('agingblack-black-table',8)">P8 Ave/Week</th>
               <th data-field="dateLastReceived" onclick="sortTable('agingblack-black-table',9)">Last Received</th>
               <th data-field="dateLastSold" onclick="sortTable('agingblack-black-table',10)">Last Sold</th>
+              <th data-field="actionPlan" onclick="sortTable('agingblack-black-table',11)">Action Plan</th>
             </tr></thead>
             <tbody id="agingblack-black-body"></tbody>
           </table>
@@ -4509,6 +4708,19 @@ canvas { max-height:260px; }
   </main>
 </div><!-- end main -->
 </div><!-- end app -->
+
+<!-- ACTION PLAN MODAL (Aging & Black) -->
+<div id="action-plan-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999;align-items:center;justify-content:center;">
+  <div style="background:var(--bg1);border:1px solid var(--border);border-radius:10px;width:min(520px,92vw);padding:20px;box-shadow:0 12px 40px rgba(0,0,0,0.5);">
+    <div id="ap-modal-title" style="font-size:16px;font-weight:700;color:var(--text1);margin-bottom:12px;">Action Plan</div>
+    <div id="ap-modal-context"></div>
+    <textarea id="ap-modal-textarea" rows="6" style="width:100%;padding:10px;background:var(--bg2);color:var(--text1);border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;resize:vertical;" placeholder="Describe the action plan..."></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+      <button class="btn btn-sm" onclick="closeActionPlanModal()">Cancel</button>
+      <button class="btn btn-sm btn-green" id="ap-modal-save" onclick="saveActionPlan()">💾 Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ─── STATE ────────────────────────────────────────────────────────────────────
@@ -5759,11 +5971,29 @@ function renderAgingBlackAreaChart(byArea) {
   }).join('');
   el.innerHTML = rows;
 }
+// Which table a row belongs to — needed so Action Plan buttons know which API to call.
+// We stash the type on the row via _type when rendering.
 function renderAgingBlackRow(r) {
   const qtyCases = r.qtyCases === 'Per Piece'
     ? '<span style="color:var(--text2);font-style:italic;">Per Piece</span>'
     : fmtN(r.qtyCases);
   const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
+  const type = r._type || 'aging';
+  const sn = esc(String(r.storeNumber || ''));
+  const sku = esc(String(r.skuCode || ''));
+  let planCell;
+  if (r.actionPlan && r.actionPlan.trim()) {
+    const preview = r.actionPlan.length > 80 ? r.actionPlan.substring(0, 80) + '…' : r.actionPlan;
+    const meta = r.actionPlanUser ? ' — ' + esc(r.actionPlanUser) : '';
+    planCell =
+      '<div style="font-size:11px;color:var(--text1);line-height:1.3;">' + esc(preview) + '</div>' +
+      '<div style="font-size:10px;color:var(--text2);margin-top:2px;">' +
+        '<a href="#" onclick="openActionPlanModal(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--blue);">Edit</a> · ' +
+        '<a href="#" onclick="deleteActionPlan(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--red-light);">Delete</a>' + meta +
+      '</div>';
+  } else {
+    planCell = '<a href="#" onclick="openActionPlanModal(\'' + type + '\',\'' + sn + '\',\'' + sku + '\');return false;" style="color:var(--blue);font-size:11px;">+ Add Plan</a>';
+  }
   return '<tr>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
     '<td>' + esc(r.store) + '</td>' +
@@ -5774,8 +6004,9 @@ function renderAgingBlackRow(r) {
     '<td class="mono" style="color:var(--green-bright);">₱' + fmtN(r.onHandValue) + '</td>' +
     '<td class="mono">' + wts + '</td>' +
     '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
-    '<td class="mono">' + esc(r.dateLastReceived || '—') + '</td>' +
-    '<td class="mono">' + esc(r.dateLastSold || '<span style="color:var(--text2);font-style:italic;">Never</span>') + '</td>' +
+    '<td class="mono">' + (r.dateLastReceived ? esc(r.dateLastReceived) : '—') + '</td>' +
+    '<td class="mono">' + (r.dateLastSold ? esc(r.dateLastSold) : '<span style="color:var(--text2);font-style:italic;">Never</span>') + '</td>' +
+    '<td style="max-width:280px;">' + planCell + '</td>' +
     '</tr>';
 }
 function renderAgingBlackBody(which) {
@@ -5784,16 +6015,108 @@ function renderAgingBlackBody(which) {
   const tbody = document.getElementById(bodyId);
   if (!tbody) return;
   const q = (tableSearch[tableKey] || '').toLowerCase().trim();
-  const cols = ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'];
-  const data = tableData[tableKey] || [];
+  const cols = ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold','actionPlan'];
+  const data = (tableData[tableKey] || []).map(r => ({ ...r, _type: which }));
   const view = q
     ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
     : data;
   const countEl = document.getElementById(which === 'aging' ? 'agingblack-aging-count' : 'agingblack-black-count');
   if (countEl) countEl.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="11" class="empty">No ' + (which === 'aging' ? 'aging' : 'black inventory') + ' items in this scope</td></tr>'
+    ? '<tr><td colspan="12" class="empty">No ' + (which === 'aging' ? 'aging' : 'black inventory') + ' items in this scope</td></tr>'
     : view.map(renderAgingBlackRow).join('');
+}
+// ── Action Plan modal + CRUD helpers ─────────────────────────────────────────
+function openActionPlanModal(type, storeNumber, skuCode) {
+  const tableKey = type === 'aging' ? 'agingblackAging' : 'agingblackBlack';
+  const row = (tableData[tableKey] || []).find(r =>
+    String(r.storeNumber) === String(storeNumber) && String(r.skuCode) === String(skuCode));
+  if (!row) { alert('Row not found in current view'); return; }
+  const overlay = document.getElementById('action-plan-modal');
+  document.getElementById('ap-modal-title').textContent = (row.actionPlan ? 'Edit' : 'Add') + ' Action Plan — ' + (type === 'aging' ? 'Aging' : 'Black Inventory');
+  document.getElementById('ap-modal-context').innerHTML =
+    '<div style="font-size:12px;color:var(--text2);margin-bottom:8px;">' +
+      '<div><strong style="color:var(--text1);">' + esc(row.store) + '</strong></div>' +
+      '<div>SKU: <span class="mono">' + esc(row.skuCode) + '</span> — ' + esc(row.skuDesc) + '</div>' +
+      '<div>Supplier: ' + esc(row.supplier) + '</div>' +
+    '</div>';
+  const ta = document.getElementById('ap-modal-textarea');
+  ta.value = row.actionPlan || '';
+  overlay.dataset.type = type;
+  overlay.dataset.storeNumber = String(row.storeNumber);
+  overlay.dataset.storeName = row.storeName || '';
+  overlay.dataset.skuCode = String(row.skuCode);
+  overlay.dataset.skuDesc = row.skuDesc || '';
+  overlay.dataset.area = row.area || '';
+  overlay.style.display = 'flex';
+  setTimeout(() => ta.focus(), 50);
+}
+function closeActionPlanModal() {
+  const el = document.getElementById('action-plan-modal');
+  if (el) el.style.display = 'none';
+}
+async function saveActionPlan() {
+  const overlay = document.getElementById('action-plan-modal');
+  const plan = document.getElementById('ap-modal-textarea').value.trim();
+  if (!plan) { alert('Action plan cannot be empty'); return; }
+  const btn = document.getElementById('ap-modal-save');
+  const orig = btn.innerHTML;
+  btn.innerHTML = '⏳ Saving...'; btn.disabled = true;
+  try {
+    const type = overlay.dataset.type;
+    const body = {
+      token: authToken,
+      storeNumber: overlay.dataset.storeNumber,
+      storeName: overlay.dataset.storeName,
+      skuCode: overlay.dataset.skuCode,
+      skuDesc: overlay.dataset.skuDesc,
+      area: overlay.dataset.area,
+      actionPlan: plan
+    };
+    const r = await fetch('/api/action-plans/' + type, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    // Update the local cached row so the change reflects immediately
+    const tableKey = type === 'aging' ? 'agingblackAging' : 'agingblackBlack';
+    const arr = tableData[tableKey] || [];
+    const idx = arr.findIndex(x =>
+      String(x.storeNumber) === body.storeNumber && String(x.skuCode) === body.skuCode);
+    if (idx >= 0) {
+      arr[idx].actionPlan = plan;
+      arr[idx].actionPlanUser = data.entry && data.entry.user || '';
+      arr[idx].actionPlanUpdatedAt = data.entry && data.entry.updatedAt || '';
+    }
+    closeActionPlanModal();
+    renderAgingBlackBody(type);
+  } catch (e) {
+    alert('Save failed: ' + e.message);
+  } finally {
+    btn.innerHTML = orig; btn.disabled = false;
+  }
+}
+async function deleteActionPlan(type, storeNumber, skuCode) {
+  if (!confirm('Delete this action plan?')) return;
+  try {
+    const r = await fetch('/api/action-plans/' + type, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: authToken, storeNumber, skuCode })
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    const tableKey = type === 'aging' ? 'agingblackAging' : 'agingblackBlack';
+    const arr = tableData[tableKey] || [];
+    const idx = arr.findIndex(x =>
+      String(x.storeNumber) === String(storeNumber) && String(x.skuCode) === String(skuCode));
+    if (idx >= 0) { arr[idx].actionPlan = ''; arr[idx].actionPlanUser = ''; arr[idx].actionPlanUpdatedAt = ''; }
+    renderAgingBlackBody(type);
+  } catch (e) {
+    alert('Delete failed: ' + e.message);
+  }
 }
 function filterAgingBlackTable(which, q) {
   const key = which === 'aging' ? 'agingblackAging' : 'agingblackBlack';
@@ -6776,7 +7099,7 @@ function getTableConfig(tableId) {
     'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
       cols: ['storeNumber','storeName','area','blackCount','blackOnHand','blackValue','agingCount','agingOnHand','agingValue','overstockCount','overstockOnHand','overstockValue','totalProblemValue'] },
     'agingblack-aging-table': { key: 'agingblackAging', render: renderAgingBlackRow, pagination: 'agingblack-aging-pagination',
-      cols: ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'] },
+      cols: ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold','actionPlan'] },
     'agingblack-black-table': { key: 'agingblackBlack', render: renderAgingBlackRow, pagination: 'agingblack-black-pagination',
       cols: ['area','store','skuCode','skuDesc','supplier','qtyCases','onHandValue','weeksToSell','p8ave','dateLastReceived','dateLastSold'] }
   };
