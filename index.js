@@ -1858,6 +1858,32 @@ app.get('/api/outofstock', (req, res) => {
 });
 
 // SKU Analysis endpoint — server-side pagination/sorting/searching
+// ABC Analysis summary for SKU Analysis tab — respects outer filters (area/store/dept)
+// but ignores status/abc/search filters so the breakdown is always the full picture.
+app.get('/api/skus-abc-summary', (req, res) => {
+  if (!cache.ready) return res.json({ error: 'Cache not ready' });
+  const { status, abc, search, page, pageSize, sortBy, sortDir, token, ...filters } = req.query;
+  const s = sessions[token || ''];
+  if (s && !s.isAdmin && s.area) filters.area = s.area;
+  const rows = applyFilters(cache.rows, filters);
+  const agg = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
+  let totalCount = 0, totalValue = 0;
+  for (const r of rows) {
+    const cls = (r.abc || 'C').toUpperCase();
+    const v = Number(r.onHandValue) || 0;
+    if (agg[cls]) { agg[cls].count++; agg[cls].value += v; }
+    totalCount++;
+    totalValue += v;
+  }
+  const pct = (v) => totalValue > 0 ? +((v / totalValue) * 100).toFixed(2) : 0;
+  res.json({
+    A: { ...agg.A, pct: pct(agg.A.value) },
+    B: { ...agg.B, pct: pct(agg.B.value) },
+    C: { ...agg.C, pct: pct(agg.C.value) },
+    total: { count: totalCount, value: totalValue }
+  });
+});
+
 app.get('/api/skus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
   const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', abc = '', token, ...filters } = req.query;
@@ -4660,6 +4686,8 @@ canvas { max-height:260px; }
             <span id="sku-upc-msg" style="font-size:11px;font-family:'IBM Plex Mono',monospace;"></span>
           </div>
         </div>
+        <!-- ABC Analysis KPI Cards — SKU count + valuation + % per class (respects area/store filters) -->
+        <div class="kpi-grid" id="sku-abc-cards" style="margin-bottom:12px;"></div>
         <div class="table-wrap" style="max-height:600px;">
           <table id="skus-table">
             <thead><tr>
@@ -7104,7 +7132,13 @@ async function loadSKUs(page) {
     abc
   });
   if (authToken) params.set('token', authToken);
-  const r = await fetch('/api/skus?' + params.toString());
+  // ABC summary respects area/store filters only (not status/abc) — separate URL
+  const summaryParams = new URLSearchParams(activeFilters);
+  if (authToken) summaryParams.set('token', authToken);
+  const [r, summaryRes] = await Promise.all([
+    fetch('/api/skus?' + params.toString()),
+    fetch('/api/skus-abc-summary?' + summaryParams.toString())
+  ]);
   const d = await r.json();
   if (!d || d.error) return;
   skuState.total = d.total;
@@ -7113,6 +7147,41 @@ async function loadSKUs(page) {
   renderSKUTable(d.rows);
   renderSKUPagination();
   updateSortIndicators();
+  // Render ABC KPI cards from summary
+  try {
+    const summary = await summaryRes.json();
+    if (summary && !summary.error) renderSkuAbcCards(summary);
+  } catch(e) { /* ignore — cards are optional */ }
+}
+function renderSkuAbcCards(s) {
+  const grid = document.getElementById('sku-abc-cards');
+  if (!grid) return;
+  const totalCount = Number(s.total && s.total.count) || 0;
+  const totalValue = Number(s.total && s.total.value) || 0;
+  const card = (cls, color) => {
+    const c = s[cls] || { count: 0, value: 0, pct: 0 };
+    return '<div class="kpi-card ' + color + '">' +
+      '<div class="kpi-label">Class ' + cls + '</div>' +
+      '<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">' +
+        '<div style="font-size:22px;font-weight:700;color:var(--text1);">' + fmt(c.count) + ' <span style="font-size:11px;color:var(--text2);font-weight:400;">SKUs</span></div>' +
+        '<div style="font-size:13px;color:var(--text1);font-weight:600;">₱' + fmtM(c.value) + '</div>' +
+        '<div style="font-size:11px;color:var(--text2);"><span style="color:var(--text1);font-weight:600;">' + fmtN(c.pct) + '%</span> of total valuation</div>' +
+      '</div>' +
+    '</div>';
+  };
+  grid.innerHTML = [
+    '<div class="kpi-card blue">' +
+      '<div class="kpi-label">Total (in scope)</div>' +
+      '<div style="display:flex;flex-direction:column;gap:4px;margin-top:4px;">' +
+        '<div style="font-size:22px;font-weight:700;color:var(--text1);">' + fmt(totalCount) + ' <span style="font-size:11px;color:var(--text2);font-weight:400;">SKUs</span></div>' +
+        '<div style="font-size:13px;color:var(--green-bright);font-weight:600;">₱' + fmtM(totalValue) + '</div>' +
+        '<div style="font-size:11px;color:var(--text2);">Full inventory value</div>' +
+      '</div>' +
+    '</div>',
+    card('A', 'green'),
+    card('B', 'yellow'),
+    card('C', 'red')
+  ].join('');
 }
 
 function renderSKUTable(rows) {
