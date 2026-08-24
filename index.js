@@ -653,6 +653,8 @@ function standardItemRow(r) {
     onHandValue: r.onHandValue,
     salesInvRatio: r.salesInvRatio,
     salesInvZone: r.salesInvZone,
+    abc: r.abc || 'C',
+    ads: r.ads != null ? +r.ads.toFixed(2) : 0,
     weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
     daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
     p8ave: r.p8ave,
@@ -946,6 +948,40 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     });
   }
   console.log('[Filter] STS Number filter: ' + enriched.length + ' rows kept, ' + skippedNoSTS + ' rows skipped (no STS Number)');
+
+  // ── ABC ANALYSIS (per store) ─────────────────────────────────────────────
+  // ADS (Average Daily Sales value) = (avgCost × wkAveNet) / 7  = aveWklySales / 7
+  // Rank SKUs within EACH store by ADS descending, then classify by cumulative %:
+  //   A = first 80% of total ADS (top contributors)
+  //   B = next 15% (80% → 95%)
+  //   C = remaining, plus any SKU with ADS == 0 or store with total ADS == 0
+  const _abcByStore = {};
+  for (const r of enriched) {
+    r.ads = (r.wkAveNet > 0 && r.avgCost > 0) ? (r.wkAveNet * r.avgCost / 7) : 0;
+    const key = r.storeNumber || '';
+    if (!_abcByStore[key]) _abcByStore[key] = [];
+    _abcByStore[key].push(r);
+  }
+  let _cA = 0, _cB = 0, _cC = 0;
+  for (const storeKey in _abcByStore) {
+    const rows = _abcByStore[storeKey];
+    const totalADS = rows.reduce((s, r) => s + r.ads, 0);
+    if (totalADS <= 0) {
+      for (const r of rows) { r.abc = 'C'; _cC++; }
+      continue;
+    }
+    rows.sort((a, b) => b.ads - a.ads);
+    let cumulative = 0;
+    for (const r of rows) {
+      if (r.ads <= 0) { r.abc = 'C'; _cC++; continue; }
+      cumulative += r.ads;
+      const pct = (cumulative / totalADS) * 100;
+      if (pct <= 80)      { r.abc = 'A'; _cA++; }
+      else if (pct <= 95) { r.abc = 'B'; _cB++; }
+      else                { r.abc = 'C'; _cC++; }
+    }
+  }
+  console.log('[ABC] Per-store classification — A: ' + _cA + ', B: ' + _cB + ', C: ' + _cC);
 
   // ── KPIs ──────────────────────────────────────────────────────────────────
   const totalOnHandValue = enriched.reduce((s, r) => s + r.onHandValue, 0);
@@ -1728,6 +1764,8 @@ app.get('/api/top300skus', (req, res) => {
       status,
       incomingPO: inv ? inv.poOrderGR : null,
       trfOnOrder: inv ? inv.trfOrderGR : null,
+      abc: inv ? (inv.abc || 'C') : 'C',
+      ads: inv && inv.ads != null ? +inv.ads.toFixed(2) : 0,
       lostSalesPerWeek: inv ? inv.lostSalesPerWeek : null,
       ico: inv ? inv.ico : '',
       dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
@@ -1822,7 +1860,7 @@ app.get('/api/outofstock', (req, res) => {
 // SKU Analysis endpoint — server-side pagination/sorting/searching
 app.get('/api/skus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', token, ...filters } = req.query;
+  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', abc = '', token, ...filters } = req.query;
   // Enforce area lock for non-admin users
   const s = sessions[token || ''];
   if (s && !s.isAdmin && s.area) filters.area = s.area;
@@ -1846,6 +1884,14 @@ app.get('/api/skus', (req, res) => {
     } else {
       // Direct match on internal status code
       rows = rows.filter(r => r.status === status);
+    }
+  }
+
+  // ABC filter (per-store classification computed at cache-build time)
+  if (abc) {
+    const target = abc.toString().toUpperCase();
+    if (target === 'A' || target === 'B' || target === 'C') {
+      rows = rows.filter(r => (r.abc || 'C') === target);
     }
   }
 
@@ -1907,6 +1953,8 @@ app.get('/api/skus', (req, res) => {
       skuWTS: r.skuWTS,
       daysCover: r.skuDaysCover,
       skuDaysCover: r.skuDaysCover,
+      abc: r.abc || 'C',
+      ads: r.ads != null ? +r.ads.toFixed(2) : 0,
       p8ave: r.p8ave,
       status: statusLabel(r.status),
       lostSalesPerWeek: r.lostSalesPerWeek,
@@ -2830,6 +2878,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
   const headers = [
     { header: 'Store #', key: 'storeNumber', width: 10 },
     { header: 'Store Name', key: 'storeName', width: 24 },
+    { header: 'ABC', key: 'abc', width: 6 },
     { header: 'Area', key: 'area', width: 18 },
     { header: 'SKU Code', key: 'skuCode', width: 14 },
     { header: 'Description', key: 'skuDesc', width: 36 },
@@ -3122,6 +3171,8 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
       status,
       incomingPO: inv ? inv.poOrderGR : null,
       trfOnOrder: inv ? inv.trfOrderGR : null,
+      abc: inv ? (inv.abc || 'C') : 'C',
+      ads: inv && inv.ads != null ? +inv.ads.toFixed(2) : 0,
       lostSalesPerWeek: inv ? +(inv.lostSalesPerWeek || 0).toFixed(2) : null,
       ico: inv ? inv.ico : '',
       dateLastSold: inv ? formatDate(inv.dateLastSold) : '',
@@ -3139,6 +3190,7 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
   const headers = [
     { header: 'Area', key: 'area', width: 18 },
     { header: 'Store Name', key: 'storeName', width: 24 },
+    { header: 'ABC', key: 'abc', width: 6 },
     { header: 'Rank', key: 'rank', width: 8 },
     { header: 'SKU', key: 'sku', width: 14 },
     { header: 'Item Description', key: 'itemDescription', width: 36 },
@@ -4579,6 +4631,12 @@ canvas { max-height:260px; }
             <span class="badge badge-blue" id="skus-total-count" style="margin-left:8px;">0</span>
           </div>
           <div class="section-actions">
+            <select class="filter-select" id="sku-abc-filter" onchange="loadSKUs(1)" style="width:130px;" title="ABC per store — A: top 80% ADS, B: 80-95%, C: rest">
+              <option value="">All ABC</option>
+              <option value="A">🅰 A (top 80%)</option>
+              <option value="B">🅱 B (80-95%)</option>
+              <option value="C">🅲 C (bottom 5%)</option>
+            </select>
             <select class="filter-select" id="sku-status-filter" onchange="loadSKUs(1)" style="width:170px;">
               <option value="">All Status</option>
               <option value="Negative">⚠ Negative Stock</option>
@@ -4606,6 +4664,7 @@ canvas { max-height:260px; }
           <table id="skus-table">
             <thead><tr>
               <th onclick="sortSKUs('storeName')">Store Name <span class="sort-ind" data-key="storeName"></span></th>
+              <th onclick="sortSKUs('abc')" title="ABC classification per store based on ADS">ABC <span class="sort-ind" data-key="abc"></span></th>
               <th onclick="sortSKUs('skuCode')">SKU <span class="sort-ind" data-key="skuCode"></span></th>
               <th onclick="sortSKUs('skuDesc')">Description <span class="sort-ind" data-key="skuDesc"></span></th>
               <th onclick="sortSKUs('supplierName')">Supplier <span class="sort-ind" data-key="supplierName"></span></th>
@@ -4767,7 +4826,8 @@ canvas { max-height:260px; }
             <thead><tr>
               <th data-field="area" onclick="sortTable('top300-table',0)">Area</th>
               <th data-field="storeName" onclick="sortTable('top300-table',1)">Store Name</th>
-              <th data-field="rank" onclick="sortTable('top300-table',2)">Rank</th>
+              <th data-field="abc" onclick="sortTable('top300-table',2)" title="ABC classification per store based on ADS">ABC</th>
+              <th data-field="rank" onclick="sortTable('top300-table',3)">Rank</th>
               <th data-field="sku" onclick="sortTable('top300-table',3)">SKU</th>
               <th data-field="itemDescription" onclick="sortTable('top300-table',4)">Item Description</th>
               <th data-field="supplier" onclick="sortTable('top300-table',5)">Supplier</th>
@@ -6128,7 +6188,7 @@ function renderTop300Body() {
   const tbody = document.getElementById('top300-body');
   if (!tbody) return;
   const q = (tableSearch.top300 || '').toLowerCase().trim();
-  const cols = ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
+  const cols = ['area','storeName','abc','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'];
   const data = tableData.top300 || [];
   const view = q
     ? data.filter(r => cols.some(f => { const v = r[f]; return v != null && String(v).toLowerCase().includes(q); }))
@@ -6137,7 +6197,7 @@ function renderTop300Body() {
   const perSku = document.getElementById('top300-per-sku-count');
   if (perSku) perSku.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="22" class="empty">No data found</td></tr>'
+    ? '<tr><td colspan="23" class="empty">No data found</td></tr>'
     : view.map(renderTop300Row).join('');
 }
 function renderTop300Analytics(metrics, items) {
@@ -7030,6 +7090,8 @@ async function loadSKUs(page) {
   if (page) skuState.page = page;
   const search = document.getElementById('sku-search-input').value;
   const status = document.getElementById('sku-status-filter').value;
+  const abcEl = document.getElementById('sku-abc-filter');
+  const abc = abcEl ? abcEl.value : '';
   skuState.search = search;
   const params = new URLSearchParams({
     ...activeFilters,
@@ -7038,7 +7100,8 @@ async function loadSKUs(page) {
     sortBy: skuState.sortBy,
     sortDir: skuState.sortDir,
     search,
-    status
+    status,
+    abc
   });
   if (authToken) params.set('token', authToken);
   const r = await fetch('/api/skus?' + params.toString());
@@ -7054,7 +7117,7 @@ async function loadSKUs(page) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="21" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="22" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -7067,6 +7130,7 @@ function renderSKUTable(rows) {
       : '—';
     return '<tr>' +
       '<td>' + esc(r.storeName) + '</td>' +
+      abcCell(r.abc) +
       '<td class="mono">' + esc(r.skuCode) + '</td>' +
       '<td>' + esc(r.skuDesc) + '</td>' +
       '<td>' + esc(r.supplierName) + '</td>' +
@@ -7301,6 +7365,7 @@ function renderTop300Row(r) {
   return '<tr>' +
     '<td><span class="badge badge-blue">' + esc(r.area) + '</span></td>' +
     '<td>' + esc(r.storeName) + '</td>' +
+    abcCell(r.abc) +
     '<td class="mono" style="font-weight:700;color:var(--green-bright);">' + (r.rank != null ? '#' + r.rank : '—') + '</td>' +
     '<td class="mono">' + esc(r.sku) + '</td>' +
     '<td>' + esc(r.itemDescription) + '</td>' +
@@ -7505,7 +7570,7 @@ function getTableConfig(tableId) {
     'top300-sir-table': { key: 'top300Sir', render: renderTop300SirRow, pagination: 'top300-sir-pagination',
       cols: ['area','storeName','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','zone','p8ave','daysCover','onOrderTotal'] },
     'top300-table':     { key: 'top300',     render: renderTop300Row,     pagination: 'top300-pagination',
-      cols: ['area','storeName','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
+      cols: ['area','storeName','abc','rank','sku','itemDescription','supplier','onHand','qtyCases','aveWklySales','invValue','salesInvRatio','salesInvZone','p8ave','daysCover','status','incomingPO','lostSalesPerWeek','ico','dateLastSold','dateLastReceived','lastTransferIn','lastTransferOut'] },
     'rice-table':       { key: 'rice',       render: renderRiceRow,       pagination: 'rice-pagination',
       cols: ['priority','area','store','skuCode','upc','skuDesc','supplier','onHand','avgDailySales','daysCover','stockStatus','incomingStatus','incomingQty','dateLastOrdered','action'] },
     'problem-inv-table': { key: 'problemInv', render: renderProblemInvRow, pagination: 'problem-inv-pagination',
@@ -7711,6 +7776,17 @@ async function triggerRefresh() {
 
 // ─── UTILS ────────────────────────────────────────────────────────────────────
 function fmt(n) { return (n||0).toLocaleString(); }
+// ABC badge cell — colored per class. A = green (top contributors), B = amber, C = gray/dim.
+function abcCell(abc) {
+  const c = (abc || 'C').toString().toUpperCase();
+  const styles = {
+    A: 'background:rgba(63,185,80,0.20);color:#3fb950;',
+    B: 'background:rgba(227,179,65,0.18);color:#e3b341;',
+    C: 'background:rgba(139,148,158,0.20);color:#8b949e;'
+  };
+  const style = styles[c] || styles.C;
+  return '<td><span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;' + style + '">' + c + '</span></td>';
+}
 // Map a status label (from backend statusLabel()) to the CSS class used for the pill
 function statusClassFor(label) {
   switch ((label || '').toString()) {
