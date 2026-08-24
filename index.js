@@ -3211,12 +3211,14 @@ app.get('*', (req, res) => {
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"/>
 <style>
+/* DARK theme (default) */
 :root {
   --bg: #0d1117;
   --bg2: #161b22;
   --bg3: #1c2128;
   --border: #30363d;
   --text: #e6edf3;
+  --text1: #e6edf3;
   --text2: #8b949e;
   --green: #1a7f37;
   --green-light: #2ea043;
@@ -3232,8 +3234,37 @@ app.get('*', (req, res) => {
   --blue-light: #388bfd;
   --blue-dim: #0d2a5e;
   --accent: #2ea043;
+  --hover-tint: rgba(255,255,255,0.03);
+  --pill-alpha: 0.15;
   --radius: 8px;
   --shadow: 0 4px 24px rgba(0,0,0,0.4);
+}
+/* LIGHT theme override — activated by data-theme="light" on <html> or <body> */
+:root[data-theme="light"], body[data-theme="light"] {
+  --bg: #f6f8fa;
+  --bg2: #ffffff;
+  --bg3: #eef1f4;
+  --border: #d0d7de;
+  --text: #24292f;
+  --text1: #24292f;
+  --text2: #57606a;
+  --green: #1a7f37;
+  --green-light: #2c974b;
+  --green-bright: #1f883d;
+  --green-dim: #dcffe4;
+  --red: #cf222e;
+  --red-light: #d1242f;
+  --red-dim: #ffebe9;
+  --yellow: #9a6700;
+  --yellow-light: #bf8700;
+  --yellow-dim: #fff8c5;
+  --blue: #0969da;
+  --blue-light: #218bff;
+  --blue-dim: #ddf4ff;
+  --accent: #1f883d;
+  --hover-tint: rgba(0,0,0,0.04);
+  --pill-alpha: 0.18;
+  --shadow: 0 4px 24px rgba(140,149,159,0.25);
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 body { font-family:'IBM Plex Sans',sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
@@ -3700,7 +3731,7 @@ canvas { max-height:260px; }
 }
 .blitz-row .blitz-bar {
   height: 18px;
-  background: rgba(255,255,255,0.03);
+  background: var(--hover-tint);
   border-radius: 3px;
   display: flex;
   overflow: hidden;
@@ -3722,7 +3753,7 @@ canvas { max-height:260px; }
     grid-template-areas: "store stats" "bar bar";
     row-gap: 3px;
     padding: 6px 0;
-    border-bottom: 1px solid rgba(255,255,255,0.05);
+    border-bottom: 1px solid var(--border);
   }
   .blitz-row .blitz-store { grid-area: store; font-size: 11px; font-weight: 600; }
   .blitz-row .blitz-bar   { grid-area: bar; height: 18px; }
@@ -3842,6 +3873,7 @@ canvas { max-height:260px; }
   <div class="header-right">
     <span id="user-info" style="font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace;"></span>
     <div class="refresh-info" id="refresh-info">–</div>
+    <button class="btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark mode" style="padding:6px 10px;">🌙</button>
     <button class="btn btn-green" onclick="triggerRefresh()">↺ Refresh</button>
     <button class="btn" onclick="doLogout()">Logout</button>
   </div>
@@ -6278,7 +6310,7 @@ function renderProblemChart(elId, stores, field, color) {
     const label = s.storeNumber + ' - ' + s.storeName;
     return '<div style="display:grid;grid-template-columns:160px 1fr 80px;gap:8px;align-items:center;padding:3px 0;font-size:11px;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(label) + '">' + esc(label) + '</div>' +
-      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:3px;overflow:hidden;">' +
+      '<div style="height:16px;background:var(--hover-tint);border-radius:3px;overflow:hidden;">' +
         '<div style="width:' + w.toFixed(2) + '%;background:' + color + ';height:100%;"></div>' +
       '</div>' +
       '<div style="text-align:right;color:var(--text1);font-weight:600;">₱' + fmtM(val) + '</div>' +
@@ -6386,7 +6418,7 @@ function renderAgingBlackAreaChart(byArea) {
     const blackW = total > 0 ? (a.blackValue / total) * w : 0;
     return '<div style="display:grid;grid-template-columns:160px 1fr 200px;gap:8px;align-items:center;padding:3px 0;font-size:11px;line-height:1.1;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(a.area) + '">' + esc(a.area) + '</div>' +
-      '<div style="height:16px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
+      '<div style="height:16px;background:var(--hover-tint);border-radius:2px;display:flex;overflow:hidden;">' +
         '<div style="width:' + agingW.toFixed(2) + '%;background:#e3b341;" title="Aging: ₱' + fmtN(a.agingValue) + ' (' + a.agingPct.toFixed(1) + '%)"></div>' +
         '<div style="width:' + blackW.toFixed(2) + '%;background:#f85149;" title="Black: ₱' + fmtN(a.blackValue) + ' (' + a.blackPct.toFixed(1) + '%)"></div>' +
       '</div>' +
@@ -6698,7 +6730,7 @@ function renderRiceStoresChart(data) {
       : '';
     return '<div style="display:grid;grid-template-columns:170px 1fr 50px;gap:8px;align-items:center;padding:2px 0;font-size:11px;line-height:1.1;">' +
       '<div style="color:var(--text1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="' + esc(d.store) + '">' + esc(d.store) + '</div>' +
-      '<div style="height:14px;background:rgba(255,255,255,0.03);border-radius:2px;display:flex;overflow:hidden;">' +
+      '<div style="height:14px;background:var(--hover-tint);border-radius:2px;display:flex;overflow:hidden;">' +
         '<div style="width:' + oosW.toFixed(2) + '%;background:#f85149;display:flex;align-items:center;justify-content:center;" title="OOS: ' + fmt(d.oos) + '">' + oosLabel + '</div>' +
         '<div style="width:' + critW.toFixed(2) + '%;background:#e3b341;display:flex;align-items:center;justify-content:center;" title="Critical: ' + fmt(d.critical) + '">' + critLabel + '</div>' +
       '</div>' +
@@ -7710,8 +7742,44 @@ function esc(s) {
   return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ─── THEME (Light / Dark) ────────────────────────────────────────────────────
+// Applies at page load: reads saved preference from localStorage; falls back to
+// the OS-level prefers-color-scheme media query. Toggle in header swaps + saves.
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  document.body && document.body.setAttribute('data-theme', t);
+  const btn = document.getElementById('theme-toggle-btn');
+  if (btn) btn.innerHTML = t === 'light' ? '🌙' : '☀';
+  // Charts embed colors from CSS variables at creation time — re-render on toggle
+  if (typeof charts === 'object' && charts) {
+    try { for (const k in charts) { if (charts[k] && charts[k].destroy) charts[k].destroy(); charts[k] = null; } } catch(e){}
+    // Reload the overview charts in the background (safe no-op on other tabs)
+    if (typeof loadCharts === 'function' && (typeof activeTab === 'undefined' || activeTab === 'overview')) {
+      try { loadCharts(); } catch(e){}
+    }
+  }
+}
+function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem('camanava_theme'); } catch (e) {}
+  if (!saved) {
+    const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
+    saved = prefersLight ? 'light' : 'dark';
+  }
+  applyTheme(saved);
+}
+function toggleTheme() {
+  const current = (document.documentElement.getAttribute('data-theme') || 'dark');
+  const next = current === 'light' ? 'dark' : 'light';
+  try { localStorage.setItem('camanava_theme', next); } catch (e) {}
+  applyTheme(next);
+}
+
 // ─── START ────────────────────────────────────────────────────────────────────
 function startInit() {
+  // Apply saved / system-preferred theme BEFORE any render so there's no flash
+  try { initTheme(); } catch (e) { console.warn('initTheme failed:', e); }
   // Standardize the 7 problem-status table headers to the SKU Analysis column order
   try { initStandardHeaders(); } catch (e) { console.warn('initStandardHeaders failed:', e); }
   init().catch(function(e) {
