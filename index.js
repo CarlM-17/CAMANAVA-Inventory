@@ -2018,8 +2018,8 @@ app.get('/api/stores', (req, res) => {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    g.totalPoOrder += (+r.poOrderGR || 0);
-    g.totalTrfOrder += (+r.trfOrderGR || 0);
+    g.totalPoOrder += (+r.poOrderGR || 0) * (+r.avgCost || 0);
+    g.totalTrfOrder += (+r.trfOrderGR || 0) * (+r.avgCost || 0);
     if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
     if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
@@ -2605,8 +2605,8 @@ app.get('/api/export/:type', async (req, res) => {
       g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
       g.totalLostSales += r.lostSalesPerWeek;
       g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-      g.totalPoOrder += (+r.poOrderGR || 0);
-      g.totalTrfOrder += (+r.trfOrderGR || 0);
+      g.totalPoOrder += (+r.poOrderGR || 0) * (+r.avgCost || 0);
+      g.totalTrfOrder += (+r.trfOrderGR || 0) * (+r.avgCost || 0);
       if (r.merchGro !== 'P') g.nonPCount++;
       if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
       if (r.isOverstock) g.overstockCount++;
@@ -2631,9 +2631,9 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Inv Value', key: 'totalValue', format: 'currency' }, { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
       { header: 'SKUs', key: 'totalSKUs', format: 'integer' },
       { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
-      { header: 'Total P.O. On Order', key: 'totalPoOrder', format: 'integer' },
-      { header: 'Total TRF On Order', key: 'totalTrfOrder', format: 'integer' },
-      { header: 'Total On Order', key: 'totalOnOrder', format: 'integer' },
+      { header: 'Total P.O. On Order', key: 'totalPoOrder', format: 'currency' },
+      { header: 'Total TRF On Order', key: 'totalTrfOrder', format: 'currency' },
+      { header: 'Total On Order', key: 'totalOnOrder', format: 'currency' },
       { header: 'OOS', key: 'oosCount', format: 'integer' }, { header: 'Lost Sales/Wk', key: 'totalLostSales', format: 'currency' },
       { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
       { header: 'Dead', key: 'deadCount', format: 'integer' }
@@ -4591,9 +4591,9 @@ canvas { max-height:260px; }
               <th data-field="totalSKUs" onclick="sortTable('stores-table',5)">SKUs</th>
               <th data-field="weeksToSell" onclick="sortTable('stores-table',6)">WTS</th>
               <th data-field="daysCover" onclick="sortTable('stores-table',7)">Days Cover</th>
-              <th data-field="totalPoOrder" onclick="sortTable('stores-table',8)" title="Total P.O. On Order (units) across all SKUs at this store">Total P.O. On Order</th>
-              <th data-field="totalTrfOrder" onclick="sortTable('stores-table',9)" title="Total TRF On Order (units) across all SKUs at this store">Total TRF On Order</th>
-              <th data-field="totalOnOrder" onclick="sortTable('stores-table',10)" title="Total On Order (P.O. + TRF) in units">Total On Order</th>
+              <th data-field="totalPoOrder" onclick="sortTable('stores-table',8)" title="Total P.O. On Order value (Σ units × avgCost) across all SKUs at this store">Total P.O. On Order</th>
+              <th data-field="totalTrfOrder" onclick="sortTable('stores-table',9)" title="Total TRF On Order value (Σ units × avgCost) across all SKUs at this store">Total TRF On Order</th>
+              <th data-field="totalOnOrder" onclick="sortTable('stores-table',10)" title="Total On Order value (P.O. + TRF, peso value)">Total On Order</th>
               <th data-field="oosCount" onclick="sortTable('stores-table',11)">Out of Stock</th>
               <th data-field="totalLostSales" onclick="sortTable('stores-table',12)">Lost Sales/Wk</th>
               <th data-field="criticalCount" onclick="sortTable('stores-table',13)">Critical</th>
@@ -7525,9 +7525,9 @@ function renderStoreRow(r) {
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
     '<td class="mono">' + wts + '</td>' +
     '<td>' + daysCoverPill(r.daysCover) + '</td>' +
-    '<td class="mono">' + fmt(r.totalPoOrder || 0) + '</td>' +
-    '<td class="mono">' + fmt(r.totalTrfOrder || 0) + '</td>' +
-    '<td class="mono" style="font-weight:600;">' + fmt(totalOnOrder) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.totalPoOrder || 0) + '</td>' +
+    '<td class="mono">₱' + fmtN(r.totalTrfOrder || 0) + '</td>' +
+    '<td class="mono" style="font-weight:600;color:var(--green-bright);">₱' + fmtN(totalOnOrder) + '</td>' +
     '<td>' + oo + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.totalLostSales || 0) + '</td>' +
     '<td>' + ci + '</td>' +
