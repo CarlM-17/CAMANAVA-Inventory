@@ -2018,8 +2018,8 @@ app.get('/api/stores', (req, res) => {
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-    g.totalPoOrder += (+r.poOrderGR || 0) * (+r.avgCost || 0);
-    g.totalTrfOrder += (+r.trfOrderGR || 0) * (+r.avgCost || 0);
+    g.totalPoOrder += (+r.poValue || 0);
+    g.totalTrfOrder += (+r.trfValue || 0);
     if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
     if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
@@ -2605,8 +2605,8 @@ app.get('/api/export/:type', async (req, res) => {
       g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
       g.totalLostSales += r.lostSalesPerWeek;
       g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
-      g.totalPoOrder += (+r.poOrderGR || 0) * (+r.avgCost || 0);
-      g.totalTrfOrder += (+r.trfOrderGR || 0) * (+r.avgCost || 0);
+      g.totalPoOrder += (+r.poValue || 0);
+      g.totalTrfOrder += (+r.trfValue || 0);
       if (r.merchGro !== 'P') g.nonPCount++;
       if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
       if (r.isOverstock) g.overstockCount++;
@@ -4591,9 +4591,9 @@ canvas { max-height:260px; }
               <th data-field="totalSKUs" onclick="sortTable('stores-table',5)">SKUs</th>
               <th data-field="weeksToSell" onclick="sortTable('stores-table',6)">WTS</th>
               <th data-field="daysCover" onclick="sortTable('stores-table',7)">Days Cover</th>
-              <th data-field="totalPoOrder" onclick="sortTable('stores-table',8)" title="Total P.O. On Order value (Σ units × avgCost) across all SKUs at this store">Total P.O. On Order</th>
-              <th data-field="totalTrfOrder" onclick="sortTable('stores-table',9)" title="Total TRF On Order value (Σ units × avgCost) across all SKUs at this store">Total TRF On Order</th>
-              <th data-field="totalOnOrder" onclick="sortTable('stores-table',10)" title="Total On Order value (P.O. + TRF, peso value)">Total On Order</th>
+              <th data-field="totalPoOrder" onclick="sortTable('stores-table',8)" title="Total P.O. On Order value (Σ source column BD — poValue) across all SKUs. Matches Overview PO Value card.">Total P.O. On Order</th>
+              <th data-field="totalTrfOrder" onclick="sortTable('stores-table',9)" title="Total TRF On Order value (Σ source column BE — trfValue) across all SKUs. Matches Overview TRF Value card.">Total TRF On Order</th>
+              <th data-field="totalOnOrder" onclick="sortTable('stores-table',10)" title="Total On Order value = PO Value + TRF Value">Total On Order</th>
               <th data-field="oosCount" onclick="sortTable('stores-table',11)">Out of Stock</th>
               <th data-field="totalLostSales" onclick="sortTable('stores-table',12)">Lost Sales/Wk</th>
               <th data-field="criticalCount" onclick="sortTable('stores-table',13)">Critical</th>
