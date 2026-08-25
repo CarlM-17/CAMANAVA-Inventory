@@ -1935,7 +1935,13 @@ app.get('/api/skus', (req, res) => {
   // Sort
   if (sortBy) {
     // Map frontend sort keys to actual raw row fields where they differ
-    const sortFieldMap = { invValue: 'onHandValue', weeksToSell: 'skuWTS', daysCover: 'skuDaysCover' };
+    // Map frontend sort keys to raw enriched-row fields where they differ
+    const sortFieldMap = {
+      invValue: 'onHandValue',
+      weeksToSell: 'skuWTS',
+      daysCover: 'skuDaysCover',
+      aveWklySales: 'ads'   // aveWklySales = ADS × 7, so ads gives identical order
+    };
     const field = sortFieldMap[sortBy] || sortBy;
     const dir = sortDir === 'desc' ? -1 : 1;
     rows = [...rows].sort((a, b) => {
@@ -2879,7 +2885,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
   }
 
   if (sortBy) {
-    const sortFieldMap = { invValue: 'onHandValue', weeksToSell: 'skuWTS', daysCover: 'skuDaysCover' };
+    const sortFieldMap = { invValue: 'onHandValue', weeksToSell: 'skuWTS', daysCover: 'skuDaysCover', aveWklySales: 'ads' };
     const field = sortFieldMap[sortBy] || sortBy;
     const dir = sortDir === 'desc' ? -1 : 1;
     rows = [...rows].sort((a, b) => {
