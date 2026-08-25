@@ -1981,6 +1981,7 @@ app.get('/api/skus', (req, res) => {
       skuDaysCover: r.skuDaysCover,
       abc: r.abc || 'C',
       ads: r.ads != null ? +r.ads.toFixed(2) : 0,
+      aveWklySales: (r.wkAveNet > 0 && r.avgCost > 0) ? +(r.wkAveNet * r.avgCost).toFixed(2) : 0,
       p8ave: r.p8ave,
       status: statusLabel(r.status),
       lostSalesPerWeek: r.lostSalesPerWeek,
@@ -2915,6 +2916,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'Inv Value', key: 'invValue', width: 14 },
     { header: 'Sales/Inv Ratio', key: 'salesInvRatio', width: 14 },
     { header: 'P8 Ave/Week', key: 'p8ave', width: 12 },
+    { header: 'P8 Ave Sales/Week', key: 'aveWklySales', width: 16 },
     { header: 'WTS', key: 'weeksToSell', width: 10 },
     { header: 'Days Cover', key: 'daysCover', width: 12 },
     { header: 'Status', key: 'status', width: 12 },
@@ -2979,6 +2981,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       salesInvRatio: r.salesInvRatio,
       salesInvZone: r.salesInvZone,
       p8ave: +(r.p8ave || 0).toFixed(2),
+      aveWklySales: (r.wkAveNet > 0 && r.avgCost > 0) ? +(r.wkAveNet * r.avgCost).toFixed(2) : 0,
       weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
       daysCover: r.skuDaysCover != null ? +r.skuDaysCover.toFixed(0) : null,
       status: statusLabel(r.status),
@@ -4706,6 +4709,7 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('skuWTS')">WTS <span class="sort-ind" data-key="skuWTS"></span></th>
               <th onclick="sortSKUs('skuDaysCover')">Days Cover <span class="sort-ind" data-key="skuDaysCover"></span></th>
               <th onclick="sortSKUs('p8ave')">P8 Ave/Week <span class="sort-ind" data-key="p8ave"></span></th>
+              <th onclick="sortSKUs('aveWklySales')" title="Weekly sales value (ADS × 7) — wkAveNet × avgCost">P8 Ave Sales/Week <span class="sort-ind" data-key="aveWklySales"></span></th>
               <th onclick="sortSKUs('status')">Status <span class="sort-ind" data-key="status"></span></th>
               <th onclick="sortSKUs('lostSalesPerWeek')">Lost Sales/Wk <span class="sort-ind" data-key="lostSalesPerWeek"></span></th>
               <th onclick="sortSKUs('ico')">ICO <span class="sort-ind" data-key="ico"></span></th>
@@ -7189,7 +7193,7 @@ function renderSkuAbcCards(s) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="22" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="23" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -7213,6 +7217,7 @@ function renderSKUTable(rows) {
       '<td class="mono">' + wts + '</td>' +
       '<td class="mono">' + dc + '</td>' +
       '<td class="mono">' + fmtN(r.p8ave) + '</td>' +
+      '<td class="mono">' + (r.aveWklySales != null ? '₱' + fmtN(r.aveWklySales) : '—') + '</td>' +
       '<td><span class="' + statusClass + '">' + esc(r.status) + '</span></td>' +
       '<td class="mono">' + lostSales + '</td>' +
       '<td class="mono">' + esc(r.ico || '—') + '</td>' +
