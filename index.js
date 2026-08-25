@@ -2967,6 +2967,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     ws.addRow({
       storeNumber: r.storeNumber,
       storeName: r.storeName,
+      abc: r.abc || 'C',
       area: r.area,
       skuCode: r.skuCode,
       skuDesc: r.skuDesc,
@@ -2975,6 +2976,8 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       stdPack: r.stdPack,
       qtyCases,
       invValue: +(r.onHandValue || 0).toFixed(2),
+      salesInvRatio: r.salesInvRatio,
+      salesInvZone: r.salesInvZone,
       p8ave: +(r.p8ave || 0).toFixed(2),
       weeksToSell: r.skuWTS != null ? +r.skuWTS.toFixed(2) : null,
       daysCover: r.skuDaysCover != null ? +r.skuDaysCover.toFixed(0) : null,
