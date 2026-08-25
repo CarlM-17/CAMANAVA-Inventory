@@ -2012,12 +2012,14 @@ app.get('/api/stores', (req, res) => {
   const storeGroups = {};
   for (const r of filtered) {
     const key = r.storeNumber;
-    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0 };
+    if (!storeGroups[key]) storeGroups[key] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, region: r.regionName, totalValue: 0, totalOnHand: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalSKUs: 0, totalSales: 0, totalLostSales: 0, totalWklSalesValue: 0, totalPoOrder: 0, totalTrfOrder: 0 };
     const g = storeGroups[key];
     g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
     g.totalSales += r.currentWkSales;
     g.totalLostSales += r.lostSalesPerWeek;
     g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+    g.totalPoOrder += (+r.poOrderGR || 0);
+    g.totalTrfOrder += (+r.trfOrderGR || 0);
     if (r.merchGro !== 'P') g.nonPCount = (g.nonPCount || 0) + 1;
     if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
     if (r.isOverstock) g.overstockCount++;
@@ -2034,6 +2036,7 @@ app.get('/api/stores', (req, res) => {
     g.deadPct = (g.deadCount / nonP) * 100;
     g.daysCover = g.totalWklSalesValue > 0 ? (g.totalValue * 7) / g.totalWklSalesValue : null;
     g.weeksToSell = g.daysCover != null ? g.daysCover / 7 : null;
+    g.totalOnOrder = (g.totalPoOrder || 0) + (g.totalTrfOrder || 0);
     return g;
   }).sort((a, b) => b.totalValue - a.totalValue);
   res.json(result);
@@ -2597,11 +2600,13 @@ app.get('/api/export/:type', async (req, res) => {
     const groups = {};
     for (const r of baseRows) {
       const k = r.storeNumber;
-      if (!groups[k]) groups[k] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalLostSales: 0, totalWklSalesValue: 0, nonPCount: 0 };
+      if (!groups[k]) groups[k] = { storeNumber: r.storeNumber, storeName: r.storeName, area: r.area, totalValue: 0, totalOnHand: 0, totalSKUs: 0, criticalCount: 0, overstockCount: 0, deadCount: 0, oosCount: 0, totalLostSales: 0, totalWklSalesValue: 0, nonPCount: 0, totalPoOrder: 0, totalTrfOrder: 0 };
       const g = groups[k];
       g.totalValue += r.onHandValue; g.totalOnHand += r.onHand; g.totalSKUs++;
       g.totalLostSales += r.lostSalesPerWeek;
       g.totalWklSalesValue += (r.wkAveNet * r.avgCost);
+      g.totalPoOrder += (+r.poOrderGR || 0);
+      g.totalTrfOrder += (+r.trfOrderGR || 0);
       if (r.merchGro !== 'P') g.nonPCount++;
       if (r.isCritical && r.merchGro !== 'P') g.criticalCount++;
       if (r.isOverstock) g.overstockCount++;
@@ -2615,6 +2620,8 @@ app.get('/api/export/:type', async (req, res) => {
         totalValue: g.totalValue, totalOnHand: g.totalOnHand, totalSKUs: g.totalSKUs,
         weeksToSell: daysCover != null ? +(daysCover / 7).toFixed(2) : null,
         daysCover: daysCover != null ? Math.round(daysCover) : null,
+        totalPoOrder: g.totalPoOrder, totalTrfOrder: g.totalTrfOrder,
+        totalOnOrder: (g.totalPoOrder || 0) + (g.totalTrfOrder || 0),
         oosCount: g.oosCount, totalLostSales: g.totalLostSales,
         criticalCount: g.criticalCount, overstockCount: g.overstockCount, deadCount: g.deadCount
       };
@@ -2624,6 +2631,9 @@ app.get('/api/export/:type', async (req, res) => {
       { header: 'Inv Value', key: 'totalValue', format: 'currency' }, { header: 'On Hand', key: 'totalOnHand', format: 'integer' },
       { header: 'SKUs', key: 'totalSKUs', format: 'integer' },
       { header: 'WTS', key: 'weeksToSell', format: 'decimal' }, { header: 'Days Cover', key: 'daysCover', format: 'integer' },
+      { header: 'Total P.O. On Order', key: 'totalPoOrder', format: 'integer' },
+      { header: 'Total TRF On Order', key: 'totalTrfOrder', format: 'integer' },
+      { header: 'Total On Order', key: 'totalOnOrder', format: 'integer' },
       { header: 'OOS', key: 'oosCount', format: 'integer' }, { header: 'Lost Sales/Wk', key: 'totalLostSales', format: 'currency' },
       { header: 'Critical', key: 'criticalCount', format: 'integer' }, { header: 'Overstock', key: 'overstockCount', format: 'integer' },
       { header: 'Dead', key: 'deadCount', format: 'integer' }
@@ -4581,11 +4591,14 @@ canvas { max-height:260px; }
               <th data-field="totalSKUs" onclick="sortTable('stores-table',5)">SKUs</th>
               <th data-field="weeksToSell" onclick="sortTable('stores-table',6)">WTS</th>
               <th data-field="daysCover" onclick="sortTable('stores-table',7)">Days Cover</th>
-              <th data-field="oosCount" onclick="sortTable('stores-table',8)">Out of Stock</th>
-              <th data-field="totalLostSales" onclick="sortTable('stores-table',9)">Lost Sales/Wk</th>
-              <th data-field="criticalCount" onclick="sortTable('stores-table',10)">Critical</th>
-              <th data-field="overstockCount" onclick="sortTable('stores-table',11)">Overstock</th>
-              <th data-field="deadCount" onclick="sortTable('stores-table',12)">Dead Stock</th>
+              <th data-field="totalPoOrder" onclick="sortTable('stores-table',8)" title="Total P.O. On Order (units) across all SKUs at this store">Total P.O. On Order</th>
+              <th data-field="totalTrfOrder" onclick="sortTable('stores-table',9)" title="Total TRF On Order (units) across all SKUs at this store">Total TRF On Order</th>
+              <th data-field="totalOnOrder" onclick="sortTable('stores-table',10)" title="Total On Order (P.O. + TRF) in units">Total On Order</th>
+              <th data-field="oosCount" onclick="sortTable('stores-table',11)">Out of Stock</th>
+              <th data-field="totalLostSales" onclick="sortTable('stores-table',12)">Lost Sales/Wk</th>
+              <th data-field="criticalCount" onclick="sortTable('stores-table',13)">Critical</th>
+              <th data-field="overstockCount" onclick="sortTable('stores-table',14)">Overstock</th>
+              <th data-field="deadCount" onclick="sortTable('stores-table',15)">Dead Stock</th>
             </tr></thead>
             <tbody id="stores-body"></tbody>
           </table>
@@ -7502,6 +7515,7 @@ function renderStoreRow(r) {
   const ov = r.overstockCount > 0 ? '<span style="color:var(--yellow-light);">' + fmt(r.overstockCount) + '</span>' : '0';
   const dd = r.deadCount > 0 ? '<span style="color:var(--text2);">' + fmt(r.deadCount) + '</span>' : '0';
   const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
+  const totalOnOrder = (r.totalPoOrder || 0) + (r.totalTrfOrder || 0);
   return '<tr>' +
     '<td class="mono" style="font-weight:600;">' + esc(r.storeNumber) + '</td>' +
     '<td>' + esc(r.storeName) + '</td>' +
@@ -7511,6 +7525,9 @@ function renderStoreRow(r) {
     '<td class="mono">' + fmt(r.totalSKUs) + '</td>' +
     '<td class="mono">' + wts + '</td>' +
     '<td>' + daysCoverPill(r.daysCover) + '</td>' +
+    '<td class="mono">' + fmt(r.totalPoOrder || 0) + '</td>' +
+    '<td class="mono">' + fmt(r.totalTrfOrder || 0) + '</td>' +
+    '<td class="mono" style="font-weight:600;">' + fmt(totalOnOrder) + '</td>' +
     '<td>' + oo + '</td>' +
     '<td class="mono" style="color:var(--red-light);font-weight:600;">₱' + fmtN(r.totalLostSales || 0) + '</td>' +
     '<td>' + ci + '</td>' +
