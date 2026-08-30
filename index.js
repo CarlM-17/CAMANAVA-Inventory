@@ -3421,7 +3421,14 @@ function buildAiContext(rows, filters) {
 
 function askClaude(question, context, systemPrompt) {
   return new Promise((resolve, reject) => {
-    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY not set. Add it in Railway environment variables.'));
+    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY env var is empty on Railway. Add it in Railway → Variables → ANTHROPIC_API_KEY = sk-ant-... and redeploy.'));
+    let settled = false;
+    const done = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
+    // Wall-clock timeout — fires even if DNS/connection hangs
+    const wallTimeout = setTimeout(() => {
+      try { if (reqAi) reqAi.destroy(); } catch(e){}
+      done(reject, new Error('Claude API wall-clock timeout at 40s (may be network/DNS issue reaching api.anthropic.com from Railway)'));
+    }, 40000);
     const body = JSON.stringify({
       model: ANTHROPIC_MODEL,
       max_tokens: 1500,
@@ -3445,16 +3452,17 @@ function askClaude(question, context, systemPrompt) {
       let data = '';
       r.on('data', c => data += c);
       r.on('end', () => {
+        clearTimeout(wallTimeout);
         try {
           const parsed = JSON.parse(data);
-          if (parsed.error) return reject(new Error(parsed.error.message || 'Claude API error'));
+          if (parsed.error) return done(reject, new Error('Claude API error: ' + (parsed.error.message || parsed.error.type || 'unknown')));
           const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
-          resolve({ answer: text, usage: parsed.usage });
-        } catch (e) { reject(new Error('Bad response from Claude API: ' + (data.slice(0,120) || e.message))); }
+          done(resolve, { answer: text, usage: parsed.usage });
+        } catch (e) { done(reject, new Error('Bad response from Claude API: ' + (data.slice(0,120) || e.message))); }
       });
     });
-    reqAi.on('timeout', () => { reqAi.destroy(new Error('Claude API timed out after 45s')); });
-    reqAi.on('error', reject);
+    reqAi.on('timeout', () => { clearTimeout(wallTimeout); reqAi.destroy(); done(reject, new Error('Claude API socket idle 45s')); });
+    reqAi.on('error', (e) => { clearTimeout(wallTimeout); done(reject, e); });
     reqAi.write(body);
     reqAi.end();
   });
@@ -3472,6 +3480,36 @@ function requireAdminForAI(req, res) {
   if (!AI_ALLOWED_USERS.includes(uname)) { res.status(403).json({ error: 'AI Assistant is restricted to the account owner' }); return null; }
   return s;
 }
+
+// Diagnostic: reports whether the API key is configured and pings Claude with a tiny "hi" call.
+// Owner-only so it doesn't leak config details.
+app.get('/api/ai-status', async (req, res) => {
+  try {
+    if (!requireAdminForAI(req, res)) return;
+    const status = {
+      apiKeySet: !!ANTHROPIC_API_KEY,
+      apiKeyPrefix: ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.slice(0, 12) + '...' : null,
+      model: ANTHROPIC_MODEL,
+      allowedUsers: AI_ALLOWED_USERS,
+      pingResult: null,
+      pingMs: null,
+      pingError: null
+    };
+    if (!ANTHROPIC_API_KEY) { return res.json(status); }
+    const t0 = Date.now();
+    try {
+      const { answer } = await askClaude('Reply with just the word: PONG', { test: true }, 'You are a test. Reply with only PONG.');
+      status.pingResult = answer.trim().slice(0, 40);
+      status.pingMs = Date.now() - t0;
+    } catch (e) {
+      status.pingError = e.message;
+      status.pingMs = Date.now() - t0;
+    }
+    res.json(status);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.post('/api/ask', async (req, res) => {
   try {
