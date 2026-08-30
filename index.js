@@ -8080,7 +8080,10 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="ai-ask-dialog" onclick="if(event.target===this)closeAskDialog()">
   <div id="ai-ask-sheet">
     <h3>🤖 Ask AI <button class="btn btn-sm" onclick="closeAskDialog()">✕</button></h3>
-    <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key===\\'Enter\\')submitAskQuestion()" />
+    <div style="display:flex;gap:8px;">
+      <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key===\\'Enter\\')submitAskQuestion()" style="flex:1;" />
+      <button class="btn btn-sm" onclick="submitAskQuestion()" style="padding:0 18px;background:linear-gradient(135deg,#58a6ff,#2f6feb);color:white;border:none;font-weight:600;font-size:14px;border-radius:8px;">Send</button>
+    </div>
     <div class="ai-quick-chips">
       <button onclick="askQuick(\\'Which stores are worst today?\\')">Worst stores</button>
       <button onclick="askQuick(\\'Anything urgent I should act on?\\')">Anything urgent?</button>
