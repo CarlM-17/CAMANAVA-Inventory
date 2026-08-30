@@ -8140,18 +8140,80 @@ function buildAiContext(rows, filters) {
     daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
     wklySalesValue: undefined
   })).sort((a, b) => b.lostSalesWk - a.lostSalesWk);
-  // Top 30 most-critical SKUs by lost sales
+  // Compact row shape used across problem lists
+  const compact = (r) => ({
+    st: r.storeName, sk: r.skuCode, d: r.skuDesc,
+    dp: r.deptName, ct: r.catName, sup: r.supplierName,
+    stat: r.status, oh: r.onHand,
+    dc: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+    ls: Math.round(r.lostSalesPerWeek || 0),
+    iv: Math.round(r.onHandValue || 0),
+    ws: +(r.wkAveNet || 0).toFixed(1),
+    po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
+  });
+  const N = 200; // top-N per list
+  // Top 200 most-critical SKUs by lost sales
   const topCritical = [...rows]
     .filter(r => r.lostSalesPerWeek > 0)
     .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
-    .slice(0, 30)
-    .map(r => ({
-      store: r.storeName, sku: r.skuCode, desc: r.skuDesc,
-      status: r.status, onHand: r.onHand,
-      daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
-      lostSalesWk: Math.round(r.lostSalesPerWeek || 0),
-      po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
-    }));
+    .slice(0, N).map(compact);
+  const topOOS = [...rows].filter(r => r.isOutOfStock && r.merchGro !== 'P')
+    .sort((a, b) => (b.wkAveNet || 0) * (b.avgCost || 0) - (a.wkAveNet || 0) * (a.avgCost || 0))
+    .slice(0, N).map(compact);
+  const topOverstock = [...rows].filter(r => r.isOverstock)
+    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+    .slice(0, N).map(compact);
+  const topAging = [...rows].filter(r => r.status === 'Aging')
+    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+    .slice(0, N).map(compact);
+  const topDead = [...rows].filter(r => r.isDeadStock)
+    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+    .slice(0, N).map(compact);
+  const topBlack = [...rows].filter(r => r.status === 'Black')
+    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
+    .slice(0, N).map(compact);
+  const topNeg = [...rows].filter(r => r.onHand < 0)
+    .sort((a, b) => a.onHand - b.onHand)
+    .slice(0, N).map(compact);
+  // Per-category rollup (Food1 = deptName, Food2 = catName grouping)
+  const catGroups = {};
+  for (const r of rows) {
+    const key = (r.catName || 'UNCATEGORIZED') + '||' + (r.deptName || 'UNKNOWN');
+    if (!catGroups[key]) catGroups[key] = { category: r.catName || 'UNCATEGORIZED', dept: r.deptName || 'UNKNOWN', skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0 };
+    const g = catGroups[key];
+    g.skuCount++;
+    g.invValue += r.onHandValue || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+  }
+  const categories = Object.values(catGroups)
+    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk) }))
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
+  // (no slice — send ALL categories, usually < 100)
+  // Per-supplier rollup
+  const supGroups = {};
+  for (const r of rows) {
+    const key = r.supplierName || 'UNKNOWN';
+    if (!supGroups[key]) supGroups[key] = { supplier: key, skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0, po: 0 };
+    const g = supGroups[key];
+    g.skuCount++;
+    g.invValue += r.onHandValue || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    g.po += r.poValue || 0;
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+  }
+  const suppliers = Object.values(supGroups)
+    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk), po: Math.round(g.po) }))
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
+  // (no slice — send ALL suppliers, usually < 300)
+  // Top 200 sellers overall (by weekly sales value)
+  const topSellers = [...rows]
+    .sort((a, b) => ((b.wkAveNet || 0) * (b.avgCost || 0)) - ((a.wkAveNet || 0) * (a.avgCost || 0)))
+    .slice(0, N).map(compact);
   return {
     filter: { area: areaLabel },
     snapshot: {
@@ -8164,8 +8226,24 @@ function buildAiContext(rows, filters) {
       totalLostSalesPerWeek: Math.round(totalLostSales),
       statusCounts
     },
-    stores,
-    topCriticalSKUs: topCritical
+    stores,        // per-store rollup: inv/PO/TRF/critical/oos/aging/overstock/dead/lostSales/daysCover
+    categories,    // ALL categories: Food1 = catName, Food2 = deptName
+    suppliers,     // ALL suppliers with PO, sales, lost-sales
+    topSellers,    // top 200 fastest-moving SKUs
+    topCriticalSKUs: topCritical,   // top 200 by lost sales
+    topOOS,        // top 200 out-of-stock by sales impact
+    topOverstock,  // top 200 overstock by peso
+    topAging,      // top 200 aging by peso
+    topDead,       // top 200 dead-stock by peso
+    topBlack,      // top 200 black inventory by peso
+    topNegative: topNeg,  // top 200 negative on-hand
+    _fieldMap: {
+      st: 'store', sk: 'skuCode', d: 'desc', dp: 'dept (Food2)', ct: 'category (Food1)',
+      sup: 'supplier', stat: 'status', oh: 'onHand', dc: 'daysCover',
+      ls: 'lostSalesPerWeek (peso)', iv: 'invValue (peso)', ws: 'weeklyAvgSales (units)',
+      po: 'poOrderGR (units)', trf: 'trfOrderGR (units)'
+    },
+    _note: 'Food1 = category (catName, broader), Food2 = department (deptName, specific). SKU lists use compact field names — see _fieldMap.'
   };
 }
 
@@ -8175,7 +8253,7 @@ function askClaude(question, context, systemPrompt) {
     if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY not set. Add it in Railway environment variables.'));
     const body = JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 1024,
+      max_tokens: 1500,
       system: systemPrompt,
       messages: [{
         role: 'user',
