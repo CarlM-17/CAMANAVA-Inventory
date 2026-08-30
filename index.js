@@ -3488,13 +3488,31 @@ app.post('/api/ask', async (req, res) => {
   }
 });
 
+// Slim context for Morning Brief — highlights only, ~5-8k tokens instead of ~35k.
+// Faster response (~3-5s instead of ~15-20s) and cheaper. Brief is a summary, not a deep query.
+function buildAiBriefContext(rows, filters) {
+  const full = buildAiContext(rows, filters);
+  return {
+    filter: full.filter,
+    snapshot: full.snapshot,
+    stores: full.stores,           // per-store rollup (31 rows)
+    topCriticalSKUs: full.topCriticalSKUs.slice(0, 30),  // just top 30
+    topOOS: full.topOOS.slice(0, 20),
+    topAging: full.topAging.slice(0, 20),
+    categories: full.categories.slice(0, 15),
+    suppliers: full.suppliers.slice(0, 15),
+    _fieldMap: full._fieldMap,
+    _note: full._note
+  };
+}
+
 app.get('/api/morning-brief', async (req, res) => {
   try {
     if (!requireAdminForAI(req, res)) return;
     if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
     const filters = resolveFilters(req);
     const rows = applyFilters(cache.rows, filters);
-    const context = buildAiContext(rows, filters);
+    const context = buildAiBriefContext(rows, filters);
     const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
     const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
     res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
@@ -8212,6 +8230,8 @@ if (document.readyState === 'loading') {
 }
 
 // ─── AI ASK ────────────────────────────────────────────────────────────────
+let briefAbort = null;
+let briefTimer = null;
 function loadMorningBrief(force) {
   const body = document.getElementById('ai-brief-body');
   const timeEl = document.getElementById('ai-brief-time');
@@ -8225,16 +8245,30 @@ function loadMorningBrief(force) {
       return;
     }
   }
-  body.textContent = '⏳ Generating brief...';
+  // Cancel any in-flight brief request from a prior refresh
+  if (briefAbort) { try { briefAbort.abort(); } catch(e){} }
+  if (briefTimer) { clearInterval(briefTimer); briefTimer = null; }
+  briefAbort = new AbortController();
+  const t0 = Date.now();
+  body.textContent = '⏳ Generating brief... (0s)';
   timeEl.textContent = '';
+  briefTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    body.textContent = '⏳ Generating brief... (' + s + 's)' + (s > 20 ? ' — this is taking longer than usual, still working' : '');
+  }, 1000);
   const areaQS = (activeFilters && activeFilters.area) ? '&area=' + encodeURIComponent(activeFilters.area) : '';
   const url = '/api/morning-brief' + tokenQS('?') + areaQS;
-  fetch(url).then(r => r.json()).then(d => {
+  fetch(url, { signal: briefAbort.signal }).then(r => r.json()).then(d => {
+    clearInterval(briefTimer); briefTimer = null; briefAbort = null;
     if (d.error) { body.textContent = '⚠️ ' + d.error; return; }
     body.textContent = d.answer;
-    timeEl.textContent = 'as of ' + new Date(d.generatedAt).toLocaleTimeString();
+    timeEl.textContent = 'as of ' + new Date(d.generatedAt).toLocaleTimeString() + ' (' + Math.floor((Date.now()-t0)/1000) + 's)';
     sessionStorage.setItem(cacheKey, JSON.stringify(d));
-  }).catch(e => { body.textContent = '⚠️ ' + e.message; });
+  }).catch(e => {
+    clearInterval(briefTimer); briefTimer = null;
+    if (e.name === 'AbortError') return; // silent — user refreshed
+    body.textContent = '⚠️ ' + e.message;
+  });
 }
 
 function openAskDialog() {
