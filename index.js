@@ -8052,6 +8052,12 @@ function askQuick(q) {
   document.getElementById('ai-ask-input').value = q;
   submitAskQuestion();
 }
+function clearAskInput() {
+  const input = document.getElementById('ai-ask-input');
+  input.value = '';
+  input.focus();
+  document.getElementById('ai-ask-answer').innerHTML = '<div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div>';
+}
 
 // Auto-load brief when Overview is shown (once per session per area)
 document.addEventListener('DOMContentLoaded', () => {
@@ -8080,8 +8086,9 @@ document.addEventListener('DOMContentLoaded', () => {
 <div id="ai-ask-dialog" onclick="if(event.target===this)closeAskDialog()">
   <div id="ai-ask-sheet">
     <h3>🤖 Ask AI <button class="btn btn-sm" onclick="closeAskDialog()">✕</button></h3>
-    <div style="display:flex;gap:8px;">
+    <div style="display:flex;gap:6px;">
       <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key===\\'Enter\\')submitAskQuestion()" style="flex:1;" />
+      <button class="btn btn-sm" onclick="clearAskInput()" title="Clear message" style="padding:0 12px;background:var(--bg2,#161b22);color:var(--text2,#8b949e);border:1px solid var(--border,#30363d);font-size:16px;border-radius:8px;">✕</button>
       <button class="btn btn-sm" onclick="submitAskQuestion()" style="padding:0 18px;background:linear-gradient(135deg,#58a6ff,#2f6feb);color:white;border:none;font-weight:600;font-size:14px;border-radius:8px;">Send</button>
     </div>
     <div class="ai-quick-chips">
@@ -8137,9 +8144,10 @@ function buildAiContext(rows, filters) {
     po: Math.round(g.po),
     trf: Math.round(g.trf),
     lostSalesWk: Math.round(g.lostSalesWk),
+    wklySales: Math.round(g.wklySalesValue),  // peso weekly sales (Σ wkAveNet × avgCost) — THIS is what "weekly sales" means everywhere in the app
     daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
     wklySalesValue: undefined
-  })).sort((a, b) => b.lostSalesWk - a.lostSalesWk);
+  })).sort((a, b) => b.wklySales - a.wklySales);
   // Compact row shape used across problem lists
   const compact = (r) => ({
     st: r.storeName, sk: r.skuCode, d: r.skuDesc,
@@ -8288,6 +8296,15 @@ function askClaude(question, context, systemPrompt) {
 }
 
 const SYSTEM_ASK = `You are the inventory analyst for CAMANAVA, a chain of 31 stores. The user monitors this on mobile and wants concise, actionable answers.
+
+DATA DEFINITIONS (always use these):
+- "Weekly sales" = the per-store peso weekly sales = stores[].wklySales. NEVER derive from lostSalesWk (lost sales are separate).
+- "Inv Value" = stores[].invValue.
+- "PO Value" / "TRF Value" = stores[].po / stores[].trf.
+- "Days Cover" = stores[].daysCover (already computed).
+- "Lost Sales/Wk" = stores[].lostSalesWk (potential weekly revenue lost to OOS/critical — this is NOT weekly sales).
+- Food1 = category (catName). Food2 = department (deptName). Both in categories[].
+- SKU-level lists use compact fields — refer to _fieldMap.
 
 Style rules:
 - Reply in under 150 words unless asked for detail.
