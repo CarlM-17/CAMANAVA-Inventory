@@ -33,6 +33,9 @@ const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
 const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
+// Comma-separated list of usernames allowed to use the AI Assistant (case-insensitive).
+// Defaults to just the owner. Override via env var AI_ALLOWED_USERS if you want to add teammates later.
+const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').map(u => u.trim().toLowerCase()).filter(Boolean);
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -1294,7 +1297,8 @@ app.post('/api/login', (req, res) => {
     username: user.username,
     level: user.level,
     area: isAdmin ? '' : user.area,
-    isAdmin
+    isAdmin,
+    aiAllowed: AI_ALLOWED_USERS.includes((user.username || '').toLowerCase())
   });
 });
 
@@ -1341,7 +1345,7 @@ app.get('/api/me', (req, res) => {
   const token = req.query.token || '';
   const s = sessions[token];
   if (!s) return res.status(401).json({ error: 'Not logged in' });
-  res.json({ username: s.username, level: s.level, area: s.area, isAdmin: s.isAdmin });
+  res.json({ username: s.username, level: s.level, area: s.area, isAdmin: s.isAdmin, aiAllowed: AI_ALLOWED_USERS.includes((s.username || '').toLowerCase()) });
 });
 
 // UPC barcode lookup — returns the matching SKU & description
@@ -3298,6 +3302,206 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   await wb.xlsx.write(res);
   res.end();
+});
+
+// ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
+// Builds a compact JSON snapshot of the currently-filtered dataset so the model
+// can answer questions without receiving 10k+ rows.
+function buildAiContext(rows, filters) {
+  const areaLabel = filters.area || 'ALL AREAS';
+  const storeCount = new Set(rows.map(r => r.storeNumber)).size;
+  const totalSKUs = rows.length;
+  const totalValue = rows.reduce((s, r) => s + (r.onHandValue || 0), 0);
+  const totalPO = rows.reduce((s, r) => s + (r.poValue || 0), 0);
+  const totalTRF = rows.reduce((s, r) => s + (r.trfValue || 0), 0);
+  const totalLostSales = rows.reduce((s, r) => s + (r.lostSalesPerWeek || 0), 0);
+  const statusCounts = {};
+  for (const r of rows) {
+    const s = r.status || 'Unknown';
+    statusCounts[s] = (statusCounts[s] || 0) + 1;
+  }
+  const storeGroups = {};
+  for (const r of rows) {
+    const k = r.storeNumber;
+    if (!storeGroups[k]) storeGroups[k] = { store: r.storeName, area: r.area, invValue: 0, po: 0, trf: 0, critical: 0, oos: 0, aging: 0, overstock: 0, dead: 0, lostSalesWk: 0, wklySalesValue: 0 };
+    const g = storeGroups[k];
+    g.invValue += r.onHandValue || 0;
+    g.po += r.poValue || 0;
+    g.trf += r.trfValue || 0;
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+    if (r.status === 'Aging') g.aging++;
+    if (r.isOverstock) g.overstock++;
+    if (r.isDeadStock) g.dead++;
+  }
+  const stores = Object.values(storeGroups).map(g => ({
+    ...g,
+    invValue: Math.round(g.invValue),
+    po: Math.round(g.po),
+    trf: Math.round(g.trf),
+    lostSalesWk: Math.round(g.lostSalesWk),
+    wklySales: Math.round(g.wklySalesValue),
+    daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
+    wklySalesValue: undefined
+  })).sort((a, b) => b.wklySales - a.wklySales);
+  const compact = (r) => ({
+    st: r.storeName, sk: r.skuCode, d: r.skuDesc,
+    dp: r.deptName, ct: r.catName, sup: r.supplierName,
+    stat: r.status, oh: r.onHand,
+    dc: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+    ls: Math.round(r.lostSalesPerWeek || 0),
+    iv: Math.round(r.onHandValue || 0),
+    ws: +(r.wkAveNet || 0).toFixed(1),
+    po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
+  });
+  const N = 200;
+  const topCritical = [...rows].filter(r => r.lostSalesPerWeek > 0).sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).slice(0, N).map(compact);
+  const topOOS = [...rows].filter(r => r.isOutOfStock && r.merchGro !== 'P').sort((a, b) => (b.wkAveNet || 0) * (b.avgCost || 0) - (a.wkAveNet || 0) * (a.avgCost || 0)).slice(0, N).map(compact);
+  const topOverstock = [...rows].filter(r => r.isOverstock).sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
+  const topAging = [...rows].filter(r => r.status === 'Aging').sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
+  const topDead = [...rows].filter(r => r.isDeadStock).sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
+  const topBlack = [...rows].filter(r => r.status === 'Black').sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
+  const topNeg = [...rows].filter(r => r.onHand < 0).sort((a, b) => a.onHand - b.onHand).slice(0, N).map(compact);
+  const catGroups = {};
+  for (const r of rows) {
+    const key = (r.catName || 'UNCATEGORIZED') + '||' + (r.deptName || 'UNKNOWN');
+    if (!catGroups[key]) catGroups[key] = { category: r.catName || 'UNCATEGORIZED', dept: r.deptName || 'UNKNOWN', skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0 };
+    const g = catGroups[key];
+    g.skuCount++;
+    g.invValue += r.onHandValue || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+  }
+  const categories = Object.values(catGroups)
+    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk) }))
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
+  const supGroups = {};
+  for (const r of rows) {
+    const key = r.supplierName || 'UNKNOWN';
+    if (!supGroups[key]) supGroups[key] = { supplier: key, skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0, po: 0 };
+    const g = supGroups[key];
+    g.skuCount++;
+    g.invValue += r.onHandValue || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    g.po += r.poValue || 0;
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+  }
+  const suppliers = Object.values(supGroups)
+    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk), po: Math.round(g.po) }))
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
+  const topSellers = [...rows].sort((a, b) => ((b.wkAveNet || 0) * (b.avgCost || 0)) - ((a.wkAveNet || 0) * (a.avgCost || 0))).slice(0, N).map(compact);
+  return {
+    filter: { area: areaLabel },
+    snapshot: {
+      asOf: new Date().toISOString(),
+      totalStores: storeCount, totalSKUs,
+      totalInventoryValue: Math.round(totalValue),
+      totalPOValue: Math.round(totalPO),
+      totalTRFValue: Math.round(totalTRF),
+      totalLostSalesPerWeek: Math.round(totalLostSales),
+      statusCounts
+    },
+    stores, categories, suppliers, topSellers,
+    topCriticalSKUs: topCritical, topOOS, topOverstock, topAging, topDead, topBlack, topNegative: topNeg,
+    _fieldMap: {
+      st: 'store', sk: 'skuCode', d: 'desc', dp: 'dept (Food2)', ct: 'category (Food1)',
+      sup: 'supplier', stat: 'status', oh: 'onHand', dc: 'daysCover',
+      ls: 'lostSalesPerWeek (peso)', iv: 'invValue (peso)', ws: 'weeklyAvgSales (units)',
+      po: 'poOrderGR (units)', trf: 'trfOrderGR (units)'
+    },
+    _note: 'Food1 = category (catName, broader), Food2 = department (deptName, specific). SKU lists use compact field names — see _fieldMap.'
+  };
+}
+
+function askClaude(question, context, systemPrompt) {
+  return new Promise((resolve, reject) => {
+    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY not set. Add it in Railway environment variables.'));
+    const body = JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 1500,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: 'Here is the current inventory snapshot (JSON):\n\`\`\`json\n' + JSON.stringify(context, null, 0) + '\n\`\`\`\n\nQuestion: ' + question
+      }]
+    });
+    const reqAi = https.request({
+      hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
+      family: 4,
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-length': Buffer.byteLength(body)
+      }
+    }, (r) => {
+      let data = '';
+      r.on('data', c => data += c);
+      r.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) return reject(new Error(parsed.error.message || 'Claude API error'));
+          const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
+          resolve({ answer: text, usage: parsed.usage });
+        } catch (e) { reject(e); }
+      });
+    });
+    reqAi.on('error', reject);
+    reqAi.write(body);
+    reqAi.end();
+  });
+}
+
+const SYSTEM_ASK = 'You are the inventory analyst for CAMANAVA, a chain of 31 stores. The user monitors this on mobile and wants concise, actionable answers.\n\nDATA DEFINITIONS (always use these):\n- "Weekly sales" = the per-store peso weekly sales = stores[].wklySales. NEVER derive from lostSalesWk (lost sales are separate).\n- "Inv Value" = stores[].invValue.\n- "PO Value" / "TRF Value" = stores[].po / stores[].trf.\n- "Days Cover" = stores[].daysCover (already computed).\n- "Lost Sales/Wk" = stores[].lostSalesWk (potential weekly revenue lost to OOS/critical - this is NOT weekly sales).\n- Food1 = category (catName). Food2 = department (deptName). Both in categories[].\n- SKU-level lists use compact fields - refer to _fieldMap.\n\nStyle rules:\n- Reply in under 150 words unless asked for detail.\n- Use short bullets, not paragraphs.\n- Always cite specific numbers, store names, or SKU codes from the JSON snapshot.\n- Currency is Philippine peso - format as "P1.2M", "P850K", or "P4,500".\n- If the data does not contain enough to answer, say so plainly - do not invent numbers.\n- No preamble ("Great question!", "Based on the data..."). Start with the answer.';
+
+const SYSTEM_BRIEF = 'You are the inventory analyst for CAMANAVA, a chain of 31 stores. Write a MORNING BRIEF for the owner to read on their phone.\n\nFormat - exactly 4 to 6 short lines, each starting with an emoji:\n[RED] for critical/urgent issues\n[YEL] for medium-priority watch items\n[GRN] for good news or incoming relief\n[WARN] for anomalies or dead pipelines\n\nEach line: one specific fact with numbers + store name(s). Under 20 words per line. No fluff, no preamble, no closing summary.';
+
+function requireAdminForAI(req, res) {
+  const token = req.query.token || (req.headers['x-auth-token']) || (req.body && req.body.token) || '';
+  const s = sessions[token];
+  if (!s) { res.status(401).json({ error: 'Login required' }); return null; }
+  const uname = (s.username || '').toLowerCase();
+  if (!AI_ALLOWED_USERS.includes(uname)) { res.status(403).json({ error: 'AI Assistant is restricted to the account owner' }); return null; }
+  return s;
+}
+
+app.post('/api/ask', async (req, res) => {
+  try {
+    if (!requireAdminForAI(req, res)) return;
+    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
+    const question = (req.body && req.body.question || '').toString().slice(0, 500).trim();
+    if (!question) return res.status(400).json({ error: 'Empty question' });
+    const filters = resolveFilters(req);
+    const rows = applyFilters(cache.rows, filters);
+    const context = buildAiContext(rows, filters);
+    const { answer, usage } = await askClaude(question, context, SYSTEM_ASK);
+    res.json({ answer, usage, area: filters.area || null });
+  } catch (e) {
+    console.error('[ask]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/morning-brief', async (req, res) => {
+  try {
+    if (!requireAdminForAI(req, res)) return;
+    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
+    const filters = resolveFilters(req);
+    const rows = applyFilters(cache.rows, filters);
+    const context = buildAiContext(rows, filters);
+    const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
+    const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
+    res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
+  } catch (e) {
+    console.error('[morning-brief]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── FRONTEND HTML ────────────────────────────────────────────────────────────
@@ -5435,6 +5639,11 @@ function applyUserRestrictions() {
   // Show Activity Log tab only for admins
   const logsTabBtn = document.getElementById('tab-btn-logs');
   if (logsTabBtn) logsTabBtn.style.display = currentUser.isAdmin ? '' : 'none';
+  // Show AI Assistant (Morning Brief card + Ask FAB) only for whitelisted owner accounts
+  const aiFab = document.getElementById('ai-ask-fab');
+  const aiBrief = document.getElementById('ai-brief-card');
+  if (aiFab) aiFab.style.display = currentUser.aiAllowed ? '' : 'none';
+  if (aiBrief) aiBrief.style.display = currentUser.aiAllowed ? '' : 'none';
 }
 
 async function pollAndRefresh() {
@@ -8018,7 +8227,8 @@ function loadMorningBrief(force) {
   }
   body.textContent = '⏳ Generating brief...';
   timeEl.textContent = '';
-  const url = '/api/morning-brief' + ((activeFilters && activeFilters.area) ? '?area=' + encodeURIComponent((activeFilters && activeFilters.area)) : '');
+  const areaQS = (activeFilters && activeFilters.area) ? '&area=' + encodeURIComponent(activeFilters.area) : '';
+  const url = '/api/morning-brief' + tokenQS('?') + areaQS;
   fetch(url).then(r => r.json()).then(d => {
     if (d.error) { body.textContent = '⚠️ ' + d.error; return; }
     body.textContent = d.answer;
@@ -8038,10 +8248,10 @@ function submitAskQuestion() {
   const q = input.value.trim();
   if (!q) return;
   answerEl.innerHTML = '<div style="color:var(--text2);">⏳ Thinking...</div>';
-  fetch('/api/ask', {
+  fetch('/api/ask' + tokenQS('?'), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ question: q, area: (activeFilters && activeFilters.area) || null })
+    headers: { 'content-type': 'application/json', 'x-auth-token': authToken || '' },
+    body: JSON.stringify({ question: q, area: (activeFilters && activeFilters.area) || null, token: authToken || '' })
   }).then(r => r.json()).then(d => {
     if (d.error) { answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + d.error + '</div>'; return; }
     const scope = d.area ? '<div style="font-size:10px;color:var(--text2);margin-bottom:6px;">Scope: ' + d.area + '</div>' : '';
@@ -8059,9 +8269,13 @@ function clearAskInput() {
   document.getElementById('ai-ask-answer').innerHTML = '<div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div>';
 }
 
-// Auto-load brief when Overview is shown (once per session per area)
+// Auto-load brief on first Overview show — admin only, after login is settled
 document.addEventListener('DOMContentLoaded', () => {
-  setTimeout(() => { if (document.getElementById('ai-brief-body')) loadMorningBrief(false); }, 1500);
+  setTimeout(() => {
+    if (currentUser && currentUser.aiAllowed && document.getElementById('ai-brief-body')) {
+      loadMorningBrief(false);
+    }
+  }, 1500);
 });
 
 </script>
@@ -8105,255 +8319,6 @@ document.addEventListener('DOMContentLoaded', () => {
 </html>`);
 });
 
-// ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
-// Builds a compact JSON snapshot of the currently-filtered dataset so the model
-// can answer questions without receiving 10k+ rows. Keep this under ~5k tokens.
-function buildAiContext(rows, filters) {
-  const areaLabel = filters.area || 'ALL AREAS';
-  const storeCount = new Set(rows.map(r => r.storeNumber)).size;
-  const totalSKUs = rows.length;
-  const totalValue = rows.reduce((s, r) => s + (r.onHandValue || 0), 0);
-  const totalPO = rows.reduce((s, r) => s + (r.poValue || 0), 0);
-  const totalTRF = rows.reduce((s, r) => s + (r.trfValue || 0), 0);
-  const totalLostSales = rows.reduce((s, r) => s + (r.lostSalesPerWeek || 0), 0);
-  const statusCounts = {};
-  for (const r of rows) {
-    const s = r.status || 'Unknown';
-    statusCounts[s] = (statusCounts[s] || 0) + 1;
-  }
-  // Per-store rollup (31 rows × few cols is tiny)
-  const storeGroups = {};
-  for (const r of rows) {
-    const k = r.storeNumber;
-    if (!storeGroups[k]) storeGroups[k] = { store: r.storeName, area: r.area, invValue: 0, po: 0, trf: 0, critical: 0, oos: 0, aging: 0, overstock: 0, dead: 0, lostSalesWk: 0, wklySalesValue: 0 };
-    const g = storeGroups[k];
-    g.invValue += r.onHandValue || 0;
-    g.po += r.poValue || 0;
-    g.trf += r.trfValue || 0;
-    g.lostSalesWk += r.lostSalesPerWeek || 0;
-    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
-    if (r.isCritical && r.merchGro !== 'P') g.critical++;
-    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
-    if (r.status === 'Aging') g.aging++;
-    if (r.isOverstock) g.overstock++;
-    if (r.isDeadStock) g.dead++;
-  }
-  const stores = Object.values(storeGroups).map(g => ({
-    ...g,
-    invValue: Math.round(g.invValue),
-    po: Math.round(g.po),
-    trf: Math.round(g.trf),
-    lostSalesWk: Math.round(g.lostSalesWk),
-    wklySales: Math.round(g.wklySalesValue),  // peso weekly sales (Σ wkAveNet × avgCost) — THIS is what "weekly sales" means everywhere in the app
-    daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
-    wklySalesValue: undefined
-  })).sort((a, b) => b.wklySales - a.wklySales);
-  // Compact row shape used across problem lists
-  const compact = (r) => ({
-    st: r.storeName, sk: r.skuCode, d: r.skuDesc,
-    dp: r.deptName, ct: r.catName, sup: r.supplierName,
-    stat: r.status, oh: r.onHand,
-    dc: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
-    ls: Math.round(r.lostSalesPerWeek || 0),
-    iv: Math.round(r.onHandValue || 0),
-    ws: +(r.wkAveNet || 0).toFixed(1),
-    po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
-  });
-  const N = 200; // top-N per list
-  // Top 200 most-critical SKUs by lost sales
-  const topCritical = [...rows]
-    .filter(r => r.lostSalesPerWeek > 0)
-    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
-    .slice(0, N).map(compact);
-  const topOOS = [...rows].filter(r => r.isOutOfStock && r.merchGro !== 'P')
-    .sort((a, b) => (b.wkAveNet || 0) * (b.avgCost || 0) - (a.wkAveNet || 0) * (a.avgCost || 0))
-    .slice(0, N).map(compact);
-  const topOverstock = [...rows].filter(r => r.isOverstock)
-    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
-    .slice(0, N).map(compact);
-  const topAging = [...rows].filter(r => r.status === 'Aging')
-    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
-    .slice(0, N).map(compact);
-  const topDead = [...rows].filter(r => r.isDeadStock)
-    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
-    .slice(0, N).map(compact);
-  const topBlack = [...rows].filter(r => r.status === 'Black')
-    .sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0))
-    .slice(0, N).map(compact);
-  const topNeg = [...rows].filter(r => r.onHand < 0)
-    .sort((a, b) => a.onHand - b.onHand)
-    .slice(0, N).map(compact);
-  // Per-category rollup (Food1 = deptName, Food2 = catName grouping)
-  const catGroups = {};
-  for (const r of rows) {
-    const key = (r.catName || 'UNCATEGORIZED') + '||' + (r.deptName || 'UNKNOWN');
-    if (!catGroups[key]) catGroups[key] = { category: r.catName || 'UNCATEGORIZED', dept: r.deptName || 'UNKNOWN', skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0 };
-    const g = catGroups[key];
-    g.skuCount++;
-    g.invValue += r.onHandValue || 0;
-    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
-    g.lostSalesWk += r.lostSalesPerWeek || 0;
-    if (r.isCritical && r.merchGro !== 'P') g.critical++;
-    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
-  }
-  const categories = Object.values(catGroups)
-    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk) }))
-    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
-  // (no slice — send ALL categories, usually < 100)
-  // Per-supplier rollup
-  const supGroups = {};
-  for (const r of rows) {
-    const key = r.supplierName || 'UNKNOWN';
-    if (!supGroups[key]) supGroups[key] = { supplier: key, skuCount: 0, invValue: 0, wklySalesValue: 0, lostSalesWk: 0, critical: 0, oos: 0, po: 0 };
-    const g = supGroups[key];
-    g.skuCount++;
-    g.invValue += r.onHandValue || 0;
-    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
-    g.lostSalesWk += r.lostSalesPerWeek || 0;
-    g.po += r.poValue || 0;
-    if (r.isCritical && r.merchGro !== 'P') g.critical++;
-    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
-  }
-  const suppliers = Object.values(supGroups)
-    .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk), po: Math.round(g.po) }))
-    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
-  // (no slice — send ALL suppliers, usually < 300)
-  // Top 200 sellers overall (by weekly sales value)
-  const topSellers = [...rows]
-    .sort((a, b) => ((b.wkAveNet || 0) * (b.avgCost || 0)) - ((a.wkAveNet || 0) * (a.avgCost || 0)))
-    .slice(0, N).map(compact);
-  return {
-    filter: { area: areaLabel },
-    snapshot: {
-      asOf: new Date().toISOString(),
-      totalStores: storeCount,
-      totalSKUs,
-      totalInventoryValue: Math.round(totalValue),
-      totalPOValue: Math.round(totalPO),
-      totalTRFValue: Math.round(totalTRF),
-      totalLostSalesPerWeek: Math.round(totalLostSales),
-      statusCounts
-    },
-    stores,        // per-store rollup: inv/PO/TRF/critical/oos/aging/overstock/dead/lostSales/daysCover
-    categories,    // ALL categories: Food1 = catName, Food2 = deptName
-    suppliers,     // ALL suppliers with PO, sales, lost-sales
-    topSellers,    // top 200 fastest-moving SKUs
-    topCriticalSKUs: topCritical,   // top 200 by lost sales
-    topOOS,        // top 200 out-of-stock by sales impact
-    topOverstock,  // top 200 overstock by peso
-    topAging,      // top 200 aging by peso
-    topDead,       // top 200 dead-stock by peso
-    topBlack,      // top 200 black inventory by peso
-    topNegative: topNeg,  // top 200 negative on-hand
-    _fieldMap: {
-      st: 'store', sk: 'skuCode', d: 'desc', dp: 'dept (Food2)', ct: 'category (Food1)',
-      sup: 'supplier', stat: 'status', oh: 'onHand', dc: 'daysCover',
-      ls: 'lostSalesPerWeek (peso)', iv: 'invValue (peso)', ws: 'weeklyAvgSales (units)',
-      po: 'poOrderGR (units)', trf: 'trfOrderGR (units)'
-    },
-    _note: 'Food1 = category (catName, broader), Food2 = department (deptName, specific). SKU lists use compact field names — see _fieldMap.'
-  };
-}
-
-// Call Claude via native https (avoids Railway "Premature close" issues from googleapis-style SDKs)
-function askClaude(question, context, systemPrompt) {
-  return new Promise((resolve, reject) => {
-    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY not set. Add it in Railway environment variables.'));
-    const body = JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{
-        role: 'user',
-        content: 'Here is the current inventory snapshot (JSON):\n```json\n' + JSON.stringify(context, null, 0) + '\n```\n\nQuestion: ' + question
-      }]
-    });
-    const req = https.request({
-      hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
-      family: 4, // Force IPv4 (Railway lesson learned from Google APIs)
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-length': Buffer.byteLength(body)
-      }
-    }, (res) => {
-      let data = '';
-      res.on('data', c => data += c);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) return reject(new Error(parsed.error.message || 'Claude API error'));
-          const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
-          resolve({ answer: text, usage: parsed.usage });
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-const SYSTEM_ASK = `You are the inventory analyst for CAMANAVA, a chain of 31 stores. The user monitors this on mobile and wants concise, actionable answers.
-
-DATA DEFINITIONS (always use these):
-- "Weekly sales" = the per-store peso weekly sales = stores[].wklySales. NEVER derive from lostSalesWk (lost sales are separate).
-- "Inv Value" = stores[].invValue.
-- "PO Value" / "TRF Value" = stores[].po / stores[].trf.
-- "Days Cover" = stores[].daysCover (already computed).
-- "Lost Sales/Wk" = stores[].lostSalesWk (potential weekly revenue lost to OOS/critical — this is NOT weekly sales).
-- Food1 = category (catName). Food2 = department (deptName). Both in categories[].
-- SKU-level lists use compact fields — refer to _fieldMap.
-
-Style rules:
-- Reply in under 150 words unless asked for detail.
-- Use short bullets, not paragraphs.
-- Always cite specific numbers, store names, or SKU codes from the JSON snapshot.
-- Currency is Philippine peso — format as "₱1.2M", "₱850K", or "₱4,500".
-- If the data doesn't contain enough to answer, say so plainly — don't invent numbers.
-- No preamble ("Great question!", "Based on the data..."). Start with the answer.`;
-
-const SYSTEM_BRIEF = `You are the inventory analyst for CAMANAVA, a chain of 31 stores. Write a MORNING BRIEF for the owner to read on their phone.
-
-Format — exactly 4 to 6 short lines, each starting with an emoji:
-🔴 for critical/urgent issues
-🟡 for medium-priority watch items
-🟢 for good news or incoming relief
-⚠️ for anomalies or dead pipelines
-
-Each line: one specific fact with numbers + store name(s). Under 20 words per line. No fluff, no preamble, no closing summary.`;
-
-app.post('/api/ask', async (req, res) => {
-  try {
-    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
-    const question = (req.body && req.body.question || '').toString().slice(0, 500).trim();
-    if (!question) return res.status(400).json({ error: 'Empty question' });
-    const filters = resolveFilters(req);
-    const rows = applyFilters(cache.rows, filters);
-    const context = buildAiContext(rows, filters);
-    const { answer, usage } = await askClaude(question, context, SYSTEM_ASK);
-    res.json({ answer, usage, area: filters.area || null });
-  } catch (e) {
-    console.error('[ask]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.get('/api/morning-brief', async (req, res) => {
-  try {
-    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
-    const filters = resolveFilters(req);
-    const rows = applyFilters(cache.rows, filters);
-    const context = buildAiContext(rows, filters);
-    const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
-    const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
-    res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
-  } catch (e) {
-    console.error('[morning-brief]', e.message);
-    res.status(500).json({ error: e.message });
-  }
-});
 
 // ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
