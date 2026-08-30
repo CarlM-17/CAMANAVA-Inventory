@@ -31,6 +31,8 @@ const STORES_FILE_NAME = process.env.STORES_FILE_NAME || 'ListOfStores.xlsx';
 const REFRESH_INTERVAL_MINUTES = parseInt(process.env.REFRESH_INTERVAL_MINUTES || '10');
 const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
 const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -4063,6 +4065,17 @@ canvas { max-height:260px; }
 
     <!-- OVERVIEW TAB -->
     <div id="tab-overview">
+      <!-- AI MORNING BRIEF -->
+      <div class="section" id="ai-brief-card" style="margin-bottom:8px;background:linear-gradient(135deg,rgba(88,166,255,0.08),rgba(88,166,255,0.02));border:1px solid rgba(88,166,255,0.25);">
+        <div class="section-header" style="padding-bottom:6px;">
+          <div class="section-title" style="font-size:14px;">🤖 AI Morning Brief <span id="ai-brief-time" style="font-size:10px;color:var(--text2);font-weight:400;margin-left:6px;"></span></div>
+          <div class="section-actions">
+            <button class="btn btn-sm" id="ai-brief-refresh" onclick="loadMorningBrief(true)" title="Regenerate">↻ Refresh</button>
+          </div>
+        </div>
+        <div id="ai-brief-body" style="padding:6px 4px 4px;font-size:13px;line-height:1.7;color:var(--text1);white-space:pre-wrap;">Tap Refresh to generate your daily inventory brief.</div>
+      </div>
+
       <div class="kpi-grid" id="kpi-grid">
         <div class="kpi-card"><div class="kpi-label">Loading...</div></div>
       </div>
@@ -7988,9 +8001,260 @@ if (document.readyState === 'loading') {
 } else {
   startInit();
 }
+
+// ─── AI ASK ────────────────────────────────────────────────────────────────
+function loadMorningBrief(force) {
+  const body = document.getElementById('ai-brief-body');
+  const timeEl = document.getElementById('ai-brief-time');
+  const cacheKey = 'ai-brief-' + ((activeFilters && activeFilters.area) || 'ALL') + '-' + new Date().toISOString().slice(0,10);
+  if (!force) {
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      const p = JSON.parse(cached);
+      body.textContent = p.answer;
+      timeEl.textContent = 'as of ' + new Date(p.generatedAt).toLocaleTimeString();
+      return;
+    }
+  }
+  body.textContent = '⏳ Generating brief...';
+  timeEl.textContent = '';
+  const url = '/api/morning-brief' + ((activeFilters && activeFilters.area) ? '?area=' + encodeURIComponent((activeFilters && activeFilters.area)) : '');
+  fetch(url).then(r => r.json()).then(d => {
+    if (d.error) { body.textContent = '⚠️ ' + d.error; return; }
+    body.textContent = d.answer;
+    timeEl.textContent = 'as of ' + new Date(d.generatedAt).toLocaleTimeString();
+    sessionStorage.setItem(cacheKey, JSON.stringify(d));
+  }).catch(e => { body.textContent = '⚠️ ' + e.message; });
+}
+
+function openAskDialog() {
+  document.getElementById('ai-ask-dialog').style.display = 'flex';
+  setTimeout(() => document.getElementById('ai-ask-input').focus(), 100);
+}
+function closeAskDialog() { document.getElementById('ai-ask-dialog').style.display = 'none'; }
+function submitAskQuestion() {
+  const input = document.getElementById('ai-ask-input');
+  const answerEl = document.getElementById('ai-ask-answer');
+  const q = input.value.trim();
+  if (!q) return;
+  answerEl.innerHTML = '<div style="color:var(--text2);">⏳ Thinking...</div>';
+  fetch('/api/ask', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ question: q, area: (activeFilters && activeFilters.area) || null })
+  }).then(r => r.json()).then(d => {
+    if (d.error) { answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + d.error + '</div>'; return; }
+    const scope = d.area ? '<div style="font-size:10px;color:var(--text2);margin-bottom:6px;">Scope: ' + d.area + '</div>' : '';
+    answerEl.innerHTML = scope + '<div style="white-space:pre-wrap;line-height:1.6;">' + esc(d.answer) + '</div>';
+  }).catch(e => { answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + e.message + '</div>'; });
+}
+function askQuick(q) {
+  document.getElementById('ai-ask-input').value = q;
+  submitAskQuestion();
+}
+
+// Auto-load brief when Overview is shown (once per session per area)
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => { if (document.getElementById('ai-brief-body')) loadMorningBrief(false); }, 1500);
+});
+
 </script>
+
+<!-- AI FLOATING BUTTON + DIALOG -->
+<style>
+  #ai-ask-fab { position: fixed; bottom: 20px; right: 20px; width: 56px; height: 56px; border-radius: 50%; background: linear-gradient(135deg, #58a6ff, #2f6feb); color: white; border: none; box-shadow: 0 4px 16px rgba(88,166,255,0.4); font-size: 24px; cursor: pointer; z-index: 9998; display:flex; align-items:center; justify-content:center; }
+  #ai-ask-fab:active { transform: scale(0.95); }
+  #ai-ask-dialog { display:none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 9999; align-items: flex-end; justify-content: center; }
+  #ai-ask-sheet { background: var(--bg1, #0d1117); width: 100%; max-width: 640px; max-height: 85vh; border-radius: 16px 16px 0 0; padding: 16px; display:flex; flex-direction:column; box-shadow: 0 -8px 32px rgba(0,0,0,0.4); border-top: 1px solid var(--border, #30363d); }
+  #ai-ask-sheet h3 { margin: 0 0 12px; font-size: 16px; display:flex; justify-content:space-between; align-items:center; }
+  #ai-ask-input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--border,#30363d); background: var(--bg2,#161b22); color: var(--text1,#c9d1d9); font-size: 15px; box-sizing:border-box; }
+  #ai-ask-answer { flex: 1; overflow-y: auto; margin-top: 12px; padding: 12px; background: var(--bg2,#161b22); border-radius: 8px; font-size: 13px; min-height: 100px; max-height: 45vh; }
+  .ai-quick-chips { display:flex; flex-wrap:wrap; gap: 6px; margin-top: 8px; }
+  .ai-quick-chips button { font-size: 11px; padding: 6px 10px; border-radius: 14px; border: 1px solid var(--border,#30363d); background: transparent; color: var(--text2,#8b949e); cursor: pointer; }
+  .ai-quick-chips button:active { background: var(--bg2,#161b22); }
+  @media (max-width: 640px) { #ai-ask-fab { bottom: 14px; right: 14px; } }
+</style>
+
+<button id="ai-ask-fab" onclick="openAskDialog()" title="Ask AI about your inventory" aria-label="Ask AI">💬</button>
+
+<div id="ai-ask-dialog" onclick="if(event.target===this)closeAskDialog()">
+  <div id="ai-ask-sheet">
+    <h3>🤖 Ask AI <button class="btn btn-sm" onclick="closeAskDialog()">✕</button></h3>
+    <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key===\\'Enter\\')submitAskQuestion()" />
+    <div class="ai-quick-chips">
+      <button onclick="askQuick(\\'Which stores are worst today?\\')">Worst stores</button>
+      <button onclick="askQuick(\\'Anything urgent I should act on?\\')">Anything urgent?</button>
+      <button onclick="askQuick(\\'Summarize inventory status for my boss.\\')">Boss summary</button>
+      <button onclick="askQuick(\\'Which SKUs need emergency reorder?\\')">Emergency reorders</button>
+    </div>
+    <div id="ai-ask-answer"><div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div></div>
+  </div>
+</div>
+
 </body>
 </html>`);
+});
+
+// ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
+// Builds a compact JSON snapshot of the currently-filtered dataset so the model
+// can answer questions without receiving 10k+ rows. Keep this under ~5k tokens.
+function buildAiContext(rows, filters) {
+  const areaLabel = filters.area || 'ALL AREAS';
+  const storeCount = new Set(rows.map(r => r.storeNumber)).size;
+  const totalSKUs = rows.length;
+  const totalValue = rows.reduce((s, r) => s + (r.onHandValue || 0), 0);
+  const totalPO = rows.reduce((s, r) => s + (r.poValue || 0), 0);
+  const totalTRF = rows.reduce((s, r) => s + (r.trfValue || 0), 0);
+  const totalLostSales = rows.reduce((s, r) => s + (r.lostSalesPerWeek || 0), 0);
+  const statusCounts = {};
+  for (const r of rows) {
+    const s = r.status || 'Unknown';
+    statusCounts[s] = (statusCounts[s] || 0) + 1;
+  }
+  // Per-store rollup (31 rows × few cols is tiny)
+  const storeGroups = {};
+  for (const r of rows) {
+    const k = r.storeNumber;
+    if (!storeGroups[k]) storeGroups[k] = { store: r.storeName, area: r.area, invValue: 0, po: 0, trf: 0, critical: 0, oos: 0, aging: 0, overstock: 0, dead: 0, lostSalesWk: 0, wklySalesValue: 0 };
+    const g = storeGroups[k];
+    g.invValue += r.onHandValue || 0;
+    g.po += r.poValue || 0;
+    g.trf += r.trfValue || 0;
+    g.lostSalesWk += r.lostSalesPerWeek || 0;
+    g.wklySalesValue += (r.wkAveNet || 0) * (r.avgCost || 0);
+    if (r.isCritical && r.merchGro !== 'P') g.critical++;
+    if (r.isOutOfStock && r.merchGro !== 'P') g.oos++;
+    if (r.status === 'Aging') g.aging++;
+    if (r.isOverstock) g.overstock++;
+    if (r.isDeadStock) g.dead++;
+  }
+  const stores = Object.values(storeGroups).map(g => ({
+    ...g,
+    invValue: Math.round(g.invValue),
+    po: Math.round(g.po),
+    trf: Math.round(g.trf),
+    lostSalesWk: Math.round(g.lostSalesWk),
+    daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
+    wklySalesValue: undefined
+  })).sort((a, b) => b.lostSalesWk - a.lostSalesWk);
+  // Top 30 most-critical SKUs by lost sales
+  const topCritical = [...rows]
+    .filter(r => r.lostSalesPerWeek > 0)
+    .sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek)
+    .slice(0, 30)
+    .map(r => ({
+      store: r.storeName, sku: r.skuCode, desc: r.skuDesc,
+      status: r.status, onHand: r.onHand,
+      daysCover: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
+      lostSalesWk: Math.round(r.lostSalesPerWeek || 0),
+      po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
+    }));
+  return {
+    filter: { area: areaLabel },
+    snapshot: {
+      asOf: new Date().toISOString(),
+      totalStores: storeCount,
+      totalSKUs,
+      totalInventoryValue: Math.round(totalValue),
+      totalPOValue: Math.round(totalPO),
+      totalTRFValue: Math.round(totalTRF),
+      totalLostSalesPerWeek: Math.round(totalLostSales),
+      statusCounts
+    },
+    stores,
+    topCriticalSKUs: topCritical
+  };
+}
+
+// Call Claude via native https (avoids Railway "Premature close" issues from googleapis-style SDKs)
+function askClaude(question, context, systemPrompt) {
+  return new Promise((resolve, reject) => {
+    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY not set. Add it in Railway environment variables.'));
+    const body = JSON.stringify({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 1024,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: 'Here is the current inventory snapshot (JSON):\n```json\n' + JSON.stringify(context, null, 0) + '\n```\n\nQuestion: ' + question
+      }]
+    });
+    const req = https.request({
+      hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
+      family: 4, // Force IPv4 (Railway lesson learned from Google APIs)
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-length': Buffer.byteLength(body)
+      }
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) return reject(new Error(parsed.error.message || 'Claude API error'));
+          const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
+          resolve({ answer: text, usage: parsed.usage });
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+const SYSTEM_ASK = `You are the inventory analyst for CAMANAVA, a chain of 31 stores. The user monitors this on mobile and wants concise, actionable answers.
+
+Style rules:
+- Reply in under 150 words unless asked for detail.
+- Use short bullets, not paragraphs.
+- Always cite specific numbers, store names, or SKU codes from the JSON snapshot.
+- Currency is Philippine peso — format as "₱1.2M", "₱850K", or "₱4,500".
+- If the data doesn't contain enough to answer, say so plainly — don't invent numbers.
+- No preamble ("Great question!", "Based on the data..."). Start with the answer.`;
+
+const SYSTEM_BRIEF = `You are the inventory analyst for CAMANAVA, a chain of 31 stores. Write a MORNING BRIEF for the owner to read on their phone.
+
+Format — exactly 4 to 6 short lines, each starting with an emoji:
+🔴 for critical/urgent issues
+🟡 for medium-priority watch items
+🟢 for good news or incoming relief
+⚠️ for anomalies or dead pipelines
+
+Each line: one specific fact with numbers + store name(s). Under 20 words per line. No fluff, no preamble, no closing summary.`;
+
+app.post('/api/ask', async (req, res) => {
+  try {
+    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
+    const question = (req.body && req.body.question || '').toString().slice(0, 500).trim();
+    if (!question) return res.status(400).json({ error: 'Empty question' });
+    const filters = resolveFilters(req);
+    const rows = applyFilters(cache.rows, filters);
+    const context = buildAiContext(rows, filters);
+    const { answer, usage } = await askClaude(question, context, SYSTEM_ASK);
+    res.json({ answer, usage, area: filters.area || null });
+  } catch (e) {
+    console.error('[ask]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get('/api/morning-brief', async (req, res) => {
+  try {
+    if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
+    const filters = resolveFilters(req);
+    const rows = applyFilters(cache.rows, filters);
+    const context = buildAiContext(rows, filters);
+    const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
+    const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
+    res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
+  } catch (e) {
+    console.error('[morning-brief]', e.message);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ─── START SERVER ─────────────────────────────────────────────────────────────
