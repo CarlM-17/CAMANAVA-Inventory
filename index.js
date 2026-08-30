@@ -3434,6 +3434,7 @@ function askClaude(question, context, systemPrompt) {
     const reqAi = https.request({
       hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
       family: 4,
+      timeout: 45000,  // 45s socket idle timeout
       headers: {
         'content-type': 'application/json',
         'x-api-key': ANTHROPIC_API_KEY,
@@ -3449,9 +3450,10 @@ function askClaude(question, context, systemPrompt) {
           if (parsed.error) return reject(new Error(parsed.error.message || 'Claude API error'));
           const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
           resolve({ answer: text, usage: parsed.usage });
-        } catch (e) { reject(e); }
+        } catch (e) { reject(new Error('Bad response from Claude API: ' + (data.slice(0,120) || e.message))); }
       });
     });
+    reqAi.on('timeout', () => { reqAi.destroy(new Error('Claude API timed out after 45s')); });
     reqAi.on('error', reject);
     reqAi.write(body);
     reqAi.end();
@@ -8252,13 +8254,20 @@ function loadMorningBrief(force) {
   const t0 = Date.now();
   body.textContent = '⏳ Generating brief... (0s)';
   timeEl.textContent = '';
+  const HARD_TIMEOUT = 60000;
   briefTimer = setInterval(() => {
     const s = Math.floor((Date.now() - t0) / 1000);
-    body.textContent = '⏳ Generating brief... (' + s + 's)' + (s > 20 ? ' — this is taking longer than usual, still working' : '');
+    body.textContent = '⏳ Generating brief... (' + s + 's)' + (s > 20 ? ' — taking longer than usual' : '');
   }, 1000);
+  const timeoutId = setTimeout(() => {
+    if (briefAbort) { try { briefAbort.abort(); } catch(e){} }
+    clearInterval(briefTimer); briefTimer = null;
+    body.textContent = '⚠️ Timed out after 60s. Tap Refresh to retry, or check ANTHROPIC_API_KEY on Railway.';
+  }, HARD_TIMEOUT);
   const areaQS = (activeFilters && activeFilters.area) ? '&area=' + encodeURIComponent(activeFilters.area) : '';
   const url = '/api/morning-brief' + tokenQS('?') + areaQS;
   fetch(url, { signal: briefAbort.signal }).then(r => r.json()).then(d => {
+    clearTimeout(timeoutId);
     clearInterval(briefTimer); briefTimer = null; briefAbort = null;
     if (d.error) { body.textContent = '⚠️ ' + d.error; return; }
     body.textContent = d.answer;
@@ -8266,7 +8275,7 @@ function loadMorningBrief(force) {
     sessionStorage.setItem(cacheKey, JSON.stringify(d));
   }).catch(e => {
     clearInterval(briefTimer); briefTimer = null;
-    if (e.name === 'AbortError') return; // silent — user refreshed
+    if (e.name === 'AbortError') return; // silent — user refreshed or timed out
     body.textContent = '⚠️ ' + e.message;
   });
 }
