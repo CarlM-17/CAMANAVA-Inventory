@@ -3549,14 +3549,30 @@ app.get('/api/ai-status', async (req, res) => {
   try {
     if (!requireAdminForAI(req, res)) return;
     const status = {
+      build: BUILD_STAMP,
       apiKeySet: !!ANTHROPIC_API_KEY,
       apiKeyPrefix: ANTHROPIC_API_KEY ? ANTHROPIC_API_KEY.slice(0, 12) + '...' : null,
       model: ANTHROPIC_MODEL,
+      aiTopN: AI_TOP_N,
       allowedUsers: AI_ALLOWED_USERS,
+      rows: (cache.rows && cache.rows.length) || 0,
+      contextKB: null,
+      contextTokens: null,
+      contextBuildMs: null,
       pingResult: null,
       pingMs: null,
       pingError: null
     };
+    // Report the real payload size for this user's data — the last unknown.
+    try {
+      const f = resolveFilters(req);
+      const t = Date.now();
+      const ctx = getAiContext(applyFilters(cache.rows, f), f, 'full');
+      status.contextBuildMs = Date.now() - t;
+      const b = JSON.stringify(ctx).length;
+      status.contextKB = Math.round(b / 1024);
+      status.contextTokens = Math.round(b / 3500) + 'k';
+    } catch (e) { status.contextKB = 'ERROR: ' + e.message; }
     if (!ANTHROPIC_API_KEY) { return res.json(status); }
     const t0 = Date.now();
     try {
