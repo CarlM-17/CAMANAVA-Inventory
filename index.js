@@ -36,6 +36,10 @@ const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-2025100
 // Comma-separated list of usernames allowed to use the AI Assistant (case-insensitive).
 // Defaults to just the owner. Override via env var AI_ALLOWED_USERS if you want to add teammates later.
 const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').map(u => u.trim().toLowerCase()).filter(Boolean);
+// How many rows per list (and per category/supplier rollup) go into the AI snapshot.
+// 50 keeps the payload near ~30k tokens => ~5-8s replies. Raising this makes answers
+// broader but slower and more expensive; 200 pushed it to ~155k tokens and timed out.
+const AI_TOP_N = parseInt(process.env.AI_TOP_N || '50', 10);
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -3307,7 +3311,8 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
 // ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
 // Builds a compact JSON snapshot of the currently-filtered dataset so the model
 // can answer questions without receiving 10k+ rows.
-function buildAiContext(rows, filters) {
+function buildAiContext(rows, filters, topCount) {
+  topCount = topCount || AI_TOP_N;
   const areaLabel = filters.area || 'ALL AREAS';
   const storeCount = new Set(rows.map(r => r.storeNumber)).size;
   const totalSKUs = rows.length;
@@ -3346,9 +3351,10 @@ function buildAiContext(rows, filters) {
     daysCover: g.wklySalesValue > 0 ? Math.round((g.invValue * 7) / g.wklySalesValue) : null,
     wklySalesValue: undefined
   })).sort((a, b) => b.wklySales - a.wklySales);
+  const cut = (s, n) => (s == null ? '' : String(s).slice(0, n));
   const compact = (r) => ({
-    st: r.storeName, sk: r.skuCode, d: r.skuDesc,
-    dp: r.deptName, ct: r.catName, sup: r.supplierName,
+    st: cut(r.storeName, 24), sk: r.skuCode, d: cut(r.skuDesc, 34),
+    dp: cut(r.deptName, 18), ct: cut(r.catName, 18), sup: cut(r.supplierName, 22),
     stat: r.status, oh: r.onHand,
     dc: r.skuDaysCover != null ? Math.round(r.skuDaysCover) : null,
     ls: Math.round(r.lostSalesPerWeek || 0),
@@ -3356,14 +3362,33 @@ function buildAiContext(rows, filters) {
     ws: +(r.wkAveNet || 0).toFixed(1),
     po: +r.poOrderGR || 0, trf: +r.trfOrderGR || 0
   });
-  const N = 200;
-  const topCritical = [...rows].filter(r => r.lostSalesPerWeek > 0).sort((a, b) => b.lostSalesPerWeek - a.lostSalesPerWeek).slice(0, N).map(compact);
-  const topOOS = [...rows].filter(r => r.isOutOfStock && r.merchGro !== 'P').sort((a, b) => (b.wkAveNet || 0) * (b.avgCost || 0) - (a.wkAveNet || 0) * (a.avgCost || 0)).slice(0, N).map(compact);
-  const topOverstock = [...rows].filter(r => r.isOverstock).sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
-  const topAging = [...rows].filter(r => r.status === 'Aging').sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
-  const topDead = [...rows].filter(r => r.isDeadStock).sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
-  const topBlack = [...rows].filter(r => r.status === 'Black').sort((a, b) => (b.onHandValue || 0) - (a.onHandValue || 0)).slice(0, N).map(compact);
-  const topNeg = [...rows].filter(r => r.onHand < 0).sort((a, b) => a.onHand - b.onHand).slice(0, N).map(compact);
+  const N = topCount;
+  // Single-pass bounded top-N. Avoids copying + fully sorting ~300k rows eight times,
+  // which blocked the event loop for tens of seconds on Railway's shared CPU.
+  function topN(filterFn, scoreFn, n) {
+    const heap = [];      // kept sorted descending by score, max length n
+    let cutoff = -Infinity;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (filterFn && !filterFn(r)) continue;
+      const sc = scoreFn(r);
+      if (heap.length === n && sc <= cutoff) continue;   // fast reject, the common case
+      // binary insert
+      let lo = 0, hi = heap.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (heap[mid].s > sc) lo = mid + 1; else hi = mid; }
+      heap.splice(lo, 0, { s: sc, r });
+      if (heap.length > n) heap.pop();
+      if (heap.length === n) cutoff = heap[heap.length - 1].s;
+    }
+    return heap.map(x => compact(x.r));
+  }
+  const topCritical  = topN(r => r.lostSalesPerWeek > 0, r => r.lostSalesPerWeek || 0, N);
+  const topOOS       = topN(r => r.isOutOfStock && r.merchGro !== 'P', r => (r.wkAveNet || 0) * (r.avgCost || 0), N);
+  const topOverstock = topN(r => r.isOverstock, r => r.onHandValue || 0, N);
+  const topAging     = topN(r => r.status === 'Aging', r => r.onHandValue || 0, N);
+  const topDead      = topN(r => r.isDeadStock, r => r.onHandValue || 0, N);
+  const topBlack     = topN(r => r.status === 'Black', r => r.onHandValue || 0, N);
+  const topNeg       = topN(r => r.onHand < 0, r => -(r.onHand || 0), N);
   const catGroups = {};
   for (const r of rows) {
     const key = (r.catName || 'UNCATEGORIZED') + '||' + (r.deptName || 'UNKNOWN');
@@ -3378,7 +3403,8 @@ function buildAiContext(rows, filters) {
   }
   const categories = Object.values(catGroups)
     .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk) }))
-    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue)
+    .slice(0, N);   // ~700 exist; sending all blew the context budget
   const supGroups = {};
   for (const r of rows) {
     const key = r.supplierName || 'UNKNOWN';
@@ -3394,8 +3420,9 @@ function buildAiContext(rows, filters) {
   }
   const suppliers = Object.values(supGroups)
     .map(g => ({ ...g, invValue: Math.round(g.invValue), wklySalesValue: Math.round(g.wklySalesValue), lostSalesWk: Math.round(g.lostSalesWk), po: Math.round(g.po) }))
-    .sort((a, b) => b.wklySalesValue - a.wklySalesValue);
-  const topSellers = [...rows].sort((a, b) => ((b.wkAveNet || 0) * (b.avgCost || 0)) - ((a.wkAveNet || 0) * (a.avgCost || 0))).slice(0, N).map(compact);
+    .sort((a, b) => b.wklySalesValue - a.wklySalesValue)
+    .slice(0, N);   // ~630 exist; sending all blew the context budget
+  const topSellers = topN(null, r => (r.wkAveNet || 0) * (r.avgCost || 0), N);
   return {
     filter: { area: areaLabel },
     snapshot: {
@@ -3429,6 +3456,8 @@ function askClaude(question, context, systemPrompt) {
       try { if (reqAi) reqAi.destroy(); } catch(e){}
       done(reject, new Error('Claude API wall-clock timeout at 40s (may be network/DNS issue reaching api.anthropic.com from Railway)'));
     }, 40000);
+    const ctxBytes = JSON.stringify(context).length;
+    console.log('[askClaude] context ' + Math.round(ctxBytes / 1024) + 'KB (~' + Math.round(ctxBytes / 3.5 / 1000) + 'k tokens)');
     const body = JSON.stringify({
       model: ANTHROPIC_MODEL,
       max_tokens: 1500,
@@ -3518,9 +3547,13 @@ app.post('/api/ask', async (req, res) => {
     const question = (req.body && req.body.question || '').toString().slice(0, 500).trim();
     if (!question) return res.status(400).json({ error: 'Empty question' });
     const filters = resolveFilters(req);
+    const tFilter = Date.now();
     const rows = applyFilters(cache.rows, filters);
-    const context = buildAiContext(rows, filters);
+    const tCtx = Date.now();
+    const context = getAiContext(rows, filters, 'full');
+    const tApi = Date.now();
     const { answer, usage } = await askClaude(question, context, SYSTEM_ASK);
+    console.log('[ask] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms api=' + (Date.now() - tApi) + 'ms');
     res.json({ answer, usage, area: filters.area || null });
   } catch (e) {
     console.error('[ask]', e.message);
@@ -3531,12 +3564,12 @@ app.post('/api/ask', async (req, res) => {
 // Slim context for Morning Brief — highlights only, ~5-8k tokens instead of ~35k.
 // Faster response (~3-5s instead of ~15-20s) and cheaper. Brief is a summary, not a deep query.
 function buildAiBriefContext(rows, filters) {
-  const full = buildAiContext(rows, filters);
+  const full = buildAiContext(rows, filters, 30);   // build small lists directly, don't build 200 then slice
   return {
     filter: full.filter,
     snapshot: full.snapshot,
     stores: full.stores,           // per-store rollup (31 rows)
-    topCriticalSKUs: full.topCriticalSKUs.slice(0, 30),  // just top 30
+    topCriticalSKUs: full.topCriticalSKUs,
     topOOS: full.topOOS.slice(0, 20),
     topAging: full.topAging.slice(0, 20),
     categories: full.categories.slice(0, 15),
@@ -3546,13 +3579,31 @@ function buildAiBriefContext(rows, filters) {
   };
 }
 
+// Memoize built contexts — repeated questions against the same data reuse the work.
+// Invalidated whenever the Drive cache refreshes.
+const aiCtxMemo = { key: null, full: null, brief: null };
+function getAiContext(rows, filters, kind) {
+  const key = (filters.area || 'ALL') + '|' + (cache.lastRefresh || '') + '|' + rows.length;
+  if (aiCtxMemo.key !== key) { aiCtxMemo.key = key; aiCtxMemo.full = null; aiCtxMemo.brief = null; }
+  if (kind === 'brief') {
+    if (!aiCtxMemo.brief) aiCtxMemo.brief = buildAiBriefContext(rows, filters);
+    return aiCtxMemo.brief;
+  }
+  if (!aiCtxMemo.full) aiCtxMemo.full = buildAiContext(rows, filters);
+  return aiCtxMemo.full;
+}
+
 app.get('/api/morning-brief', async (req, res) => {
   try {
     if (!requireAdminForAI(req, res)) return;
     if (!cache.ready) return res.status(503).json({ error: 'Cache not ready' });
     const filters = resolveFilters(req);
+    const tFilter = Date.now();
     const rows = applyFilters(cache.rows, filters);
-    const context = buildAiBriefContext(rows, filters);
+    const tCtx = Date.now();
+    const context = getAiContext(rows, filters, 'brief');
+    const tApi = Date.now();
+    console.log('[morning-brief] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms');
     const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
     const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
     res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
@@ -8323,21 +8374,44 @@ function openAskDialog() {
   setTimeout(() => document.getElementById('ai-ask-input').focus(), 100);
 }
 function closeAskDialog() { document.getElementById('ai-ask-dialog').style.display = 'none'; }
+let askAbort = null;
+let askTimer = null;
 function submitAskQuestion() {
   const input = document.getElementById('ai-ask-input');
   const answerEl = document.getElementById('ai-ask-answer');
   const q = input.value.trim();
   if (!q) return;
-  answerEl.innerHTML = '<div style="color:var(--text2);">⏳ Thinking...</div>';
+  // Cancel any previous in-flight question
+  if (askAbort) { try { askAbort.abort(); } catch(e){} }
+  if (askTimer) { clearInterval(askTimer); askTimer = null; }
+  askAbort = new AbortController();
+  const t0 = Date.now();
+  answerEl.innerHTML = '<div style="color:var(--text2);">⏳ Thinking... (0s)</div>';
+  askTimer = setInterval(() => {
+    const s = Math.floor((Date.now() - t0) / 1000);
+    answerEl.innerHTML = '<div style="color:var(--text2);">⏳ Thinking... (' + s + 's)</div>';
+  }, 1000);
+  const askTimeoutId = setTimeout(() => {
+    if (askAbort) { try { askAbort.abort(); } catch(e){} }
+    clearInterval(askTimer); askTimer = null;
+    answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ Timed out after 60s. Check Railway logs for the [ask] error line.</div>';
+  }, 60000);
   fetch('/api/ask' + tokenQS('?'), {
     method: 'POST',
+    signal: askAbort.signal,
     headers: { 'content-type': 'application/json', 'x-auth-token': authToken || '' },
     body: JSON.stringify({ question: q, area: (activeFilters && activeFilters.area) || null, token: authToken || '' })
   }).then(r => r.json()).then(d => {
+    clearTimeout(askTimeoutId); clearInterval(askTimer); askTimer = null; askAbort = null;
     if (d.error) { answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + d.error + '</div>'; return; }
-    const scope = d.area ? '<div style="font-size:10px;color:var(--text2);margin-bottom:6px;">Scope: ' + d.area + '</div>' : '';
+    const secs = Math.floor((Date.now() - t0) / 1000);
+    const scope = '<div style="font-size:10px;color:var(--text2);margin-bottom:6px;">' + (d.area ? 'Scope: ' + d.area + ' &middot; ' : '') + secs + 's</div>';
     answerEl.innerHTML = scope + '<div style="white-space:pre-wrap;line-height:1.6;">' + esc(d.answer) + '</div>';
-  }).catch(e => { answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + e.message + '</div>'; });
+  }).catch(e => {
+    clearTimeout(askTimeoutId); clearInterval(askTimer); askTimer = null;
+    if (e.name === 'AbortError') return;
+    answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ ' + e.message + '</div>';
+  });
 }
 function askQuick(q) {
   document.getElementById('ai-ask-input').value = q;
