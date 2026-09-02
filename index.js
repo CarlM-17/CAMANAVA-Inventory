@@ -42,7 +42,7 @@ const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').
 const AI_TOP_N = parseInt(process.env.AI_TOP_N || '25', 10);
 // Bump this string whenever you deploy. /api/version reports it so you can confirm
 // which build Railway is actually serving (stale deploys are otherwise invisible).
-const BUILD_STAMP = 'ai-v6-attrfix';
+const BUILD_STAMP = 'ai-v7-retry';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -3457,7 +3457,36 @@ function buildAiContext(rows, filters, topCount) {
   };
 }
 
-function askClaude(question, context, systemPrompt) {
+// Transient upstream failures worth retrying: 529 overloaded, 429 rate limit,
+// 500/502/503 server errors, and network resets. Anthropic returns 529 fairly often
+// at peak times; a short backoff almost always clears it.
+function isTransient(err) {
+  const m = (err && err.message) || '';
+  return /overloaded|rate_limit|529|429|500|502|503|ECONNRESET|ETIMEDOUT|socket hang up|fetch failed/i.test(m);
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function askClaude(question, context, systemPrompt) {
+  const MAX_TRIES = 3;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+    try {
+      return await askClaudeOnce(question, context, systemPrompt);
+    } catch (e) {
+      lastErr = e;
+      if (attempt === MAX_TRIES || !isTransient(e)) break;
+      const wait = 700 * Math.pow(2, attempt - 1);   // 700ms, 1.4s
+      console.warn('[askClaude] attempt ' + attempt + ' failed (' + e.message + ') - retrying in ' + wait + 'ms');
+      await sleep(wait);
+    }
+  }
+  if (isTransient(lastErr)) {
+    throw new Error('Claude is busy right now (' + lastErr.message + '). Tried ' + MAX_TRIES + ' times - tap Send again in a moment.');
+  }
+  throw lastErr;
+}
+
+function askClaudeOnce(question, context, systemPrompt) {
   if (!ANTHROPIC_API_KEY) return Promise.reject(new Error('ANTHROPIC_API_KEY env var is empty on Railway.'));
   const ctxBytes = JSON.stringify(context).length;
   console.log('[askClaude] POST ' + Math.round(ctxBytes / 1024) + 'KB (~' + Math.round(ctxBytes / 3500) + 'k tokens) model=' + ANTHROPIC_MODEL);
@@ -3474,7 +3503,7 @@ function askClaude(question, context, systemPrompt) {
   // while tiny ones succeeded; undici streams the body correctly.
   const t0 = Date.now();
   const ac = new AbortController();
-  const killer = setTimeout(() => ac.abort(), 30000);
+  const killer = setTimeout(() => ac.abort(), 15000);   // per-attempt; retries wrap this
   return fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     signal: ac.signal,
@@ -3491,13 +3520,13 @@ function askClaude(question, context, systemPrompt) {
     let parsed;
     try { parsed = JSON.parse(txt); }
     catch (e) { throw new Error('Non-JSON from Claude (HTTP ' + r.status + '): ' + txt.slice(0, 150)); }
-    if (parsed.error) throw new Error('Claude API ' + (parsed.error.type || '') + ': ' + (parsed.error.message || 'unknown'));
+    if (parsed.error) throw new Error('Claude API ' + r.status + ' ' + (parsed.error.type || '') + ': ' + (parsed.error.message || 'unknown'));
     if (!r.ok) throw new Error('Claude API HTTP ' + r.status);
     const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
     return { answer: text, usage: parsed.usage };
   }).catch((e) => {
     clearTimeout(killer);
-    if (e.name === 'AbortError') throw new Error('Claude API aborted at 30s (' + Math.round(ctxBytes/1024) + 'KB payload)');
+    if (e.name === 'AbortError') throw new Error('Claude API attempt timed out at 15s (' + Math.round(ctxBytes/1024) + 'KB payload)');
     throw new Error(e.message + (e.cause ? ' | cause: ' + (e.cause.code || e.cause.message) : ''));
   });
 }
@@ -3595,7 +3624,7 @@ app.post('/api/ask', async (req, res) => {
     const tCtx = Date.now();
     const context = getAiContext(rows, filters, 'full');
     const tApi = Date.now();
-    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_ASK), 35000, 'ask');
+    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_ASK), 55000, 'ask');
     console.log('[ask] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms api=' + (Date.now() - tApi) + 'ms');
     res.json({ answer, usage, area: filters.area || null });
   } catch (e) {
@@ -3665,7 +3694,7 @@ app.get('/api/morning-brief', async (req, res) => {
     const tApi = Date.now();
     console.log('[morning-brief] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms');
     const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
-    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_BRIEF), 35000, 'morning-brief');
+    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_BRIEF), 55000, 'morning-brief');
     res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
   } catch (e) {
     console.error('[morning-brief]', e.message);
