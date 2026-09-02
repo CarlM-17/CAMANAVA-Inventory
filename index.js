@@ -40,6 +40,9 @@ const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').
 // 50 keeps the payload near ~30k tokens => ~5-8s replies. Raising this makes answers
 // broader but slower and more expensive; 200 pushed it to ~155k tokens and timed out.
 const AI_TOP_N = parseInt(process.env.AI_TOP_N || '50', 10);
+// Bump this string whenever you deploy. /api/version reports it so you can confirm
+// which build Railway is actually serving (stale deploys are otherwise invisible).
+const BUILD_STAMP = 'ai-v3-2026-08-31';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -3510,6 +3513,20 @@ function requireAdminForAI(req, res) {
   return s;
 }
 
+// Public build stamp — no secrets, just booleans. Lets you confirm from a phone browser
+// which build Railway is serving, without a token or devtools.
+app.get('/api/version', (req, res) => {
+  res.json({
+    build: BUILD_STAMP,
+    aiTopN: AI_TOP_N,
+    apiKeySet: !!ANTHROPIC_API_KEY,
+    model: ANTHROPIC_MODEL,
+    cacheReady: !!cache.ready,
+    rows: (cache.rows && cache.rows.length) || 0,
+    serverTime: new Date().toISOString()
+  });
+});
+
 // Diagnostic: reports whether the API key is configured and pings Claude with a tiny "hi" call.
 // Owner-only so it doesn't leak config details.
 app.get('/api/ai-status', async (req, res) => {
@@ -4381,7 +4398,10 @@ canvas { max-height:260px; }
       <!-- AI MORNING BRIEF -->
       <div class="section" id="ai-brief-card" style="margin-bottom:8px;background:linear-gradient(135deg,rgba(88,166,255,0.08),rgba(88,166,255,0.02));border:1px solid rgba(88,166,255,0.25);">
         <div class="section-header" style="padding-bottom:6px;">
-          <div class="section-title" style="font-size:14px;">🤖 AI Morning Brief <span id="ai-brief-time" style="font-size:10px;color:var(--text2);font-weight:400;margin-left:6px;"></span></div>
+          <div class="section-title" style="font-size:14px;">🤖 AI Morning Brief
+            <span id="ai-brief-time" style="font-size:10px;color:var(--text2);font-weight:400;margin-left:6px;"></span>
+            <span id="ai-brief-build" style="font-size:9px;color:var(--text2);font-weight:400;margin-left:6px;opacity:0.8;"></span>
+          </div>
           <div class="section-actions">
             <button class="btn btn-sm" id="ai-brief-refresh" onclick="loadMorningBrief(true)" title="Regenerate">↻ Refresh</button>
           </div>
@@ -8424,8 +8444,20 @@ function clearAskInput() {
   document.getElementById('ai-ask-answer').innerHTML = '<div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div>';
 }
 
+// Show which build Railway is actually serving, right on the brief card.
+function showBuildStamp() {
+  const el = document.getElementById('ai-brief-build');
+  if (!el) return;
+  fetch('/api/version').then(r => r.json()).then(v => {
+    if (!v || !v.build) { el.textContent = 'build: OLD (no /api/version)'; el.style.color = 'var(--red-light)'; return; }
+    el.textContent = 'build ' + v.build + ' · N=' + v.aiTopN + ' · key ' + (v.apiKeySet ? 'set' : 'MISSING');
+    el.style.color = v.apiKeySet ? 'var(--text2)' : 'var(--red-light)';
+  }).catch(() => { el.textContent = 'build: OLD (no /api/version)'; el.style.color = 'var(--red-light)'; });
+}
+
 // Auto-load brief on first Overview show — admin only, after login is settled
 document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(showBuildStamp, 1200);
   setTimeout(() => {
     if (currentUser && currentUser.aiAllowed && document.getElementById('ai-brief-body')) {
       loadMorningBrief(false);
