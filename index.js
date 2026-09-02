@@ -42,7 +42,7 @@ const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').
 const AI_TOP_N = parseInt(process.env.AI_TOP_N || '25', 10);
 // Bump this string whenever you deploy. /api/version reports it so you can confirm
 // which build Railway is actually serving (stale deploys are otherwise invisible).
-const BUILD_STAMP = 'ai-v4-prewarm';
+const BUILD_STAMP = 'ai-v5-fetch';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -3458,53 +3458,47 @@ function buildAiContext(rows, filters, topCount) {
 }
 
 function askClaude(question, context, systemPrompt) {
-  return new Promise((resolve, reject) => {
-    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY env var is empty on Railway. Add it in Railway → Variables → ANTHROPIC_API_KEY = sk-ant-... and redeploy.'));
-    let settled = false;
-    const done = (fn, arg) => { if (!settled) { settled = true; fn(arg); } };
-    // Wall-clock timeout — fires even if DNS/connection hangs
-    const wallTimeout = setTimeout(() => {
-      try { if (reqAi) reqAi.destroy(); } catch(e){}
-      done(reject, new Error('Claude API wall-clock timeout at 40s (may be network/DNS issue reaching api.anthropic.com from Railway)'));
-    }, 40000);
-    const ctxBytes = JSON.stringify(context).length;
-    console.log('[askClaude] context ' + Math.round(ctxBytes / 1024) + 'KB (~' + Math.round(ctxBytes / 3.5 / 1000) + 'k tokens)');
-    const body = JSON.stringify({
-      model: ANTHROPIC_MODEL,
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{
-        role: 'user',
-        content: 'Here is the current inventory snapshot (JSON):\n\`\`\`json\n' + JSON.stringify(context, null, 0) + '\n\`\`\`\n\nQuestion: ' + question
-      }]
-    });
-    const reqAi = https.request({
-      hostname: 'api.anthropic.com', port: 443, path: '/v1/messages', method: 'POST',
-      family: 4,
-      timeout: 45000,  // 45s socket idle timeout
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-length': Buffer.byteLength(body)
-      }
-    }, (r) => {
-      let data = '';
-      r.on('data', c => data += c);
-      r.on('end', () => {
-        clearTimeout(wallTimeout);
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) return done(reject, new Error('Claude API error: ' + (parsed.error.message || parsed.error.type || 'unknown')));
-          const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
-          done(resolve, { answer: text, usage: parsed.usage });
-        } catch (e) { done(reject, new Error('Bad response from Claude API: ' + (data.slice(0,120) || e.message))); }
-      });
-    });
-    reqAi.on('timeout', () => { clearTimeout(wallTimeout); reqAi.destroy(); done(reject, new Error('Claude API socket idle 45s')); });
-    reqAi.on('error', (e) => { clearTimeout(wallTimeout); done(reject, e); });
-    reqAi.write(body);
-    reqAi.end();
+  if (!ANTHROPIC_API_KEY) return Promise.reject(new Error('ANTHROPIC_API_KEY env var is empty on Railway.'));
+  const ctxBytes = JSON.stringify(context).length;
+  console.log('[askClaude] POST ' + Math.round(ctxBytes / 1024) + 'KB (~' + Math.round(ctxBytes / 3500) + 'k tokens) model=' + ANTHROPIC_MODEL);
+  const body = JSON.stringify({
+    model: ANTHROPIC_MODEL,
+    max_tokens: 1500,
+    system: systemPrompt,
+    messages: [{
+      role: 'user',
+      content: 'Here is the current inventory snapshot (JSON):\n' + JSON.stringify(context) + '\n\nQuestion: ' + question
+    }]
+  });
+  // Use global fetch (undici). Raw https.request hung on large POST bodies from Railway
+  // while tiny ones succeeded; undici streams the body correctly.
+  const t0 = Date.now();
+  const ac = new AbortController();
+  const killer = setTimeout(() => ac.abort(), 30000);
+  return fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    signal: ac.signal,
+    headers: {
+      'content-type': 'application/json',
+      'x-api-key': ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    },
+    body
+  }).then(async (r) => {
+    clearTimeout(killer);
+    const txt = await r.text();
+    console.log('[askClaude] HTTP ' + r.status + ' in ' + (Date.now() - t0) + 'ms, ' + txt.length + 'B');
+    let parsed;
+    try { parsed = JSON.parse(txt); }
+    catch (e) { throw new Error('Non-JSON from Claude (HTTP ' + r.status + '): ' + txt.slice(0, 150)); }
+    if (parsed.error) throw new Error('Claude API ' + (parsed.error.type || '') + ': ' + (parsed.error.message || 'unknown'));
+    if (!r.ok) throw new Error('Claude API HTTP ' + r.status);
+    const text = (parsed.content && parsed.content[0] && parsed.content[0].text) || '';
+    return { answer: text, usage: parsed.usage };
+  }).catch((e) => {
+    clearTimeout(killer);
+    if (e.name === 'AbortError') throw new Error('Claude API aborted at 30s (' + Math.round(ctxBytes/1024) + 'KB payload)');
+    throw new Error(e.message + (e.cause ? ' | cause: ' + (e.cause.code || e.cause.message) : ''));
   });
 }
 
