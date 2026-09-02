@@ -42,7 +42,7 @@ const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').
 const AI_TOP_N = parseInt(process.env.AI_TOP_N || '25', 10);
 // Bump this string whenever you deploy. /api/version reports it so you can confirm
 // which build Railway is actually serving (stale deploys are otherwise invisible).
-const BUILD_STAMP = 'ai-v5-fetch';
+const BUILD_STAMP = 'ai-v6-attrfix';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -8417,7 +8417,7 @@ function loadMorningBrief(force) {
     body.textContent = '⚠️ Timed out after 60s. Tap Refresh to retry, or check ANTHROPIC_API_KEY on Railway.';
   }, HARD_TIMEOUT);
   const areaQS = (activeFilters && activeFilters.area) ? '&area=' + encodeURIComponent(activeFilters.area) : '';
-  const url = '/api/morning-brief' + tokenQS('?') + areaQS;
+  const url = '/api/morning-brief' + tokenParam('?') + areaQS;
   fetch(url, { signal: briefAbort.signal }).then(r => r.json()).then(d => {
     clearTimeout(timeoutId);
     clearInterval(briefTimer); briefTimer = null; briefAbort = null;
@@ -8459,7 +8459,7 @@ function submitAskQuestion() {
     clearInterval(askTimer); askTimer = null;
     answerEl.innerHTML = '<div style="color:var(--red-light);">⚠️ Timed out after 60s. Check Railway logs for the [ask] error line.</div>';
   }, 60000);
-  fetch('/api/ask' + tokenQS('?'), {
+  fetch('/api/ask' + tokenParam('?'), {
     method: 'POST',
     signal: askAbort.signal,
     headers: { 'content-type': 'application/json', 'x-auth-token': authToken || '' },
@@ -8531,15 +8531,15 @@ document.addEventListener('DOMContentLoaded', () => {
   <div id="ai-ask-sheet">
     <h3>🤖 Ask AI <button class="btn btn-sm" onclick="closeAskDialog()">✕</button></h3>
     <div style="display:flex;gap:6px;">
-      <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key===\\'Enter\\')submitAskQuestion()" style="flex:1;" />
+      <input id="ai-ask-input" type="text" placeholder="e.g., which stores are worst today?" onkeydown="if(event.key==='Enter')submitAskQuestion()" style="flex:1;" />
       <button class="btn btn-sm" onclick="clearAskInput()" title="Clear message" style="padding:0 12px;background:var(--bg2,#161b22);color:var(--text2,#8b949e);border:1px solid var(--border,#30363d);font-size:16px;border-radius:8px;">✕</button>
       <button class="btn btn-sm" onclick="submitAskQuestion()" style="padding:0 18px;background:linear-gradient(135deg,#58a6ff,#2f6feb);color:white;border:none;font-weight:600;font-size:14px;border-radius:8px;">Send</button>
     </div>
     <div class="ai-quick-chips">
-      <button onclick="askQuick(\\'Which stores are worst today?\\')">Worst stores</button>
-      <button onclick="askQuick(\\'Anything urgent I should act on?\\')">Anything urgent?</button>
-      <button onclick="askQuick(\\'Summarize inventory status for my boss.\\')">Boss summary</button>
-      <button onclick="askQuick(\\'Which SKUs need emergency reorder?\\')">Emergency reorders</button>
+      <button onclick="askQuick('Which stores are worst today?')">Worst stores</button>
+      <button onclick="askQuick('Anything urgent I should act on?')">Anything urgent?</button>
+      <button onclick="askQuick('Summarize inventory status for my boss.')">Boss summary</button>
+      <button onclick="askQuick('Which SKUs need emergency reorder?')">Emergency reorders</button>
     </div>
     <div id="ai-ask-answer"><div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div></div>
   </div>
