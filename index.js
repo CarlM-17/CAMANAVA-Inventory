@@ -39,10 +39,10 @@ const AI_ALLOWED_USERS = (process.env.AI_ALLOWED_USERS || 'carlm17').split(',').
 // How many rows per list (and per category/supplier rollup) go into the AI snapshot.
 // 50 keeps the payload near ~30k tokens => ~5-8s replies. Raising this makes answers
 // broader but slower and more expensive; 200 pushed it to ~155k tokens and timed out.
-const AI_TOP_N = parseInt(process.env.AI_TOP_N || '50', 10);
+const AI_TOP_N = parseInt(process.env.AI_TOP_N || '25', 10);
 // Bump this string whenever you deploy. /api/version reports it so you can confirm
 // which build Railway is actually serving (stale deploys are otherwise invisible).
-const BUILD_STAMP = 'ai-v3-2026-08-31';
+const BUILD_STAMP = 'ai-v4-prewarm';
 
 // ─── IN-MEMORY CACHE ──────────────────────────────────────────────────────────
 let cache = {
@@ -1219,6 +1219,14 @@ async function refreshData(force = false) {
 
     // Load action plans in the background (don't block cache-ready signal)
     loadActionPlans().catch(e => console.warn('[ActionPlans] Background load failed:', e.message));
+
+    // Pre-build the AI snapshot now, while we're already off the request path.
+    // Doing this per-request blocked the event loop for >60s on 213k rows, which
+    // stopped even the timeout timers from firing.
+    setImmediate(() => {
+      try { warmAiContext(); }
+      catch (e) { console.warn('[AI] warm failed:', e.message); }
+    });
   } catch (err) {
     console.error('[Cache] Refresh error:', err.message);
     cache.error = err.message;
@@ -3504,6 +3512,14 @@ const SYSTEM_ASK = 'You are the inventory analyst for CAMANAVA, a chain of 31 st
 
 const SYSTEM_BRIEF = 'You are the inventory analyst for CAMANAVA, a chain of 31 stores. Write a MORNING BRIEF for the owner to read on their phone.\n\nFormat - exactly 4 to 6 short lines, each starting with an emoji:\n[RED] for critical/urgent issues\n[YEL] for medium-priority watch items\n[GRN] for good news or incoming relief\n[WARN] for anomalies or dead pipelines\n\nEach line: one specific fact with numbers + store name(s). Under 20 words per line. No fluff, no preamble, no closing summary.';
 
+// Hard deadline so a slow/hung upstream always produces an error the UI can show.
+function withDeadline(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, rej) => setTimeout(() => rej(new Error(label + ' exceeded ' + (ms / 1000) + 's deadline')), ms))
+  ]);
+}
+
 function requireAdminForAI(req, res) {
   const token = req.query.token || (req.headers['x-auth-token']) || (req.body && req.body.token) || '';
   const s = sessions[token];
@@ -3569,7 +3585,7 @@ app.post('/api/ask', async (req, res) => {
     const tCtx = Date.now();
     const context = getAiContext(rows, filters, 'full');
     const tApi = Date.now();
-    const { answer, usage } = await askClaude(question, context, SYSTEM_ASK);
+    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_ASK), 35000, 'ask');
     console.log('[ask] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms api=' + (Date.now() - tApi) + 'ms');
     res.json({ answer, usage, area: filters.area || null });
   } catch (e) {
@@ -3581,7 +3597,7 @@ app.post('/api/ask', async (req, res) => {
 // Slim context for Morning Brief — highlights only, ~5-8k tokens instead of ~35k.
 // Faster response (~3-5s instead of ~15-20s) and cheaper. Brief is a summary, not a deep query.
 function buildAiBriefContext(rows, filters) {
-  const full = buildAiContext(rows, filters, 30);   // build small lists directly, don't build 200 then slice
+  const full = buildAiContext(rows, filters, 15);   // build small lists directly, don't build big then slice
   return {
     filter: full.filter,
     snapshot: full.snapshot,
@@ -3598,16 +3614,33 @@ function buildAiBriefContext(rows, filters) {
 
 // Memoize built contexts — repeated questions against the same data reuse the work.
 // Invalidated whenever the Drive cache refreshes.
-const aiCtxMemo = { key: null, full: null, brief: null };
+const aiCtxMemo = new Map();   // "AREA|lastRefresh|kind" -> context
+function aiKey(filters, kind) { return (filters.area || 'ALL') + '|' + (cache.lastRefresh || '') + '|' + kind; }
+
+// Called once per cache refresh, off the request path.
+function warmAiContext() {
+  const t0 = Date.now();
+  aiCtxMemo.clear();
+  const filters = {};
+  const rows = cache.rows;
+  aiCtxMemo.set(aiKey(filters, 'full'), buildAiContext(rows, filters));
+  aiCtxMemo.set(aiKey(filters, 'brief'), buildAiBriefContext(rows, filters));
+  const bytes = JSON.stringify(aiCtxMemo.get(aiKey(filters, 'full'))).length;
+  console.log('[AI] context warmed in ' + (Date.now() - t0) + 'ms for ' + rows.length +
+              ' rows (' + Math.round(bytes / 1024) + 'KB, ~' + Math.round(bytes / 3500) + 'k tokens)');
+}
+
 function getAiContext(rows, filters, kind) {
-  const key = (filters.area || 'ALL') + '|' + (cache.lastRefresh || '') + '|' + rows.length;
-  if (aiCtxMemo.key !== key) { aiCtxMemo.key = key; aiCtxMemo.full = null; aiCtxMemo.brief = null; }
-  if (kind === 'brief') {
-    if (!aiCtxMemo.brief) aiCtxMemo.brief = buildAiBriefContext(rows, filters);
-    return aiCtxMemo.brief;
-  }
-  if (!aiCtxMemo.full) aiCtxMemo.full = buildAiContext(rows, filters);
-  return aiCtxMemo.full;
+  const key = aiKey(filters, kind);
+  let ctx = aiCtxMemo.get(key);
+  if (ctx) return ctx;
+  // Not prewarmed (an area-filtered request, or first call before warm finished).
+  const t0 = Date.now();
+  ctx = kind === 'brief' ? buildAiBriefContext(rows, filters) : buildAiContext(rows, filters);
+  console.log('[AI] built ' + kind + ' context on demand in ' + (Date.now() - t0) + 'ms (' + rows.length + ' rows)');
+  if (aiCtxMemo.size > 12) aiCtxMemo.clear();
+  aiCtxMemo.set(key, ctx);
+  return ctx;
 }
 
 app.get('/api/morning-brief', async (req, res) => {
@@ -3622,7 +3655,7 @@ app.get('/api/morning-brief', async (req, res) => {
     const tApi = Date.now();
     console.log('[morning-brief] rows=' + rows.length + ' filter=' + (tCtx - tFilter) + 'ms ctx=' + (tApi - tCtx) + 'ms');
     const question = 'Write the morning brief for today. Focus on what changed, what needs attention, and any incoming relief. Rank by lost-sales impact.';
-    const { answer, usage } = await askClaude(question, context, SYSTEM_BRIEF);
+    const { answer, usage } = await withDeadline(askClaude(question, context, SYSTEM_BRIEF), 35000, 'morning-brief');
     res.json({ answer, usage, area: filters.area || null, generatedAt: new Date().toISOString() });
   } catch (e) {
     console.error('[morning-brief]', e.message);
