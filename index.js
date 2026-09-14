@@ -5154,7 +5154,25 @@ canvas { max-height:260px; }
           .abc-mix { display:flex; height:10px; width:120px; border-radius:5px; overflow:hidden; background:var(--bg2); }
           .abc-mix span { display:block; height:100%; }
           #abcstore-table td.num, #abcstore-table th.num { text-align:right; }
-          #abcstore-table tr.abc-total td { font-weight:700; border-top:2px solid var(--border); background:var(--bg2); }
+          #abcstore-table tr.abc-total td { font-weight:700; border-top:2px solid var(--border); }
+          /* Per-classification color bands: thick left border starts each group, tint fills it */
+          #abcstore-table .g-t { background:rgba(31,111,235,0.07); }
+          #abcstore-table .g-a { background:rgba(46,160,67,0.09); }
+          #abcstore-table .g-b { background:rgba(210,153,34,0.10); }
+          #abcstore-table .g-c { background:rgba(218,54,51,0.08); }
+          #abcstore-table .g-t.g-start { border-left:3px solid var(--blue); }
+          #abcstore-table .g-a.g-start { border-left:3px solid var(--green); }
+          #abcstore-table .g-b.g-start { border-left:3px solid var(--yellow); }
+          #abcstore-table .g-c.g-start { border-left:3px solid var(--red); }
+          #abcstore-table .g-mix { border-left:3px solid var(--border); }
+          #abcstore-table thead tr:first-child th.g-t { color:var(--blue); border-top:3px solid var(--blue); }
+          #abcstore-table thead tr:first-child th.g-a { color:var(--green); border-top:3px solid var(--green); }
+          #abcstore-table thead tr:first-child th.g-b { color:var(--yellow); border-top:3px solid var(--yellow); }
+          #abcstore-table thead tr:first-child th.g-c { color:var(--red); border-top:3px solid var(--red); }
+          #abcstore-table tr.abc-total td.g-t { background:rgba(31,111,235,0.16); }
+          #abcstore-table tr.abc-total td.g-a { background:rgba(46,160,67,0.18); }
+          #abcstore-table tr.abc-total td.g-b { background:rgba(210,153,34,0.20); }
+          #abcstore-table tr.abc-total td.g-c { background:rgba(218,54,51,0.16); }
         </style>
         <div class="sku-subtabs">
           <div class="sku-subtab active" id="sku-subtab-btn-list" onclick="showSkuSubtab('list')">📋 SKU List</div>
@@ -5174,24 +5192,24 @@ canvas { max-height:260px; }
                 <tr>
                   <th rowspan="2" onclick="sortAbcStore('area')">Area</th>
                   <th rowspan="2" onclick="sortAbcStore('storeName')">Store</th>
-                  <th colspan="2" style="text-align:center;border-bottom:2px solid var(--blue);">Total</th>
-                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--green);">Class A</th>
-                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--yellow);">Class B</th>
-                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--red);">Class C</th>
-                  <th rowspan="2">Mix</th>
+                  <th colspan="2" class="g-t g-start" style="text-align:center;">Total</th>
+                  <th colspan="3" class="g-a g-start" style="text-align:center;">🅰 Class A</th>
+                  <th colspan="3" class="g-b g-start" style="text-align:center;">🅱 Class B</th>
+                  <th colspan="3" class="g-c g-start" style="text-align:center;">🅲 Class C</th>
+                  <th rowspan="2" class="g-mix">Mix</th>
                 </tr>
                 <tr>
-                  <th class="num" onclick="sortAbcStore('count')">SKUs</th>
-                  <th class="num" onclick="sortAbcStore('value')">Valuation</th>
-                  <th class="num" onclick="sortAbcStore('A.count')">SKUs</th>
-                  <th class="num" onclick="sortAbcStore('A.value')">Valuation</th>
-                  <th class="num" onclick="sortAbcStore('A.pct')">% Val</th>
-                  <th class="num" onclick="sortAbcStore('B.count')">SKUs</th>
-                  <th class="num" onclick="sortAbcStore('B.value')">Valuation</th>
-                  <th class="num" onclick="sortAbcStore('B.pct')">% Val</th>
-                  <th class="num" onclick="sortAbcStore('C.count')">SKUs</th>
-                  <th class="num" onclick="sortAbcStore('C.value')">Valuation</th>
-                  <th class="num" onclick="sortAbcStore('C.pct')">% Val</th>
+                  <th class="num g-t g-start" onclick="sortAbcStore('count')">SKUs</th>
+                  <th class="num g-t" onclick="sortAbcStore('value')">Valuation</th>
+                  <th class="num g-a g-start" onclick="sortAbcStore('A.count')">SKUs</th>
+                  <th class="num g-a" onclick="sortAbcStore('A.value')">Valuation</th>
+                  <th class="num g-a" onclick="sortAbcStore('A.pct')">% Val</th>
+                  <th class="num g-b g-start" onclick="sortAbcStore('B.count')">SKUs</th>
+                  <th class="num g-b" onclick="sortAbcStore('B.value')">Valuation</th>
+                  <th class="num g-b" onclick="sortAbcStore('B.pct')">% Val</th>
+                  <th class="num g-c g-start" onclick="sortAbcStore('C.count')">SKUs</th>
+                  <th class="num g-c" onclick="sortAbcStore('C.value')">Valuation</th>
+                  <th class="num g-c" onclick="sortAbcStore('C.pct')">% Val</th>
                 </tr>
               </thead>
               <tbody id="abcstore-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
@@ -7706,11 +7724,11 @@ function renderAbcStoreTable() {
     if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
     return String(av || '').localeCompare(String(bv || '')) * dir;
   });
-  const cell = (c) =>
-    '<td class="num mono">' + fmt(c.count) + '</td>' +
-    '<td class="num mono">₱' + fmtM(c.value) + '</td>' +
-    '<td class="num mono" style="font-weight:600;">' + fmtN(c.pct) + '%</td>';
-  const mix = (r) => '<td><div class="abc-mix" title="A ' + fmtN(r.A.pct) + '% · B ' + fmtN(r.B.pct) + '% · C ' + fmtN(r.C.pct) + '%">' +
+  const cell = (c, g) =>
+    '<td class="num mono ' + g + ' g-start">' + fmt(c.count) + '</td>' +
+    '<td class="num mono ' + g + '">₱' + fmtM(c.value) + '</td>' +
+    '<td class="num mono ' + g + '" style="font-weight:600;">' + fmtN(c.pct) + '%</td>';
+  const mix = (r) => '<td class="g-mix"><div class="abc-mix" title="A ' + fmtN(r.A.pct) + '% · B ' + fmtN(r.B.pct) + '% · C ' + fmtN(r.C.pct) + '%">' +
     '<span style="width:' + r.A.pct + '%;background:var(--green);"></span>' +
     '<span style="width:' + r.B.pct + '%;background:var(--yellow);"></span>' +
     '<span style="width:' + r.C.pct + '%;background:var(--red);"></span></div></td>';
@@ -7718,18 +7736,18 @@ function renderAbcStoreTable() {
     '<tr>' +
       '<td><span class="badge badge-blue">' + esc(r.area || '') + '</span></td>' +
       '<td>' + esc(r.storeName || r.storeNumber) + '</td>' +
-      '<td class="num mono">' + fmt(r.count) + '</td>' +
-      '<td class="num mono" style="color:var(--green-bright);">₱' + fmtM(r.value) + '</td>' +
-      cell(r.A) + cell(r.B) + cell(r.C) + mix(r) +
+      '<td class="num mono g-t g-start">' + fmt(r.count) + '</td>' +
+      '<td class="num mono g-t" style="color:var(--green-bright);">₱' + fmtM(r.value) + '</td>' +
+      cell(r.A, 'g-a') + cell(r.B, 'g-b') + cell(r.C, 'g-c') + mix(r) +
     '</tr>'
   ).join('');
   const t = abcStoreState.total;
   if (t && t.total) {
     html += '<tr class="abc-total">' +
       '<td colspan="2">TOTAL (' + rows.length + ' stores)</td>' +
-      '<td class="num mono">' + fmt(t.total.count) + '</td>' +
-      '<td class="num mono">₱' + fmtM(t.total.value) + '</td>' +
-      cell(t.A) + cell(t.B) + cell(t.C) + mix(t) +
+      '<td class="num mono g-t g-start">' + fmt(t.total.count) + '</td>' +
+      '<td class="num mono g-t">₱' + fmtM(t.total.value) + '</td>' +
+      cell(t.A, 'g-a') + cell(t.B, 'g-b') + cell(t.C, 'g-c') + mix(t) +
     '</tr>';
   }
   tbody.innerHTML = html;
