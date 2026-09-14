@@ -1889,19 +1889,34 @@ app.get('/api/skus-abc-summary', (req, res) => {
   const rows = applyFilters(cache.rows, filters);
   const agg = { A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
   let totalCount = 0, totalValue = 0;
+  // Per-store breakdown — same computation as the cards, grouped by store.
+  // % is of THAT store's total valuation (ABC is ranked per store).
+  const stores = {};
   for (const r of rows) {
     const cls = (r.abc || 'C').toUpperCase();
     const v = Number(r.onHandValue) || 0;
     if (agg[cls]) { agg[cls].count++; agg[cls].value += v; }
     totalCount++;
     totalValue += v;
+    const k = r.storeNumber;
+    if (!stores[k]) stores[k] = { area: r.area, storeNumber: r.storeNumber, storeName: r.storeName, count: 0, value: 0,
+      A: { count: 0, value: 0 }, B: { count: 0, value: 0 }, C: { count: 0, value: 0 } };
+    const g = stores[k];
+    g.count++; g.value += v;
+    if (g[cls]) { g[cls].count++; g[cls].value += v; }
   }
   const pct = (v) => totalValue > 0 ? +((v / totalValue) * 100).toFixed(2) : 0;
+  const byStore = Object.values(stores).map(g => {
+    const sp = (x) => g.value > 0 ? +((x / g.value) * 100).toFixed(2) : 0;
+    ['A', 'B', 'C'].forEach(c => { g[c].pct = sp(g[c].value); });
+    return g;
+  }).sort((a, b) => b.value - a.value);
   res.json({
     A: { ...agg.A, pct: pct(agg.A.value) },
     B: { ...agg.B, pct: pct(agg.B.value) },
     C: { ...agg.C, pct: pct(agg.C.value) },
-    total: { count: totalCount, value: totalValue }
+    total: { count: totalCount, value: totalValue },
+    byStore
   });
 });
 
@@ -5131,6 +5146,59 @@ canvas { max-height:260px; }
         </div>
         <!-- ABC Analysis KPI Cards — SKU count + valuation + % per class (respects area/store filters) -->
         <div class="kpi-grid" id="sku-abc-cards" style="margin-bottom:12px;"></div>
+        <!-- SUB-TABS -->
+        <style>
+          .sku-subtabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin-bottom:10px; }
+          .sku-subtab { padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; margin-bottom:-1px; user-select:none; }
+          .sku-subtab.active { color:var(--blue); border-bottom-color:var(--blue); }
+          .abc-mix { display:flex; height:10px; width:120px; border-radius:5px; overflow:hidden; background:var(--bg2); }
+          .abc-mix span { display:block; height:100%; }
+          #abcstore-table td.num, #abcstore-table th.num { text-align:right; }
+          #abcstore-table tr.abc-total td { font-weight:700; border-top:2px solid var(--border); background:var(--bg2); }
+        </style>
+        <div class="sku-subtabs">
+          <div class="sku-subtab active" id="sku-subtab-btn-list" onclick="showSkuSubtab('list')">📋 SKU List</div>
+          <div class="sku-subtab" id="sku-subtab-btn-abcstore" onclick="showSkuSubtab('abcstore')">🏪 ABC per Store</div>
+        </div>
+        <div id="sku-subtab-abcstore" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <div style="font-size:11px;color:var(--text2);">ABC is ranked <b>per store</b> by ADS. % = share of <b>that store's</b> total valuation. Respects Area/Store filters.</div>
+            <div style="display:flex;gap:6px;">
+              <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('abcstore-table',this.value)"/>
+              <button class="btn btn-sm" onclick="exportAbcStoreExcel()">⬇ Export Excel</button>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:600px;">
+            <table id="abcstore-table">
+              <thead>
+                <tr>
+                  <th rowspan="2" onclick="sortAbcStore('area')">Area</th>
+                  <th rowspan="2" onclick="sortAbcStore('storeName')">Store</th>
+                  <th colspan="2" style="text-align:center;border-bottom:2px solid var(--blue);">Total</th>
+                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--green);">Class A</th>
+                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--yellow);">Class B</th>
+                  <th colspan="3" style="text-align:center;border-bottom:2px solid var(--red);">Class C</th>
+                  <th rowspan="2">Mix</th>
+                </tr>
+                <tr>
+                  <th class="num" onclick="sortAbcStore('count')">SKUs</th>
+                  <th class="num" onclick="sortAbcStore('value')">Valuation</th>
+                  <th class="num" onclick="sortAbcStore('A.count')">SKUs</th>
+                  <th class="num" onclick="sortAbcStore('A.value')">Valuation</th>
+                  <th class="num" onclick="sortAbcStore('A.pct')">% Val</th>
+                  <th class="num" onclick="sortAbcStore('B.count')">SKUs</th>
+                  <th class="num" onclick="sortAbcStore('B.value')">Valuation</th>
+                  <th class="num" onclick="sortAbcStore('B.pct')">% Val</th>
+                  <th class="num" onclick="sortAbcStore('C.count')">SKUs</th>
+                  <th class="num" onclick="sortAbcStore('C.value')">Valuation</th>
+                  <th class="num" onclick="sortAbcStore('C.pct')">% Val</th>
+                </tr>
+              </thead>
+              <tbody id="abcstore-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="sku-subtab-list">
         <div class="table-wrap" style="max-height:600px;">
           <table id="skus-table">
             <thead><tr>
@@ -5162,6 +5230,7 @@ canvas { max-height:260px; }
           </table>
         </div>
         <div class="pagination" id="skus-pagination"></div>
+        </div><!-- /sku-subtab-list -->
       </div>
     </div>
 
@@ -7599,8 +7668,86 @@ async function loadSKUs(page) {
   // Render ABC KPI cards from summary
   try {
     const summary = await summaryRes.json();
-    if (summary && !summary.error) renderSkuAbcCards(summary);
+    if (summary && !summary.error) {
+      renderSkuAbcCards(summary);
+      abcStoreState.rows = summary.byStore || [];
+      abcStoreState.total = summary;
+      renderAbcStoreTable();
+    }
   } catch(e) { /* ignore — cards are optional */ }
+}
+
+// ─── ABC per Store sub-tab ───
+const abcStoreState = { rows: [], total: null, sortBy: 'value', sortDir: 'desc' };
+function showSkuSubtab(which) {
+  ['list', 'abcstore'].forEach(k => {
+    const pane = document.getElementById('sku-subtab-' + k);
+    const btn = document.getElementById('sku-subtab-btn-' + k);
+    if (pane) pane.style.display = (k === which) ? '' : 'none';
+    if (btn) btn.classList.toggle('active', k === which);
+  });
+}
+function abcGet(r, key) {
+  return key.split('.').reduce((o, p) => (o == null ? o : o[p]), r);
+}
+function sortAbcStore(key) {
+  if (abcStoreState.sortBy === key) abcStoreState.sortDir = abcStoreState.sortDir === 'asc' ? 'desc' : 'asc';
+  else { abcStoreState.sortBy = key; abcStoreState.sortDir = (key === 'area' || key === 'storeName') ? 'asc' : 'desc'; }
+  renderAbcStoreTable();
+}
+function renderAbcStoreTable() {
+  const tbody = document.getElementById('abcstore-body');
+  if (!tbody) return;
+  const rows = abcStoreState.rows.slice();
+  if (!rows.length) { tbody.innerHTML = '<tr><td colspan="14" class="empty">No data found</td></tr>'; return; }
+  const key = abcStoreState.sortBy, dir = abcStoreState.sortDir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = abcGet(a, key), bv = abcGet(b, key);
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av || '').localeCompare(String(bv || '')) * dir;
+  });
+  const cell = (c) =>
+    '<td class="num mono">' + fmt(c.count) + '</td>' +
+    '<td class="num mono">₱' + fmtM(c.value) + '</td>' +
+    '<td class="num mono" style="font-weight:600;">' + fmtN(c.pct) + '%</td>';
+  const mix = (r) => '<td><div class="abc-mix" title="A ' + fmtN(r.A.pct) + '% · B ' + fmtN(r.B.pct) + '% · C ' + fmtN(r.C.pct) + '%">' +
+    '<span style="width:' + r.A.pct + '%;background:var(--green);"></span>' +
+    '<span style="width:' + r.B.pct + '%;background:var(--yellow);"></span>' +
+    '<span style="width:' + r.C.pct + '%;background:var(--red);"></span></div></td>';
+  let html = rows.map(r =>
+    '<tr>' +
+      '<td><span class="badge badge-blue">' + esc(r.area || '') + '</span></td>' +
+      '<td>' + esc(r.storeName || r.storeNumber) + '</td>' +
+      '<td class="num mono">' + fmt(r.count) + '</td>' +
+      '<td class="num mono" style="color:var(--green-bright);">₱' + fmtM(r.value) + '</td>' +
+      cell(r.A) + cell(r.B) + cell(r.C) + mix(r) +
+    '</tr>'
+  ).join('');
+  const t = abcStoreState.total;
+  if (t && t.total) {
+    html += '<tr class="abc-total">' +
+      '<td colspan="2">TOTAL (' + rows.length + ' stores)</td>' +
+      '<td class="num mono">' + fmt(t.total.count) + '</td>' +
+      '<td class="num mono">₱' + fmtM(t.total.value) + '</td>' +
+      cell(t.A) + cell(t.B) + cell(t.C) + mix(t) +
+    '</tr>';
+  }
+  tbody.innerHTML = html;
+}
+function exportAbcStoreExcel() {
+  const rows = abcStoreState.rows;
+  if (!rows.length) return;
+  const head = ['Area','Store #','Store','Total SKUs','Total Valuation','A SKUs','A Valuation','A % Val','B SKUs','B Valuation','B % Val','C SKUs','C Valuation','C % Val'];
+  const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const line = (r) => [r.area, r.storeNumber, r.storeName, r.count, r.value.toFixed(2),
+    r.A.count, r.A.value.toFixed(2), r.A.pct, r.B.count, r.B.value.toFixed(2), r.B.pct,
+    r.C.count, r.C.value.toFixed(2), r.C.pct].map(q).join(',');
+  const csv = [head.map(q).join(',')].concat(rows.map(line)).join('\\r\\n');
+  const blob = new Blob(['\\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ABC_per_Store_' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 function renderSkuAbcCards(s) {
   const grid = document.getElementById('sku-abc-cards');
