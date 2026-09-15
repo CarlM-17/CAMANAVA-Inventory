@@ -1107,6 +1107,35 @@ async function retryNet(label, fn, maxAttempts = 3) {
   throw lastErr;
 }
 
+// ─── FAST USER LOAD ───────────────────────────────────────────────────────────
+// Users used to load only after the full InvData.csv download, so after every
+// Railway restart/wake every login got 503 "User data not loaded yet" until that
+// finished. This fetches just ListOfStores.xlsx first so sign-in works within seconds.
+let usersLoading = null;
+function loadUsersEarly() {
+  if (usersLoading) return usersLoading;
+  usersLoading = (async () => {
+    try {
+      if (!GOOGLE_CLIENT_EMAIL || !GOOGLE_PRIVATE_KEY || !GDRIVE_FOLDER_ID) return;
+      const t0 = Date.now();
+      const drive = await getDriveClient();
+      const f = await retryNet('findFile(' + STORES_FILE_NAME + ')', () => findFile(drive, STORES_FILE_NAME));
+      if (!f) { console.warn('[Users] early load: stores file not found'); return; }
+      const buf = await retryNet('download(' + STORES_FILE_NAME + ')', () => downloadFileBuffer(drive, f.id));
+      const users = parseUsersXLSX(buf);
+      if (Object.keys(users).length > 0 && Object.keys(cache.users).length === 0) {
+        cache.users = users;
+        console.log('[Users] early load ready in ' + (Date.now() - t0) + 'ms — sign-in available before inventory finishes');
+      }
+    } catch (e) {
+      console.warn('[Users] early load failed:', e.message);
+    } finally {
+      usersLoading = null;
+    }
+  })();
+  return usersLoading;
+}
+
 // ─── MAIN REFRESH FUNCTION ────────────────────────────────────────────────────
 async function refreshData(force = false) {
   if (cache.refreshing) {
@@ -1280,12 +1309,16 @@ function makeToken() {
 }
 
 app.post('/api/login', (req, res) => {
-  const { username, password } = req.body || {};
+  const { username } = req.body || {};
+  // Sheet passwords are trimmed on load; trim input too. Mobile keyboards/autofill
+  // often append a trailing space, which caused random "Invalid password" failures.
+  const password = ((req.body && req.body.password) || '').toString().trim();
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (Object.keys(cache.users).length === 0) {
-    return res.status(503).json({ error: 'User data not loaded yet. Please try again in a moment.' });
+    loadUsersEarly();   // kick a load if nothing is in flight
+    return res.status(503).json({ error: 'Server is starting up. Retrying...', retry: true });
   }
-  const user = cache.users[username.toLowerCase().trim()];
+  const user = cache.users[username.toString().toLowerCase().trim()];
   if (!user || user.password !== password) {
     return res.status(401).json({ error: 'Invalid username or password' });
   }
@@ -5165,10 +5198,22 @@ canvas { max-height:260px; }
           #abcstore-table .g-b.g-start { border-left:3px solid var(--yellow); }
           #abcstore-table .g-c.g-start { border-left:3px solid var(--red); }
           #abcstore-table .g-mix { border-left:3px solid var(--border); }
-          #abcstore-table thead tr:first-child th.g-t { color:var(--blue); border-top:3px solid var(--blue); }
-          #abcstore-table thead tr:first-child th.g-a { color:var(--green); border-top:3px solid var(--green); }
-          #abcstore-table thead tr:first-child th.g-b { color:var(--yellow); border-top:3px solid var(--yellow); }
-          #abcstore-table thead tr:first-child th.g-c { color:var(--red); border-top:3px solid var(--red); }
+          /* Headers: solid group color + white text (tints are for body rows only — on the
+             dark header they washed out the white header text) */
+          #abcstore-table thead th.g-t { background:var(--blue) !important; color:#fff !important; }
+          #abcstore-table thead th.g-a { background:var(--green) !important; color:#fff !important; }
+          #abcstore-table thead th.g-b { background:var(--yellow) !important; color:#fff !important; }
+          #abcstore-table thead th.g-c { background:var(--red) !important; color:#fff !important; }
+          #abcstore-table thead tr:first-child th.g-t,
+          #abcstore-table thead tr:first-child th.g-a,
+          #abcstore-table thead tr:first-child th.g-b,
+          #abcstore-table thead tr:first-child th.g-c { font-size:12px; letter-spacing:0.5px; }
+          /* Sub-header row: same hue, darkened, so the two rows read as a group + its columns */
+          #abcstore-table thead tr:nth-child(2) th.g-t,
+          #abcstore-table thead tr:nth-child(2) th.g-a,
+          #abcstore-table thead tr:nth-child(2) th.g-b,
+          #abcstore-table thead tr:nth-child(2) th.g-c { box-shadow: inset 0 0 0 999px rgba(0,0,0,0.22); }
+          #abcstore-table thead th.g-start { border-left:3px solid rgba(0,0,0,0.35); }
           #abcstore-table tr.abc-total td.g-t { background:rgba(31,111,235,0.16); }
           #abcstore-table tr.abc-total td.g-a { background:rgba(46,160,67,0.18); }
           #abcstore-table tr.abc-total td.g-b { background:rgba(210,153,34,0.20); }
@@ -5654,23 +5699,52 @@ async function doLogin() {
   const password = document.getElementById('login-password').value;
   if (!username || !password) { errEl.textContent = 'Enter username and password'; return; }
   btn.disabled = true; btn.textContent = 'Signing in...'; errEl.textContent = '';
-  try {
-    const r = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-    const d = await r.json();
-    if (!r.ok) { errEl.textContent = d.error || 'Login failed'; btn.disabled = false; btn.textContent = 'Sign In'; return; }
-    authToken = d.token;
-    currentUser = d;
-    try { sessionStorage.setItem('camanava_token', authToken); sessionStorage.setItem('camanava_user', JSON.stringify(d)); } catch(e) {}
-    document.getElementById('login-screen').style.display = 'none';
-    startApp();
-  } catch(e) {
-    errEl.textContent = 'Connection error. Try again.';
-    btn.disabled = false; btn.textContent = 'Sign In';
+  // Auto-retry transient failures (server waking up / busy refreshing / network blip)
+  // so the user doesn't have to keep tapping Sign In. Wrong password is NOT retried.
+  const MAX_TRIES = 8;
+  for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), 20000);
+    try {
+      const r = await fetch('/api/login', {
+        method: 'POST',
+        signal: ac.signal,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      clearTimeout(to);
+      let d = {};
+      try { d = await r.json(); } catch (je) { d = {}; }
+      if (r.ok && d.token) {
+        authToken = d.token;
+        currentUser = d;
+        try { sessionStorage.setItem('camanava_token', authToken); sessionStorage.setItem('camanava_user', JSON.stringify(d)); } catch(e) {}
+        errEl.textContent = '';
+        document.getElementById('login-screen').style.display = 'none';
+        startApp();
+        return;
+      }
+      const transient = r.status === 503 || r.status === 502 || r.status === 504 || r.status === 429 || d.retry;
+      if (!transient) {
+        errEl.textContent = d.error || 'Login failed';
+        btn.disabled = false; btn.textContent = 'Sign In';
+        return;
+      }
+    } catch (e) {
+      clearTimeout(to);
+      // network error or timeout — treat as transient
+    }
+    if (attempt < MAX_TRIES) {
+      const wait = Math.min(1500 * attempt, 5000);
+      btn.textContent = 'Connecting... (' + attempt + '/' + MAX_TRIES + ')';
+      errEl.style.color = 'var(--text2)';
+      errEl.textContent = 'Server is waking up — retrying automatically';
+      await new Promise(res => setTimeout(res, wait));
+      errEl.style.color = '';
+    }
   }
+  errEl.textContent = 'Server is not responding. Please try again in a minute.';
+  btn.disabled = false; btn.textContent = 'Sign In';
 }
 
 async function doLogout() {
@@ -8751,6 +8825,7 @@ app.listen(PORT, () => {
     console.warn('[Server] WARNING: Missing Google Drive env vars. Set GOOGLE_CLIENT_EMAIL, GOOGLE_PRIVATE_KEY, GDRIVE_FOLDER_ID');
   } else {
     console.log('[Server] Starting initial data load...');
-    refreshData(true);
+    loadUsersEarly();     // small file — makes sign-in available in seconds
+    refreshData(true);    // big file — runs in parallel
   }
 });
