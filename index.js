@@ -918,6 +918,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
       xdockValue: num(row[COL.xdockValue]),
       poOrderGR: num(row[COL.poOrderGR]),
       trfOrderGR: num(row[COL.trfOrderGR]),
+      xdockGR: num(row[COL.xdockGR]),   // column X — XDock Alloc GR (units)
       currentWkSales,
       p8ave,
       wkAveNet,
@@ -2063,6 +2064,7 @@ app.get('/api/skus', (req, res) => {
       ico: r.ico,
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
+      xdockGR: r.xdockGR,
       dateLastOrdered: formatDate(r.dateLastOrdered),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -3009,6 +3011,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
     { header: 'ICO', key: 'ico', width: 8 },
     { header: 'PO On Order', key: 'poOrderGR', width: 14 },
     { header: 'Trf On Order', key: 'trfOrderGR', width: 14 },
+    { header: 'XDock Alloc', key: 'xdockGR', width: 13 },
     { header: 'Date Last Ordered', key: 'dateLastOrdered', width: 16 },
     { header: 'Last Sold', key: 'dateLastSold', width: 14 },
     { header: 'Last Received', key: 'dateLastReceived', width: 14 },
@@ -3074,6 +3077,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
       ico: r.ico,
       poOrderGR: r.poOrderGR,
       trfOrderGR: r.trfOrderGR,
+      xdockGR: r.xdockGR,
       dateLastOrdered: formatDate(r.dateLastOrdered),
       dateLastSold: formatDate(r.dateLastSold),
       dateLastReceived: formatDate(r.dateLastReceived),
@@ -3088,7 +3092,7 @@ app.get('/api/export-skus-xlsx', async (req, res) => {
   ws.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2, column: headers.length } };
 
   // Number formats on currency/qty columns
-  const formatMap = { invValue: '#,##0.00', p8ave: '#,##0.00', lostSalesPerWeek: '#,##0.00', weeksToSell: '#,##0.00', daysCover: '#,##0', onHand: '#,##0', poOrderGR: '#,##0', trfOrderGR: '#,##0' };
+  const formatMap = { invValue: '#,##0.00', p8ave: '#,##0.00', lostSalesPerWeek: '#,##0.00', weeksToSell: '#,##0.00', daysCover: '#,##0', onHand: '#,##0', poOrderGR: '#,##0', trfOrderGR: '#,##0', xdockGR: '#,##0' };
   ws.columns.forEach(col => { if (formatMap[col.key]) col.numFmt = formatMap[col.key]; });
 
   // Stream the workbook
@@ -5283,6 +5287,7 @@ canvas { max-height:260px; }
               <th onclick="sortSKUs('ico')">ICO <span class="sort-ind" data-key="ico"></span></th>
               <th onclick="sortSKUs('poOrderGR')">PO On Order <span class="sort-ind" data-key="poOrderGR"></span></th>
               <th onclick="sortSKUs('trfOrderGR')">Trf On Order <span class="sort-ind" data-key="trfOrderGR"></span></th>
+              <th onclick="sortSKUs('xdockGR')" title="XDock Alloc GR (units) — raw column X">XDock Alloc <span class="sort-ind" data-key="xdockGR"></span></th>
               <th onclick="sortSKUs('dateLastOrdered')">Date Last Ordered <span class="sort-ind" data-key="dateLastOrdered"></span></th>
               <th onclick="sortSKUs('dateLastSold')">Last Sold <span class="sort-ind" data-key="dateLastSold"></span></th>
               <th onclick="sortSKUs('dateLastReceived')">Last Received <span class="sort-ind" data-key="dateLastReceived"></span></th>
@@ -7874,7 +7879,7 @@ function renderSkuAbcCards(s) {
 
 function renderSKUTable(rows) {
   const tbody = document.getElementById('skus-body');
-  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="23" class="empty">No data found</td></tr>'; return; }
+  if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="24" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
     const dc = r.daysCover != null ? r.daysCover.toFixed(0) + 'd' : '—';
@@ -7904,6 +7909,7 @@ function renderSKUTable(rows) {
       '<td class="mono">' + esc(r.ico || '—') + '</td>' +
       '<td class="mono">' + fmt(r.poOrderGR) + '</td>' +
       '<td class="mono">' + fmt(r.trfOrderGR) + '</td>' +
+      '<td class="mono">' + fmt(r.xdockGR) + '</td>' +
       '<td class="mono">' + esc(r.dateLastOrdered || '—') + '</td>' +
       '<td class="mono">' + esc(r.dateLastSold) + '</td>' +
       '<td class="mono">' + esc(r.dateLastReceived) + '</td>' +
