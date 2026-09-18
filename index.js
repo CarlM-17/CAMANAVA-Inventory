@@ -3562,10 +3562,10 @@ function sondFiltered(req) {
   );
 }
 
-app.get('/api/sond/summary', (req, res) => {
+function sondSummary(req) {
   if (!cache.sond.ready) {
     if (!cache.sond.error) loadSondData();
-    return res.json({ ready: false, error: cache.sond.error || 'SOND data loading, try again shortly' });
+    return { ready: false, error: cache.sond.error || 'SOND data loading, try again shortly' };
   }
   const rows = sondFiltered(req);
   const months = SOND_MONTHS.map(mo => {
@@ -3653,7 +3653,7 @@ app.get('/api/sond/summary', (req, res) => {
     if (hasMissed) missed++;
     if (hasUnplanned) unplanned++;
   }
-  res.json({
+  return {
     ready: true,
     lastRefresh: cache.sond.lastRefresh,
     tab: cache.sond.tab,
@@ -3682,7 +3682,210 @@ app.get('/api/sond/summary', (req, res) => {
     areas: [...new Set(cache.sond.rows.map(r => r.area))].filter(Boolean).sort(),
     storeList: [...new Map(cache.sond.rows.map(r => [r.storeCode, r.storeName])).entries()]
       .map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name))
-  });
+  };
+}
+
+app.get('/api/sond/summary', (req, res) => res.json(sondSummary(req)));
+
+// Styled XLSX export — one sheet per view, matching the on-screen month matrix.
+const SOND_VIEW_DEFS = {
+  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9]] },
+  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9]] },
+  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9]] },
+  category: { label: 'Per Category',   key: 'categories', cols: [['Category','category',20],['SKUs','skus',9],['Stores','stores',9]] }
+};
+
+app.get('/api/sond/export-xlsx', async (req, res) => {
+  try {
+    const d = sondSummary(req);
+    if (!d.ready) return res.status(503).send(d.error || 'SOND data not ready');
+    const view = SOND_VIEW_DEFS[req.query.view] ? req.query.view : 'item';
+    const def = SOND_VIEW_DEFS[view];
+    const rows = d[def.key] || [];
+    const DARK_GREEN = 'FF1B5E20';
+    const MONTH_FILL = { aug: 'FFC62828', sep: 'FF2E7D32', oct: 'FF7CB342', nov: 'FFF9A825', dec: 'FF1565C0' };
+    const BAND_FILL = { met: 'FFC8E6C9', close: 'FFFFF3C4', short: 'FFFFCDD2', over: 'FFBBDEFB', unplanned: 'FFE1BEE7', upcoming: 'FFF5F5F5', none: 'FFF5F5F5' };
+    const thin = { style: 'thin', color: { argb: 'FFBDBDBD' } };
+    const border = { top: thin, bottom: thin, left: thin, right: thin };
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'CAMANAVA Inventory Dashboard';
+    wb.created = new Date();
+    const ws = wb.addWorksheet('SOND ' + def.label);
+    const nLead = def.cols.length;
+    const nCols = nLead + d.months.length * 3 + 3;
+
+    // Row 1 — title
+    ws.mergeCells(1, 1, 1, nCols);
+    const t = ws.getCell(1, 1);
+    t.value = 'CAMANAVA SOND Forecast Status (' + def.label + ')';
+    t.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 15, name: 'Calibri' };
+    t.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    t.alignment = { vertical: 'middle', horizontal: 'center' };
+    ws.getRow(1).height = 30;
+
+    // Row 2 — context line
+    ws.mergeCells(2, 1, 2, nCols);
+    const sub = ws.getCell(2, 1);
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const scope = (req.query.area ? 'Area: ' + req.query.area : 'All areas');
+    sub.value = 'As of ' + today + '  |  ' + scope + '  |  Season forecast ' + d.total.forecast.toLocaleString() +
+      ' cases, received ' + d.total.received.toLocaleString() + ' cases (' + (d.total.pct == null ? '—' : d.total.pct + '%') +
+      ')  |  Target 100%  |  Unplanned deliveries: ' + d.unplannedSkus;
+    sub.font = { italic: true, size: 10, color: { argb: 'FF37474F' } };
+    sub.alignment = { vertical: 'middle', horizontal: 'center' };
+    ws.getRow(2).height = 20;
+
+    // Row 3 — month group header, Row 4 — sub header
+    let c = 1;
+    def.cols.forEach(([h]) => {
+      ws.mergeCells(3, c, 4, c);
+      const cell = ws.getCell(3, c);
+      cell.value = h;
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+      cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      cell.border = border;
+      ws.getColumn(c).width = def.cols[c - 1][2];
+      c++;
+    });
+    d.months.forEach(m => {
+      ws.mergeCells(3, c, 3, c + 2);
+      const g = ws.getCell(3, c);
+      g.value = m.label + (m.state === 'current' ? ' (in progress)' : (m.state === 'upcoming' ? ' (upcoming)' : ''));
+      g.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      g.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: MONTH_FILL[m.key] } };
+      g.alignment = { vertical: 'middle', horizontal: 'center' };
+      g.border = border;
+      ['Forecast', 'Received', 'Received %'].forEach((lbl, i) => {
+        const h = ws.getCell(4, c + i);
+        h.value = lbl;
+        h.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        h.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: MONTH_FILL[m.key] } };
+        h.alignment = { vertical: 'middle', horizontal: 'center' };
+        h.border = border;
+        ws.getColumn(c + i).width = 13;
+      });
+      c += 3;
+    });
+    ws.mergeCells(3, c, 3, c + 2);
+    const gt = ws.getCell(3, c);
+    gt.value = 'Grand Total';
+    gt.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    gt.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    gt.alignment = { vertical: 'middle', horizontal: 'center' };
+    gt.border = border;
+    ['Total Forecast', 'Total Received', 'Received %'].forEach((lbl, i) => {
+      const h = ws.getCell(4, c + i);
+      h.value = lbl;
+      h.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      h.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+      h.alignment = { vertical: 'middle', horizontal: 'center' };
+      h.border = border;
+      ws.getColumn(c + i).width = 15;
+    });
+    ws.getRow(3).height = 22;
+    ws.getRow(4).height = 20;
+
+    // Data rows
+    let r = 5;
+    rows.forEach(row => {
+      let cc = 1;
+      def.cols.forEach(([, key]) => {
+        const cell = ws.getCell(r, cc);
+        cell.value = row[key] == null ? '' : row[key];
+        if (typeof row[key] === 'number') cell.numFmt = '#,##0';
+        cell.border = border;
+        cc++;
+      });
+      d.months.forEach(m => {
+        const mc = row.m[m.key];
+        const f = ws.getCell(r, cc); f.value = mc.f; f.numFmt = '#,##0.##'; f.border = border;
+        const rc = ws.getCell(r, cc + 1); rc.value = mc.r; rc.numFmt = '#,##0.##'; rc.border = border;
+        const pc = ws.getCell(r, cc + 2);
+        if (mc.f === 0 && mc.r > 0) { pc.value = 'Unplanned'; pc.font = { bold: true, color: { argb: 'FF6A1B9A' } }; }
+        else if (mc.f === 0) { pc.value = 'No forecast'; pc.font = { italic: true, color: { argb: 'FF9E9E9E' }, size: 9 }; }
+        else { pc.value = (mc.pct || 0) / 100; pc.numFmt = '0.0%'; }   // real percentage
+        pc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[mc.band] || 'FFFFFFFF' } };
+        pc.alignment = { horizontal: 'right' };
+        pc.border = border;
+        cc += 3;
+      });
+      const tf = ws.getCell(r, cc); tf.value = row.totalF; tf.numFmt = '#,##0.##'; tf.border = border;
+      const tr = ws.getCell(r, cc + 1); tr.value = row.totalR; tr.numFmt = '#,##0.##'; tr.border = border;
+      const tp = ws.getCell(r, cc + 2);
+      if (row.totalF === 0) { tp.value = 'No forecast'; tp.font = { italic: true, color: { argb: 'FF9E9E9E' }, size: 9 }; }
+      else { tp.value = (row.pct || 0) / 100; tp.numFmt = '0.0%'; tp.font = { bold: true }; }
+      tp.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[row.band] || 'FFFFFFFF' } };
+      tp.border = border;
+      r++;
+    });
+
+    // Totals row
+    const totRow = r;
+    ws.mergeCells(totRow, 1, totRow, nLead);
+    const tl = ws.getCell(totRow, 1);
+    tl.value = 'TOTAL (' + rows.length + ' ' + def.label.replace('Per ', '').toLowerCase() + ')';
+    tl.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    tl.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+    tl.alignment = { horizontal: 'left', indent: 1 };
+    tl.border = border;
+    let tc = nLead + 1;
+    d.months.forEach(m => {
+      const f = ws.getCell(totRow, tc); f.value = m.forecast; f.numFmt = '#,##0.##';
+      const rr = ws.getCell(totRow, tc + 1); rr.value = m.received; rr.numFmt = '#,##0.##';
+      const pp = ws.getCell(totRow, tc + 2);
+      if (m.forecast === 0) pp.value = '—'; else { pp.value = (m.pct || 0) / 100; pp.numFmt = '0.0%'; }
+      [f, rr, pp].forEach(x => { x.font = { bold: true }; x.border = border;
+        x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } }; });
+      tc += 3;
+    });
+    const gf = ws.getCell(totRow, tc); gf.value = d.total.forecast; gf.numFmt = '#,##0.##';
+    const gr = ws.getCell(totRow, tc + 1); gr.value = d.total.received; gr.numFmt = '#,##0.##';
+    const gp = ws.getCell(totRow, tc + 2); gp.value = (d.total.pct || 0) / 100; gp.numFmt = '0.0%';
+    [gf, gr, gp].forEach(x => { x.font = { bold: true }; x.border = border;
+      x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC8E6C9' } }; });
+    ws.getRow(totRow).height = 20;
+
+    // Visuals: data bars on the season totals, so volume is readable at a glance
+    if (rows.length) {
+      const colLetter = (n) => { let s = ''; while (n > 0) { const m2 = (n - 1) % 26; s = String.fromCharCode(65 + m2) + s; n = Math.floor((n - 1) / 26); } return s; };
+      const fCol = colLetter(nLead + d.months.length * 3 + 1);
+      const rCol = colLetter(nLead + d.months.length * 3 + 2);
+      // dataBar needs an explicit cfvo range or ExcelJS throws while writing
+      const bar = (argb) => ({ type: 'dataBar', gradient: false, color: { argb },
+        cfvo: [{ type: 'min' }, { type: 'max' }], minLength: 0, maxLength: 100 });
+      ws.addConditionalFormatting({ ref: fCol + '5:' + fCol + (totRow - 1), rules: [bar('FF1B5E20')] });
+      ws.addConditionalFormatting({ ref: rCol + '5:' + rCol + (totRow - 1), rules: [bar('FF1565C0')] });
+    }
+
+    // Legend
+    const legRow = totRow + 2;
+    ws.getCell(legRow, 1).value = 'Legend:';
+    ws.getCell(legRow, 1).font = { bold: true, size: 10 };
+    [['Met (100%+)', 'met'], ['Close (90-99%)', 'close'], ['Short (<90%)', 'short'],
+     ['Over-delivered (>120%)', 'over'], ['Unplanned (no forecast)', 'unplanned'], ['Upcoming month', 'upcoming']]
+      .forEach(([lbl, band], i) => {
+        const cell = ws.getCell(legRow, 2 + i);
+        cell.value = lbl;
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[band] } };
+        cell.font = { size: 9 };
+        cell.alignment = { horizontal: 'center' };
+        cell.border = border;
+      });
+
+    ws.views = [{ state: 'frozen', xSplit: nLead, ySplit: 4 }];
+    ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: nCols } };
+
+    const fname = 'CAMANAVA_SOND_' + def.label.replace(/\s+/g, '_') + '_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('[SOND export]', e.message);
+    res.status(500).send('Export failed: ' + e.message);
+  }
 });
 
 app.post('/api/sond/reload', async (req, res) => {
@@ -7215,27 +7418,16 @@ function renderSondMatrix(view) {
 
 function exportSondExcel() {
   if (!sondState.d) return;
-  const view = sondState.sub;
-  const cfg = SOND_VIEWS[view];
-  const ms = sondState.d.months;
-  const head = cfg.cols.map(c => c.h);
-  ms.forEach(m => { head.push(m.label + ' Forecast', m.label + ' Received', m.label + ' Received %'); });
-  head.push('Total Forecast', 'Total Received', 'Received %');
-  const q = (document.getElementById('sond-matrix-search').value || '').trim().toLowerCase();
-  let rows = cfg.data().slice();
-  if (q) rows = rows.filter(r => cfg.searchOn.some(f => String(r[f] || '').toLowerCase().includes(q)));
-  const qt = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-  const lines = [head.map(qt).join(',')];
-  rows.forEach(r => {
-    const out = cfg.cols.map(c => r[c.k]);
-    ms.forEach(m => { const c = r.m[m.key]; out.push(c.f, c.r, c.f === 0 ? '' : c.pct); });
-    out.push(r.totalF, r.totalR, r.totalF === 0 ? '' : r.pct);
-    lines.push(out.map(qt).join(','));
-  });
-  const blob = new Blob(['\\ufeff' + lines.join('\\r\\n')], { type: 'text/csv;charset=utf-8' });
+  const params = new URLSearchParams();
+  params.set('view', sondState.sub);
+  const areaEl = document.getElementById('sond-area');
+  const storeEl = document.getElementById('sond-store');
+  if (areaEl && areaEl.value) params.set('area', areaEl.value);
+  if (storeEl && storeEl.value) params.set('store', storeEl.value);
+  if (authToken) params.set('token', authToken);
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'SOND_' + view + '_' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.href = '/api/sond/export-xlsx?' + params.toString();
+  a.download = '';
   document.body.appendChild(a); a.click(); a.remove();
 }
 
