@@ -3514,21 +3514,33 @@ app.get('/api/sond/summary', (req, res) => {
     row.totalF += x.totalF; row.totalR += x.totalR;
     SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
   }
-  const stores = Object.values(g).map(row => {
+  const storeRows = Object.values(g);
+  // Per-item rollup (same shape as stores, keyed by SKU across the filtered stores)
+  const gi = {};
+  for (const x of rows) {
+    const k = x.sku;
+    if (!gi[k]) { gi[k] = { sku: x.sku, desc: x.desc, vendor: x.vendor, category: x.category,
+      skuStatus: x.skuStatus, sts: x.sts, stores: 0, totalF: 0, totalR: 0, m: {} };
+      SOND_MONTHS.forEach(mo => { gi[k].m[mo.key] = { f: 0, r: 0 }; }); }
+    const row = gi[k];
+    row.stores++;
+    row.totalF += x.totalF; row.totalR += x.totalR;
+    SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
+  }
+  const finish = (row) => {
     SOND_MONTHS.forEach(mo => {
       const c = row.m[mo.key];
       c.f = Math.round(c.f); c.r = Math.round(c.r);
       c.pct = sondPct(c.f, c.r);
       c.band = sondBand(c.pct, sondMonthState(mo));
-      // share of this store's season forecast — the skew bar
       c.share = row.totalF > 0 ? +((c.f / row.totalF) * 100).toFixed(1) : 0;
     });
     row.totalF = Math.round(row.totalF); row.totalR = Math.round(row.totalR);
     row.pct = sondPct(row.totalF, row.totalR);
     row.band = sondBand(row.pct, 'closed');
-    // items with a closed-month forecast but nothing received at all
     return row;
-  }).sort((a, b) => b.totalF - a.totalF);
+  };
+  const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
   // Zero-received alert: closed or current months where forecast existed and nothing arrived
   let missed = 0;
   for (const x of rows) {
@@ -3546,7 +3558,8 @@ app.get('/api/sond/summary', (req, res) => {
     months,
     total: { forecast: Math.round(totF), received: Math.round(totR), pct: sondPct(totF, totR) },
     missedSkus: missed,
-    stores,
+    stores: storeRows.map(finish).sort((a, b) => b.totalF - a.totalF),
+    items,
     areas: [...new Set(cache.sond.rows.map(r => r.area))].filter(Boolean).sort(),
     storeList: [...new Map(cache.sond.rows.map(r => [r.storeCode, r.storeName])).entries()]
       .map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name))
@@ -5510,6 +5523,27 @@ canvas { max-height:260px; }
         #sond-store-table th.mcur, #sond-store-table td.mcur { border-left:2px solid var(--blue); border-right:2px solid var(--blue); }
         .sond-skew { display:flex; height:9px; width:110px; border-radius:5px; overflow:hidden; background:var(--bg2); }
         .sond-skew span { display:block; height:100%; }
+        .sond-subtabs { display:flex; gap:4px; border-bottom:1px solid var(--border); margin:14px 0 10px; }
+        .sond-subtab { padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; margin-bottom:-1px; user-select:none; }
+        .sond-subtab.active { color:var(--blue); border-bottom-color:var(--blue); }
+        .sond-matrix th { cursor:pointer; white-space:nowrap; }
+        .sond-matrix th.grp { text-align:center; font-size:12px; letter-spacing:0.4px; cursor:default; }
+        .sond-matrix td.num, .sond-matrix th.num { text-align:right; }
+        .sond-matrix .m-aug { background:rgba(218,54,51,0.09); }
+        .sond-matrix .m-sep { background:rgba(46,160,67,0.10); }
+        .sond-matrix .m-oct { background:rgba(126,180,60,0.10); }
+        .sond-matrix .m-nov { background:rgba(210,153,34,0.12); }
+        .sond-matrix .m-dec { background:rgba(31,111,235,0.10); }
+        .sond-matrix .m-tot { background:rgba(45,164,157,0.13); }
+        .sond-matrix thead tr.grprow th.m-aug { border-top:3px solid var(--red-light); }
+        .sond-matrix thead tr.grprow th.m-sep { border-top:3px solid var(--green-bright); }
+        .sond-matrix thead tr.grprow th.m-oct { border-top:3px solid #7eb43c; }
+        .sond-matrix thead tr.grprow th.m-nov { border-top:3px solid var(--yellow-light); }
+        .sond-matrix thead tr.grprow th.m-dec { border-top:3px solid var(--blue); }
+        .sond-matrix thead tr.grprow th.m-tot { border-top:3px solid #2da49d; }
+        .sond-matrix .gstart { border-left:2px solid var(--border); }
+        .sond-matrix .nofc { color:var(--text2); font-style:italic; font-size:10px; }
+        .sond-sortind { font-size:9px; color:var(--blue); margin-left:2px; }
       </style>
       <div class="section">
         <div class="section-header">
@@ -5529,11 +5563,36 @@ canvas { max-height:260px; }
           Months that have not started are shown grey, never as a shortfall. Quantities are in <b>cases</b>.
         </div>
         <div class="sond-strip" id="sond-months"></div>
-        <div class="table-wrap" style="max-height:560px;">
-          <table id="sond-store-table">
-            <thead id="sond-store-head"></thead>
-            <tbody id="sond-store-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
-          </table>
+
+        <div class="sond-subtabs">
+          <div class="sond-subtab active" id="sond-sub-btn-item" onclick="showSondSub('item')">📦 Per Item</div>
+          <div class="sond-subtab" id="sond-sub-btn-store" onclick="showSondSub('store')">🏪 Per Store</div>
+        </div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+          <div style="font-size:11px;color:var(--text2);">Forecast and received cases by delivery month. Scroll sideways for all months. Click any header to sort.</div>
+          <div style="display:flex;gap:6px;">
+            <input type="text" class="table-search" id="sond-matrix-search" placeholder="Search SKU, description, vendor..." oninput="renderSondActive()" style="width:260px;"/>
+            <button class="btn btn-sm" onclick="exportSondExcel()">⬇ Export Excel</button>
+          </div>
+        </div>
+
+        <div id="sond-sub-item">
+          <div class="table-wrap" style="max-height:560px;">
+            <table id="sond-item-table" class="sond-matrix">
+              <thead id="sond-item-head"></thead>
+              <tbody id="sond-item-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="sond-sub-store" style="display:none;">
+          <div class="table-wrap" style="max-height:560px;">
+            <table id="sond-store-table" class="sond-matrix">
+              <thead id="sond-store-head"></thead>
+              <tbody id="sond-store-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -6770,7 +6829,10 @@ async function loadTabData() {
 }
 
 // ─── SOND SEASONAL TAB ────────────────────────────────────────────────────────
-const sondState = { months: [], filled: false };
+const sondState = {
+  months: [], filled: false, d: null, sub: 'item',
+  sort: { item: { key: 'totalF', dir: 'desc' }, store: { key: 'totalF', dir: 'desc' } }
+};
 const SOND_SKEW_COLORS = ['#3fb950', '#1f6feb', '#8b949e', '#6e7681', '#484f58'];
 
 async function reloadSOND() {
@@ -6814,8 +6876,9 @@ async function loadSOND() {
       d.storeList.map(s => '<option value="' + esc(s.code) + '">' + esc(s.name) + '</option>').join('');
     sondState.filled = true;
   }
+  sondState.d = d;
   renderSondMonths(d);
-  renderSondStores(d);
+  renderSondActive();
 }
 
 function sondPctText(pct, band) {
@@ -6848,32 +6911,149 @@ function renderSondMonths(d) {
   strip.innerHTML = cards.join('');
 }
 
-function renderSondStores(d) {
-  const head = document.getElementById('sond-store-head');
-  const body = document.getElementById('sond-store-body');
-  const mh = d.months.map(m => '<th class="' + (m.state === 'current' ? 'mcur' : '') + '" title="' + m.label + '">' + m.short + '</th>').join('');
-  head.innerHTML = '<tr><th>Area</th><th>Store</th><th>SKUs</th>' + mh +
-    '<th>Season %</th><th>Fcst</th><th>Recd</th><th>Skew</th></tr>';
-  if (!d.stores.length) { body.innerHTML = '<tr><td colspan="' + (8 + d.months.length) + '" class="empty">No data found</td></tr>'; return; }
-  body.innerHTML = d.stores.map(s => {
-    const cells = d.months.map(m => {
-      const c = s.m[m.key];
-      return '<td class="mono cell-' + c.band + (m.state === 'current' ? ' mcur' : '') + '" title="' +
-        fmt(c.r) + ' of ' + fmt(c.f) + ' cases">' + sondPctText(c.pct, c.band) + '</td>';
-    }).join('');
-    const skew = d.months.map((m, i) =>
-      '<span style="width:' + s.m[m.key].share + '%;background:' + SOND_SKEW_COLORS[i] + ';"></span>').join('');
-    return '<tr>' +
-      '<td><span class="badge badge-blue">' + esc(s.area || '') + '</span></td>' +
-      '<td>' + esc(s.storeName || s.storeCode) + '</td>' +
-      '<td class="mono">' + fmt(s.skus) + '</td>' +
-      cells +
-      '<td class="mono b-' + s.band + '" style="font-weight:600;">' + (s.pct == null ? '—' : fmtN(s.pct) + '%') + '</td>' +
-      '<td class="mono">' + fmt(s.totalF) + '</td>' +
-      '<td class="mono">' + fmt(s.totalR) + '</td>' +
-      '<td><div class="sond-skew" title="Share of season forecast per month">' + skew + '</div></td>' +
-    '</tr>';
+// Leading identity columns differ per view; the month matrix is identical for both.
+const SOND_VIEWS = {
+  item: {
+    data: () => sondState.d.items,
+    cols: [
+      { k: 'sku', h: 'SKU' }, { k: 'desc', h: 'Description' }, { k: 'vendor', h: 'Vendor' },
+      { k: 'category', h: 'Category' }, { k: 'skuStatus', h: 'SKU Status', badge: true },
+      { k: 'sts', h: 'STS Tagging', badge: true }, { k: 'stores', h: 'Stores', num: true }
+    ],
+    searchOn: ['sku', 'desc', 'vendor', 'category']
+  },
+  store: {
+    data: () => sondState.d.stores,
+    cols: [
+      { k: 'area', h: 'Area', badge: true }, { k: 'storeCode', h: 'Store Code' },
+      { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true }
+    ],
+    searchOn: ['area', 'storeCode', 'storeName']
+  }
+};
+
+function showSondSub(which) {
+  sondState.sub = which;
+  ['item', 'store'].forEach(k => {
+    const pane = document.getElementById('sond-sub-' + k);
+    const btn = document.getElementById('sond-sub-btn-' + k);
+    if (pane) pane.style.display = (k === which) ? '' : 'none';
+    if (btn) btn.classList.toggle('active', k === which);
+  });
+  renderSondActive();
+}
+
+function sondGet(o, path) { return path.split('.').reduce((x, p) => (x == null ? x : x[p]), o); }
+
+function sondSort(view, key) {
+  const st = sondState.sort[view];
+  if (st.key === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.key = key; st.dir = (key.indexOf('.') < 0 && typeof sondGet(SOND_VIEWS[view].data()[0] || {}, key) === 'string') ? 'asc' : 'desc'; }
+  renderSondActive();
+}
+
+function renderSondActive() {
+  if (!sondState.d) return;
+  renderSondMatrix(sondState.sub);
+}
+
+function renderSondMatrix(view) {
+  const d = sondState.d;
+  const cfg = SOND_VIEWS[view];
+  const head = document.getElementById('sond-' + view + '-head');
+  const body = document.getElementById('sond-' + view + '-body');
+  if (!head || !body) return;
+  const ms = d.months;
+  const totalCols = cfg.cols.length + ms.length * 3 + 3;
+
+  // ── header: group row, then Forecast / Received / Received % under each month
+  const st = sondState.sort[view];
+  const ind = (k) => st.key === k ? '<span class="sond-sortind">' + (st.dir === 'asc' ? '\\u25B2' : '\\u25BC') + '</span>' : '';
+  let g = '<tr class="grprow">';
+  cfg.cols.forEach(c => { g += '<th rowspan="2" data-k="' + c.k + '">' + c.h + ind(c.k) + '</th>'; });
+  ms.forEach(m => { g += '<th colspan="3" class="grp m-' + m.key + ' gstart">' + m.label + '</th>'; });
+  g += '<th colspan="3" class="grp m-tot gstart">Grand Total</th></tr>';
+  let s2 = '<tr>';
+  ms.forEach(m => {
+    s2 += '<th class="num m-' + m.key + ' gstart" data-k="m.' + m.key + '.f">Forecast' + ind('m.' + m.key + '.f') + '</th>';
+    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.r">Received' + ind('m.' + m.key + '.r') + '</th>';
+    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.pct">Received %' + ind('m.' + m.key + '.pct') + '</th>';
+  });
+  s2 += '<th class="num m-tot gstart" data-k="totalF">Total Forecast' + ind('totalF') + '</th>';
+  s2 += '<th class="num m-tot" data-k="totalR">Total Received' + ind('totalR') + '</th>';
+  s2 += '<th class="num m-tot" data-k="pct">Received %' + ind('pct') + '</th></tr>';
+  head.innerHTML = g + s2;
+  // Delegated sorting — avoids escaping quotes inside generated onclick attributes
+  head.onclick = (ev) => {
+    const th = ev.target.closest('th[data-k]');
+    if (th) sondSort(view, th.getAttribute('data-k'));
+  };
+
+  // ── rows
+  const q = (document.getElementById('sond-matrix-search').value || '').trim().toLowerCase();
+  let rows = cfg.data().slice();
+  if (q) rows = rows.filter(r => cfg.searchOn.some(f => String(r[f] || '').toLowerCase().includes(q)));
+  const dir = st.dir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = sondGet(a, st.key), bv = sondGet(b, st.key);
+    const an = (av == null), bn = (bv == null);
+    if (an && bn) return 0;
+    if (an) return 1;
+    if (bn) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="' + totalCols + '" class="empty">No data found</td></tr>'; return; }
+
+  const pctCell = (c, m, extra) => {
+    if (c.f === 0) return '<td class="num ' + extra + '"><span class="nofc">No forecast</span></td>';
+    return '<td class="num mono ' + extra + ' b-' + c.band + '" style="font-weight:600;">' + sondPctText(c.pct, c.band) + '</td>';
+  };
+  body.innerHTML = rows.map(r => {
+    let h = '<tr>';
+    cfg.cols.forEach(c => {
+      const v = r[c.k];
+      if (c.badge) h += '<td><span class="badge badge-blue">' + esc(String(v == null ? '' : v)) + '</span></td>';
+      else if (c.num) h += '<td class="num mono">' + fmt(v || 0) + '</td>';
+      else h += '<td>' + esc(String(v == null ? '' : v)) + '</td>';
+    });
+    ms.forEach(m => {
+      const c = r.m[m.key];
+      h += '<td class="num mono m-' + m.key + ' gstart">' + fmt(c.f) + '</td>';
+      h += '<td class="num mono m-' + m.key + '">' + fmt(c.r) + '</td>';
+      h += pctCell(c, m, 'm-' + m.key);
+    });
+    h += '<td class="num mono m-tot gstart">' + fmt(r.totalF) + '</td>';
+    h += '<td class="num mono m-tot">' + fmt(r.totalR) + '</td>';
+    h += '<td class="num mono m-tot b-' + r.band + '" style="font-weight:600;">' + (r.totalF === 0 ? '<span class="nofc">No forecast</span>' : (r.pct == null ? '—' : fmtN(r.pct) + '%')) + '</td>';
+    return h + '</tr>';
   }).join('');
+}
+
+function exportSondExcel() {
+  if (!sondState.d) return;
+  const view = sondState.sub;
+  const cfg = SOND_VIEWS[view];
+  const ms = sondState.d.months;
+  const head = cfg.cols.map(c => c.h);
+  ms.forEach(m => { head.push(m.label + ' Forecast', m.label + ' Received', m.label + ' Received %'); });
+  head.push('Total Forecast', 'Total Received', 'Received %');
+  const q = (document.getElementById('sond-matrix-search').value || '').trim().toLowerCase();
+  let rows = cfg.data().slice();
+  if (q) rows = rows.filter(r => cfg.searchOn.some(f => String(r[f] || '').toLowerCase().includes(q)));
+  const qt = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+  const lines = [head.map(qt).join(',')];
+  rows.forEach(r => {
+    const out = cfg.cols.map(c => r[c.k]);
+    ms.forEach(m => { const c = r.m[m.key]; out.push(c.f, c.r, c.f === 0 ? '' : c.pct); });
+    out.push(r.totalF, r.totalR, r.totalF === 0 ? '' : r.pct);
+    lines.push(out.map(qt).join(','));
+  });
+  const blob = new Blob(['\\ufeff' + lines.join('\\r\\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'SOND_' + view + '_' + new Date().toISOString().slice(0, 10) + '.csv';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 // Stores the full unpaginated dataset for each table — used by sortTable to sort across all pages
