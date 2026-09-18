@@ -3427,18 +3427,30 @@ async function loadSondData() {
     if (!tabs.length) throw new Error('No tabs found in SOND sheet');
     // Prefer a consolidated tab; otherwise the first one.
     const tab = tabs.find(t => /consolidat|master|all|source|summary/i.test(t)) || tabs[0];
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SOND_SHEET_ID, range: "'" + tab + "'!A1:AB" });
+    // UNFORMATTED_VALUE is essential: the default (FORMATTED_VALUE) returns what the cell
+    // *displays*, so 100.33 shown as "100" arrives as 100 and the totals drift low.
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: SOND_SHEET_ID,
+      range: "'" + tab + "'!A1:AB",
+      valueRenderOption: 'UNFORMATTED_VALUE'
+    });
     const values = resp.data.values || [];
     // Header row is whichever of the first rows carries "Store Code"
     let hdrIdx = values.findIndex(r => (r || []).some(c => String(c).trim().toLowerCase() === 'store code'));
     if (hdrIdx < 0) hdrIdx = 0;
     const rows = [];
+    const skipped = [];
     for (let i = hdrIdx + 1; i < values.length; i++) {
       const r = values[i] || [];
-      const storeCode = String(r[SOND_COL.storeCode] || '').trim();
-      const sku = String(r[SOND_COL.sku] || '').trim();
-      if (!storeCode || !sku) continue;
+      const storeCode = String(r[SOND_COL.storeCode] == null ? '' : r[SOND_COL.storeCode]).trim();
+      const sku = String(r[SOND_COL.sku] == null ? '' : r[SOND_COL.sku]).trim();
       if (storeCode.toLowerCase() === 'store code') continue;   // repeated header inside the tab
+      if (!storeCode || !sku) {
+        // Keep a record: a dropped row with a forecast would explain a low total
+        const fsum = [10, 13, 16, 19, 22].reduce((a, k) => a + sondNum(r[k]), 0);
+        if (fsum > 0) skipped.push({ line: i + 1, storeCode, sku, forecast: +fsum.toFixed(2), raw: (r[1] || '') + ' | ' + (r[3] || '') + ' | ' + (r[5] || '') });
+        continue;
+      }
       const rec = {
         area: String(r[SOND_COL.area] || '').trim(),
         storeCode, storeName: String(r[SOND_COL.storeName] || '').trim(),
@@ -3460,8 +3472,17 @@ async function loadSondData() {
       rec.sheetTotalF = sondNum(r[SOND_COL.totFc]);
       rows.push(rec);
     }
-    cache.sond = { ready: true, rows, tab, tabs, lastRefresh: new Date().toISOString(), error: null };
-    console.log('[SOND] loaded ' + rows.length + ' rows from tab "' + tab + '" in ' + (Date.now() - t0) + 'ms');
+    const grand = rows.reduce((a, x) => a + x.totalF, 0);
+    const sheetGrand = rows.reduce((a, x) => a + x.sheetTotalF, 0);
+    cache.sond = { ready: true, rows, tab, tabs, skipped, lastRefresh: new Date().toISOString(), error: null };
+    console.log('[SOND] loaded ' + rows.length + ' rows from tab "' + tab + '" of ' + tabs.length +
+      ' (' + tabs.join(', ') + ') in ' + (Date.now() - t0) + 'ms');
+    console.log('[SOND] total forecast: summed months=' + grand.toFixed(2) + '  sheet col Z=' + sheetGrand.toFixed(2) +
+      '  skipped rows carrying forecast=' + skipped.length);
+    // Per-area totals, to compare against the raw sheet at a glance
+    const byArea = {};
+    rows.forEach(x => { byArea[x.area] = (byArea[x.area] || 0) + x.totalF; });
+    Object.keys(byArea).sort().forEach(a => console.log('[SOND]   area ' + a + ': ' + byArea[a].toFixed(2)));
   } catch (e) {
     cache.sond.error = e.message;
     cache.sond.ready = cache.sond.rows.length > 0;
@@ -3568,6 +3589,14 @@ app.get('/api/sond/summary', (req, res) => {
     lastRefresh: cache.sond.lastRefresh,
     tab: cache.sond.tab,
     rowCount: rows.length,
+    diag: {
+      tab: cache.sond.tab,
+      tabs: cache.sond.tabs,
+      sheetTotalForecast: sond2(rows.reduce((a, x) => a + x.sheetTotalF, 0)),
+      summedTotalForecast: sond2(totF),
+      skippedRowsWithForecast: (cache.sond.skipped || []).length,
+      skippedSample: (cache.sond.skipped || []).slice(0, 5)
+    },
     months,
     total: { forecast: sond2(totF), received: sond2(totR), pct: sondPct(totF, totR) },
     missedSkus: missed,
