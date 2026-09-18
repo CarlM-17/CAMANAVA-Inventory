@@ -33,6 +33,7 @@ const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
 const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
 // CAMANAVA_SOND seasonal forecast sheet (standalone — not joined to inventory)
 const SOND_SHEET_ID = process.env.SOND_SHEET_ID || '1WNJHvkRufcGm3dNSMI7SsGonv1Il2P5h94jm2lo1lu0';
+const SOND_TAB = process.env.SOND_TAB || 'SONDSummary';   // consolidated tab; per-area tabs repeat these rows
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 // Comma-separated list of usernames allowed to use the AI Assistant (case-insensitive).
@@ -3385,6 +3386,7 @@ const SOND_MONTHS = [
   { key: 'nov', label: 'November',  short: 'Nov', month: 11, fc: 19, rc: 20 },
   { key: 'dec', label: 'December',  short: 'Dec', month: 12, fc: 22, rc: 23 }
 ];
+// Z (25) = Total Forecast (Cases), AA (26) = Total Received (Cases) — authoritative totals
 const SOND_COL = { area: 1, storeCode: 2, storeName: 3, sku: 4, desc: 5, vendor: 6, category: 7, skuStatus: 8, sts: 9, totFc: 25, totRc: 26 };
 
 function sondNum(v) {
@@ -3425,8 +3427,14 @@ async function loadSondData() {
     const meta = await sheets.spreadsheets.get({ spreadsheetId: SOND_SHEET_ID, fields: 'sheets(properties(title,index))' });
     const tabs = (meta.data.sheets || []).map(s => s.properties.title);
     if (!tabs.length) throw new Error('No tabs found in SOND sheet');
-    // Prefer a consolidated tab; otherwise the first one.
-    const tab = tabs.find(t => /consolidat|master|all|source|summary/i.test(t)) || tabs[0];
+    // Pinned to SONDSummary — the consolidated tab. The per-area tabs hold the same
+    // rows, so reading more than one would double count. Override with SOND_TAB if renamed.
+    const want = (SOND_TAB || 'SONDSummary').toLowerCase();
+    const tab = tabs.find(t => t.toLowerCase() === want)
+             || tabs.find(t => t.toLowerCase().replace(/\s+/g, '') === want.replace(/\s+/g, ''))
+             || tabs.find(t => /consolidat|master|summary/i.test(t))
+             || tabs[0];
+    if (tab.toLowerCase() !== want) console.warn('[SOND] tab "' + (SOND_TAB || 'SONDSummary') + '" not found; using "' + tab + '"');
     // UNFORMATTED_VALUE is essential: the default (FORMATTED_VALUE) returns what the cell
     // *displays*, so 100.33 shown as "100" arrives as 100 and the totals drift low.
     const resp = await sheets.spreadsheets.values.get({
@@ -3468,16 +3476,36 @@ async function loadSondData() {
         tf += f; tr += rc;
       }
       // Percentages are always recomputed, never read from the sheet's % columns.
-      rec.totalF = tf; rec.totalR = tr;
-      rec.sheetTotalF = sondNum(r[SOND_COL.totFc]);
+      // Totals come from the sheet's own Total columns (Z / AA) — these are the
+      // figures the business reconciles against. The summed months are kept alongside
+      // for diagnostics, because the two disagree on some rows.
+      rec.sumF = tf; rec.sumR = tr;
+      rec.totalF = sondNum(r[SOND_COL.totFc]);
+      rec.totalR = sondNum(r[SOND_COL.totRc]);
       rows.push(rec);
     }
-    const grand = rows.reduce((a, x) => a + x.totalF, 0);
-    const sheetGrand = rows.reduce((a, x) => a + x.sheetTotalF, 0);
+    const grand = rows.reduce((a, x) => a + x.sumF, 0);
+    const sheetGrand = rows.reduce((a, x) => a + x.totalF, 0);
+    // Where do the summed months diverge from the sheet total? Report the worst offenders.
+    let divRows = 0, zeroZ = 0;
+    const divSample = [];
+    rows.forEach(x => {
+      const d = +(x.sumF - x.totalF).toFixed(2);
+      if (Math.abs(d) > 0.5) {
+        divRows++;
+        if (x.totalF === 0 && x.sumF > 0) zeroZ++;
+        if (divSample.length < 8) divSample.push(x.storeName + '/' + x.sku +
+          ' months=' + SOND_MONTHS.map(m => x.m[m.key].f).join('+') + '=' + x.sumF.toFixed(2) + ' Z=' + x.totalF.toFixed(2));
+      }
+    });
+    console.log('[SOND] rows where months != sheet total: ' + divRows + ' of ' + rows.length +
+      '  (of those, Z is zero on ' + zeroZ + ')');
+    divSample.forEach(s => console.log('[SOND]   diverge: ' + s));
+    cache.sond.divergence = { rows: divRows, zeroTotalRows: zeroZ, sample: divSample };
     cache.sond = { ready: true, rows, tab, tabs, skipped, lastRefresh: new Date().toISOString(), error: null };
     console.log('[SOND] loaded ' + rows.length + ' rows from tab "' + tab + '" of ' + tabs.length +
       ' (' + tabs.join(', ') + ') in ' + (Date.now() - t0) + 'ms');
-    console.log('[SOND] total forecast: summed months=' + grand.toFixed(2) + '  sheet col Z=' + sheetGrand.toFixed(2) +
+    console.log('[SOND] total forecast: sheet col Z=' + sheetGrand.toFixed(2) + ' (used)  summed months=' + grand.toFixed(2) +
       '  skipped rows carrying forecast=' + skipped.length);
     // Per-area totals, to compare against the raw sheet at a glance
     const byArea = {};
@@ -3611,8 +3639,11 @@ app.get('/api/sond/summary', (req, res) => {
     diag: {
       tab: cache.sond.tab,
       tabs: cache.sond.tabs,
-      sheetTotalForecast: sond2(rows.reduce((a, x) => a + x.sheetTotalF, 0)),
-      summedTotalForecast: sond2(totF),
+      sheetTotalForecast: sond2(totF),                                   // column Z — what is displayed
+      summedTotalForecast: sond2(rows.reduce((a, x) => a + x.sumF, 0)),  // months added up
+      divergentRows: (cache.sond.divergence || {}).rows || 0,
+      divergentZeroTotal: (cache.sond.divergence || {}).zeroTotalRows || 0,
+      divergentSample: (cache.sond.divergence || {}).sample || [],
       skippedRowsWithForecast: (cache.sond.skipped || []).length,
       skippedSample: (cache.sond.skipped || []).slice(0, 5),
       duplicateRows: (cache.sond.dups || {}).rows || 0,
@@ -6939,8 +6970,8 @@ async function loadSOND() {
   const gap = (dg.summedTotalForecast != null && dg.sheetTotalForecast != null)
     ? +(dg.summedTotalForecast - dg.sheetTotalForecast).toFixed(2) : null;
   let meta = 'tab: ' + d.tab + (dg.tabs ? ' (of ' + dg.tabs.length + ')' : '') + (when ? ' · updated ' + when : '');
-  meta += ' · summed ' + fmtN(dg.summedTotalForecast || 0) + ' vs sheet col Z ' + fmtN(dg.sheetTotalForecast || 0);
-  if (gap) meta += ' (diff ' + (gap > 0 ? '+' : '') + fmtN(gap) + ')';
+  meta += ' · total forecast ' + fmtN(dg.sheetTotalForecast || 0) + ' (sheet col Z)';
+  if (gap) meta += ' · months sum to ' + fmtN(dg.summedTotalForecast || 0) + ', differs on ' + fmt(dg.divergentRows || 0) + ' rows';
   if (dg.skippedRowsWithForecast) meta += ' · ' + fmt(dg.skippedRowsWithForecast) + ' rows skipped with forecast';
   if (dg.duplicateRows) meta += ' · ' + fmt(dg.duplicateRows) + ' duplicate rows (' + fmtN(dg.duplicateForecast) + ' cases)';
   const el = document.getElementById('sond-meta');
