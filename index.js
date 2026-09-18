@@ -3401,7 +3401,10 @@ function sondMonthState(m) {
   return 'upcoming';
 }
 // Target is 100%. Over-delivery is called out separately — it is excess stock, not success.
-function sondBand(pct, state) {
+function sondBand(pct, state, f, r) {
+  // Forecast deliberately zero but stock arrived anyway — a supplier commitment breach.
+  // December is forecast at zero on purpose, so this is the signal to watch there.
+  if ((f === 0 || f == null) && r > 0) return 'unplanned';
   if (state === 'upcoming') return 'upcoming';
   if (pct == null) return 'none';
   if (pct > 120) return 'over';
@@ -3410,6 +3413,9 @@ function sondBand(pct, state) {
   return 'short';
 }
 function sondPct(f, r) { return f > 0 ? +((r / f) * 100).toFixed(1) : null; }
+// Forecasts are fractional cases (season total ends .64), so keep 2dp rather than
+// rounding each value — rounding per row drifts once summed over thousands of rows.
+function sond2(n) { return +(+n || 0).toFixed(2); }
 
 async function loadSondData() {
   if (!SOND_SHEET_ID) { cache.sond.error = 'SOND_SHEET_ID not set'; return; }
@@ -3498,8 +3504,9 @@ app.get('/api/sond/summary', (req, res) => {
     const state = sondMonthState(mo);
     let f = 0, r = 0;
     for (const x of rows) { f += x.m[mo.key].f; r += x.m[mo.key].r; }
+    f = sond2(f); r = sond2(r);
     const pct = sondPct(f, r);
-    return { key: mo.key, label: mo.label, short: mo.short, state, forecast: Math.round(f), received: Math.round(r), pct, band: sondBand(pct, state) };
+    return { key: mo.key, label: mo.label, short: mo.short, state, forecast: f, received: r, pct, band: sondBand(pct, state, f, r) };
   });
   const totF = rows.reduce((a, x) => a + x.totalF, 0);
   const totR = rows.reduce((a, x) => a + x.totalR, 0);
@@ -3530,25 +3537,31 @@ app.get('/api/sond/summary', (req, res) => {
   const finish = (row) => {
     SOND_MONTHS.forEach(mo => {
       const c = row.m[mo.key];
-      c.f = Math.round(c.f); c.r = Math.round(c.r);
+      c.f = sond2(c.f); c.r = sond2(c.r);
       c.pct = sondPct(c.f, c.r);
-      c.band = sondBand(c.pct, sondMonthState(mo));
+      c.band = sondBand(c.pct, sondMonthState(mo), c.f, c.r);
       c.share = row.totalF > 0 ? +((c.f / row.totalF) * 100).toFixed(1) : 0;
     });
-    row.totalF = Math.round(row.totalF); row.totalR = Math.round(row.totalR);
+    row.totalF = sond2(row.totalF); row.totalR = sond2(row.totalR);
     row.pct = sondPct(row.totalF, row.totalR);
-    row.band = sondBand(row.pct, 'closed');
+    row.band = sondBand(row.pct, 'closed', row.totalF, row.totalR);
+    // months where nothing was committed but stock still arrived
+    row.unplanned = SOND_MONTHS.filter(mo => row.m[mo.key].f === 0 && row.m[mo.key].r > 0).map(mo => mo.short);
     return row;
   };
   const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
   // Zero-received alert: closed or current months where forecast existed and nothing arrived
-  let missed = 0;
+  let missed = 0, unplanned = 0, unplannedCases = 0;
   for (const x of rows) {
+    let hasMissed = false, hasUnplanned = false;
     for (const mo of SOND_MONTHS) {
-      const st = sondMonthState(mo);
-      if (st === 'upcoming') continue;
-      if (x.m[mo.key].f > 0 && x.m[mo.key].r === 0) { missed++; break; }
+      const c = x.m[mo.key];
+      if (c.f === 0 && c.r > 0) { hasUnplanned = true; unplannedCases += c.r; }
+      if (sondMonthState(mo) === 'upcoming') continue;
+      if (c.f > 0 && c.r === 0) hasMissed = true;
     }
+    if (hasMissed) missed++;
+    if (hasUnplanned) unplanned++;
   }
   res.json({
     ready: true,
@@ -3556,8 +3569,10 @@ app.get('/api/sond/summary', (req, res) => {
     tab: cache.sond.tab,
     rowCount: rows.length,
     months,
-    total: { forecast: Math.round(totF), received: Math.round(totR), pct: sondPct(totF, totR) },
+    total: { forecast: sond2(totF), received: sond2(totR), pct: sondPct(totF, totR) },
     missedSkus: missed,
+    unplannedSkus: unplanned,
+    unplannedCases: sond2(unplannedCases),
     stores: storeRows.map(finish).sort((a, b) => b.totalF - a.totalF),
     items,
     areas: [...new Set(cache.sond.rows.map(r => r.area))].filter(Boolean).sort(),
@@ -5515,6 +5530,8 @@ canvas { max-height:260px; }
         .b-met { color:var(--green-bright); } .b-close { color:var(--yellow-light); }
         .b-short { color:var(--red-light); } .b-over { color:var(--blue); }
         .b-upcoming, .b-none { color:var(--text2); }
+        .b-unplanned { color:#a371f7; font-weight:700; }
+        .sond-matrix td.cell-unplanned { background:rgba(163,113,247,0.16); }
         #sond-store-table td.cell-met { background:rgba(46,160,67,0.12); }
         #sond-store-table td.cell-close { background:rgba(210,153,34,0.14); }
         #sond-store-table td.cell-short { background:rgba(218,54,51,0.14); }
@@ -6882,9 +6899,15 @@ async function loadSOND() {
 }
 
 function sondPctText(pct, band) {
+  if (band === 'unplanned') return 'Unplanned';
   if (band === 'upcoming') return '—';
   if (pct == null) return '—';
   return fmtN(pct) + '%';
+}
+// Cases are fractional — show decimals only when they exist
+function sondQty(v) {
+  const n = +v || 0;
+  return Math.abs(n - Math.round(n)) < 0.005 ? fmt(Math.round(n)) : fmtN(n);
 }
 
 function renderSondMonths(d) {
@@ -6894,19 +6917,24 @@ function renderSondMonths(d) {
     return '<div class="sond-mcard' + (m.state === 'current' ? ' cur' : '') + '">' +
       '<div class="lab">' + m.short + ' · ' + stateLabel + '</div>' +
       '<div class="val b-' + m.band + '">' + sondPctText(m.pct, m.band) + '</div>' +
-      '<div class="sub">' + fmt(m.received) + ' / ' + fmt(m.forecast) + '</div>' +
+      '<div class="sub">' + sondQty(m.received) + ' / ' + sondQty(m.forecast) + '</div>' +
     '</div>';
   });
   const t = d.total;
   cards.push('<div class="sond-mcard" style="border-color:var(--text2);">' +
     '<div class="lab">Season total</div>' +
     '<div class="val">' + (t.pct == null ? '—' : fmtN(t.pct) + '%') + '</div>' +
-    '<div class="sub">' + fmt(t.received) + ' / ' + fmt(t.forecast) + '</div>' +
+    '<div class="sub">' + sondQty(t.received) + ' / ' + sondQty(t.forecast) + '</div>' +
   '</div>');
   cards.push('<div class="sond-mcard" style="border-color:var(--red-light);">' +
     '<div class="lab">SKUs with nothing received</div>' +
     '<div class="val b-short">' + fmt(d.missedSkus) + '</div>' +
     '<div class="sub">forecast set, zero delivered</div>' +
+  '</div>');
+  cards.push('<div class="sond-mcard" style="border-color:#a371f7;">' +
+    '<div class="lab">Unplanned deliveries</div>' +
+    '<div class="val b-unplanned">' + fmt(d.unplannedSkus) + '</div>' +
+    '<div class="sub">' + sondQty(d.unplannedCases) + ' cases, no forecast</div>' +
   '</div>');
   strip.innerHTML = cards.join('');
 }
@@ -7006,6 +7034,8 @@ function renderSondMatrix(view) {
   if (!rows.length) { body.innerHTML = '<tr><td colspan="' + totalCols + '" class="empty">No data found</td></tr>'; return; }
 
   const pctCell = (c, m, extra) => {
+    if (c.band === 'unplanned')
+      return '<td class="num mono ' + extra + ' cell-unplanned b-unplanned" title="No forecast committed, but ' + sondQty(c.r) + ' cases were delivered">Unplanned</td>';
     if (c.f === 0) return '<td class="num ' + extra + '"><span class="nofc">No forecast</span></td>';
     return '<td class="num mono ' + extra + ' b-' + c.band + '" style="font-weight:600;">' + sondPctText(c.pct, c.band) + '</td>';
   };
@@ -7019,12 +7049,12 @@ function renderSondMatrix(view) {
     });
     ms.forEach(m => {
       const c = r.m[m.key];
-      h += '<td class="num mono m-' + m.key + ' gstart">' + fmt(c.f) + '</td>';
-      h += '<td class="num mono m-' + m.key + '">' + fmt(c.r) + '</td>';
+      h += '<td class="num mono m-' + m.key + ' gstart">' + sondQty(c.f) + '</td>';
+      h += '<td class="num mono m-' + m.key + (c.band === 'unplanned' ? ' cell-unplanned b-unplanned' : '') + '">' + sondQty(c.r) + '</td>';
       h += pctCell(c, m, 'm-' + m.key);
     });
-    h += '<td class="num mono m-tot gstart">' + fmt(r.totalF) + '</td>';
-    h += '<td class="num mono m-tot">' + fmt(r.totalR) + '</td>';
+    h += '<td class="num mono m-tot gstart">' + sondQty(r.totalF) + '</td>';
+    h += '<td class="num mono m-tot">' + sondQty(r.totalR) + '</td>';
     h += '<td class="num mono m-tot b-' + r.band + '" style="font-weight:600;">' + (r.totalF === 0 ? '<span class="nofc">No forecast</span>' : (r.pct == null ? '—' : fmtN(r.pct) + '%')) + '</td>';
     return h + '</tr>';
   }).join('');
