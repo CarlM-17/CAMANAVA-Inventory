@@ -3483,6 +3483,25 @@ async function loadSondData() {
     const byArea = {};
     rows.forEach(x => { byArea[x.area] = (byArea[x.area] || 0) + x.totalF; });
     Object.keys(byArea).sort().forEach(a => console.log('[SOND]   area ' + a + ': ' + byArea[a].toFixed(2)));
+    // Duplicate store+SKU rows would inflate every total — check explicitly
+    const seen = new Map();
+    let dupRows = 0, dupForecast = 0;
+    const dupSample = [];
+    rows.forEach(x => {
+      const k = x.storeCode + '|' + x.sku;
+      if (seen.has(k)) {
+        dupRows++; dupForecast += x.totalF;
+        if (dupSample.length < 8) dupSample.push(x.storeName + ' / ' + x.sku + ' (' + x.totalF.toFixed(2) + ')');
+      } else seen.set(k, true);
+    });
+    console.log('[SOND] duplicate store+SKU rows: ' + dupRows + '  forecast in duplicates: ' + dupForecast.toFixed(2));
+    if (dupSample.length) console.log('[SOND]   dup sample: ' + dupSample.join(', '));
+    // Top stores, so a single store can be compared against the raw sheet
+    const byStore = {};
+    rows.forEach(x => { const k = x.storeName || x.storeCode; byStore[k] = (byStore[k] || 0) + x.totalF; });
+    Object.entries(byStore).sort((a, b) => b[1] - a[1]).slice(0, 12)
+      .forEach(([n, v]) => console.log('[SOND]   store ' + n + ': ' + v.toFixed(2)));
+    cache.sond.dups = { rows: dupRows, forecast: sond2(dupForecast), sample: dupSample };
   } catch (e) {
     cache.sond.error = e.message;
     cache.sond.ready = cache.sond.rows.length > 0;
@@ -3595,7 +3614,10 @@ app.get('/api/sond/summary', (req, res) => {
       sheetTotalForecast: sond2(rows.reduce((a, x) => a + x.sheetTotalF, 0)),
       summedTotalForecast: sond2(totF),
       skippedRowsWithForecast: (cache.sond.skipped || []).length,
-      skippedSample: (cache.sond.skipped || []).slice(0, 5)
+      skippedSample: (cache.sond.skipped || []).slice(0, 5),
+      duplicateRows: (cache.sond.dups || {}).rows || 0,
+      duplicateForecast: (cache.sond.dups || {}).forecast || 0,
+      duplicateSample: (cache.sond.dups || {}).sample || []
     },
     months,
     total: { forecast: sond2(totF), received: sond2(totR), pct: sondPct(totF, totR) },
@@ -6913,7 +6935,19 @@ async function loadSOND() {
   sondState.months = d.months;
   document.getElementById('sond-count').textContent = fmt(d.rowCount) + ' rows';
   const when = d.lastRefresh ? new Date(d.lastRefresh).toLocaleTimeString() : '';
-  document.getElementById('sond-meta').textContent = 'tab: ' + d.tab + (when ? ' · updated ' + when : '');
+  const dg = d.diag || {};
+  const gap = (dg.summedTotalForecast != null && dg.sheetTotalForecast != null)
+    ? +(dg.summedTotalForecast - dg.sheetTotalForecast).toFixed(2) : null;
+  let meta = 'tab: ' + d.tab + (dg.tabs ? ' (of ' + dg.tabs.length + ')' : '') + (when ? ' · updated ' + when : '');
+  meta += ' · summed ' + fmtN(dg.summedTotalForecast || 0) + ' vs sheet col Z ' + fmtN(dg.sheetTotalForecast || 0);
+  if (gap) meta += ' (diff ' + (gap > 0 ? '+' : '') + fmtN(gap) + ')';
+  if (dg.skippedRowsWithForecast) meta += ' · ' + fmt(dg.skippedRowsWithForecast) + ' rows skipped with forecast';
+  if (dg.duplicateRows) meta += ' · ' + fmt(dg.duplicateRows) + ' duplicate rows (' + fmtN(dg.duplicateForecast) + ' cases)';
+  const el = document.getElementById('sond-meta');
+  el.textContent = meta;
+  el.title = 'Tabs in sheet: ' + ((dg.tabs || []).join(', ')) +
+    (dg.skippedSample && dg.skippedSample.length ? '\\nSkipped sample: ' + dg.skippedSample.map(s => 'line ' + s.line + ' (' + s.forecast + ')').join('; ') : '');
+  if (dg.skippedRowsWithForecast) el.style.color = 'var(--red-light)';
   // Populate filters once
   if (!sondState.filled) {
     if (areaEl) areaEl.innerHTML = '<option value="">All Areas</option>' +
