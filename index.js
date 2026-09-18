@@ -3618,6 +3618,28 @@ app.get('/api/sond/summary', (req, res) => {
     return row;
   };
   const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
+  // Generic rollup for the Vendor and Category views — same month matrix, different key
+  const rollup = (keyFn, keyField) => {
+    const gg = {};
+    for (const x of rows) {
+      const k = (keyFn(x) || '').trim() || '(blank)';
+      if (!gg[k]) {
+        gg[k] = { [keyField]: k, totalF: 0, totalR: 0, m: {}, _sku: new Set(), _store: new Set() };
+        SOND_MONTHS.forEach(mo => { gg[k].m[mo.key] = { f: 0, r: 0 }; });
+      }
+      const row = gg[k];
+      row._sku.add(x.sku); row._store.add(x.storeCode);
+      row.totalF += x.totalF; row.totalR += x.totalR;
+      SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
+    }
+    return Object.values(gg).map(row => {
+      row.skus = row._sku.size; row.stores = row._store.size;
+      delete row._sku; delete row._store;
+      return finish(row);
+    }).sort((a, b) => b.totalF - a.totalF);
+  };
+  const vendors = rollup(x => x.vendor, 'vendor');
+  const categories = rollup(x => x.category, 'category');
   // Zero-received alert: closed or current months where forecast existed and nothing arrived
   let missed = 0, unplanned = 0, unplannedCases = 0;
   for (const x of rows) {
@@ -3656,7 +3678,7 @@ app.get('/api/sond/summary', (req, res) => {
     unplannedSkus: unplanned,
     unplannedCases: sond2(unplannedCases),
     stores: storeRows.map(finish).sort((a, b) => b.totalF - a.totalF),
-    items,
+    items, vendors, categories,
     areas: [...new Set(cache.sond.rows.map(r => r.area))].filter(Boolean).sort(),
     storeList: [...new Map(cache.sond.rows.map(r => [r.storeCode, r.storeName])).entries()]
       .map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name))
@@ -5666,6 +5688,8 @@ canvas { max-height:260px; }
         <div class="sond-subtabs">
           <div class="sond-subtab active" id="sond-sub-btn-item" onclick="showSondSub('item')">📦 Per Item</div>
           <div class="sond-subtab" id="sond-sub-btn-store" onclick="showSondSub('store')">🏪 Per Store</div>
+          <div class="sond-subtab" id="sond-sub-btn-vendor" onclick="showSondSub('vendor')">🏭 Per Vendor</div>
+          <div class="sond-subtab" id="sond-sub-btn-category" onclick="showSondSub('category')">🗂 Per Category</div>
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
@@ -5690,6 +5714,24 @@ canvas { max-height:260px; }
             <table id="sond-store-table" class="sond-matrix">
               <thead id="sond-store-head"></thead>
               <tbody id="sond-store-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="sond-sub-vendor" style="display:none;">
+          <div class="table-wrap" style="max-height:560px;">
+            <table id="sond-vendor-table" class="sond-matrix">
+              <thead id="sond-vendor-head"></thead>
+              <tbody id="sond-vendor-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="sond-sub-category" style="display:none;">
+          <div class="table-wrap" style="max-height:560px;">
+            <table id="sond-category-table" class="sond-matrix">
+              <thead id="sond-category-head"></thead>
+              <tbody id="sond-category-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -6930,7 +6972,10 @@ async function loadTabData() {
 // ─── SOND SEASONAL TAB ────────────────────────────────────────────────────────
 const sondState = {
   months: [], filled: false, d: null, sub: 'item',
-  sort: { item: { key: 'totalF', dir: 'desc' }, store: { key: 'totalF', dir: 'desc' } }
+  sort: {
+    item: { key: 'totalF', dir: 'desc' }, store: { key: 'totalF', dir: 'desc' },
+    vendor: { key: 'totalF', dir: 'desc' }, category: { key: 'totalF', dir: 'desc' }
+  }
 };
 const SOND_SKEW_COLORS = ['#3fb950', '#1f6feb', '#8b949e', '#6e7681', '#484f58'];
 
@@ -7051,12 +7096,26 @@ const SOND_VIEWS = {
       { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true }
     ],
     searchOn: ['area', 'storeCode', 'storeName']
+  },
+  vendor: {
+    data: () => sondState.d.vendors,
+    cols: [
+      { k: 'vendor', h: 'Vendor' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true }
+    ],
+    searchOn: ['vendor']
+  },
+  category: {
+    data: () => sondState.d.categories,
+    cols: [
+      { k: 'category', h: 'Category' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true }
+    ],
+    searchOn: ['category']
   }
 };
 
 function showSondSub(which) {
   sondState.sub = which;
-  ['item', 'store'].forEach(k => {
+  ['item', 'store', 'vendor', 'category'].forEach(k => {
     const pane = document.getElementById('sond-sub-' + k);
     const btn = document.getElementById('sond-sub-btn-' + k);
     if (pane) pane.style.display = (k === which) ? '' : 'none';
