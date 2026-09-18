@@ -34,6 +34,9 @@ const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
 // CAMANAVA_SOND seasonal forecast sheet (standalone — not joined to inventory)
 const SOND_SHEET_ID = process.env.SOND_SHEET_ID || '1WNJHvkRufcGm3dNSMI7SsGonv1Il2P5h94jm2lo1lu0';
 const SOND_TAB = process.env.SOND_TAB || 'SONDSummary';   // consolidated tab; per-area tabs repeat these rows
+// The SOND sheet is small (~1.5s to read), so it can refresh far more often than the
+// 90MB inventory CSV. Edits to the sheet appear within this many minutes, unattended.
+const SOND_REFRESH_MINUTES = parseInt(process.env.SOND_REFRESH_MINUTES || '2', 10);
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 // Comma-separated list of usernames allowed to use the AI Assistant (case-insensitive).
@@ -1272,6 +1275,10 @@ async function refreshData(force = false) {
 // ─── BACKGROUND SCHEDULER ─────────────────────────────────────────────────────
 cron.schedule(`*/${REFRESH_INTERVAL_MINUTES} * * * *`, () => {
   refreshData(false);
+});
+
+// SOND refreshes on its own, faster schedule — it is a small sheet and is edited often.
+cron.schedule(`*/${SOND_REFRESH_MINUTES} * * * *`, () => {
   loadSondData();
 });
 
@@ -7190,7 +7197,18 @@ async function reloadSOND() {
   await loadSOND();
 }
 
+// While the SOND tab is open, pull fresh data every 45s so sheet edits appear on their
+// own. Paused when the tab is hidden or the browser window is in the background.
+let sondAutoTimer = null;
+function startSondAutoRefresh() {
+  if (sondAutoTimer) return;
+  sondAutoTimer = setInterval(() => {
+    if (activeTab === 'sond' && !document.hidden) loadSOND();
+  }, 45000);
+}
+
 async function loadSOND() {
+  startSondAutoRefresh();
   const areaEl = document.getElementById('sond-area');
   const storeEl = document.getElementById('sond-store');
   const params = new URLSearchParams();
@@ -7217,7 +7235,8 @@ async function loadSOND() {
   const dg = d.diag || {};
   const gap = (dg.summedTotalForecast != null && dg.sheetTotalForecast != null)
     ? +(dg.summedTotalForecast - dg.sheetTotalForecast).toFixed(2) : null;
-  let meta = 'tab: ' + d.tab + (dg.tabs ? ' (of ' + dg.tabs.length + ')' : '') + (when ? ' · updated ' + when : '');
+  let meta = 'tab: ' + d.tab + (dg.tabs ? ' (of ' + dg.tabs.length + ')' : '') +
+    (when ? ' · sheet read ' + when : '') + ' · auto-refresh on';
   meta += ' · total forecast ' + fmtN(dg.sheetTotalForecast || 0) + ' (sheet col Z)';
   if (gap) meta += ' · months sum to ' + fmtN(dg.summedTotalForecast || 0) + ', differs on ' + fmt(dg.divergentRows || 0) + ' rows';
   if (dg.skippedRowsWithForecast) meta += ' · ' + fmt(dg.skippedRowsWithForecast) + ' rows skipped with forecast';
