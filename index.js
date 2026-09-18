@@ -31,6 +31,8 @@ const STORES_FILE_NAME = process.env.STORES_FILE_NAME || 'ListOfStores.xlsx';
 const REFRESH_INTERVAL_MINUTES = parseInt(process.env.REFRESH_INTERVAL_MINUTES || '10');
 const LOGS_SHEET_ID = process.env.LOGS_SHEET_ID || '';
 const ACTION_PLANS_SHEET_ID = process.env.ACTION_PLANS_SHEET_ID || '';
+// CAMANAVA_SOND seasonal forecast sheet (standalone — not joined to inventory)
+const SOND_SHEET_ID = process.env.SOND_SHEET_ID || '1WNJHvkRufcGm3dNSMI7SsGonv1Il2P5h94jm2lo1lu0';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-4-5-20251001';
 // Comma-separated list of usernames allowed to use the AI Assistant (case-insensitive).
@@ -57,6 +59,7 @@ let cache = {
   catMap: {},         // deptName (uppercase) -> catName
   upcMap: {},         // upc -> { sku, desc }
   top300: [],         // [{ area, storeNumber, storeName, rank, sku, desc }]
+  sond: { ready: false, rows: [], tab: null, tabs: [], lastRefresh: null, error: null },  // CAMANAVA_SOND sheet (standalone)
   storeSkuIndex: {},  // "storeNum_skuCode" -> enriched row (for fast lookup)
   actionPlansAging: {},  // "storeNumber|skuCode" -> { actionPlan, user, updatedAt, rowNum }
   actionPlansBlack: {},  // same shape as above
@@ -1268,6 +1271,7 @@ async function refreshData(force = false) {
 // ─── BACKGROUND SCHEDULER ─────────────────────────────────────────────────────
 cron.schedule(`*/${REFRESH_INTERVAL_MINUTES} * * * *`, () => {
   refreshData(false);
+  loadSondData();
 });
 
 // ─── FILTER HELPER ────────────────────────────────────────────────────────────
@@ -3371,6 +3375,189 @@ app.get('/api/export-top300-xlsx', async (req, res) => {
   res.end();
 });
 
+// ─── SOND SEASONAL FORECAST ───────────────────────────────────────────────────
+// Standalone: reads the CAMANAVA_SOND Google Sheet only. Nothing here touches the
+// inventory pipeline. Columns follow the A..AB reference supplied by the owner.
+const SOND_MONTHS = [
+  { key: 'aug', label: 'August',    short: 'Aug', month: 8,  fc: 10, rc: 11 },
+  { key: 'sep', label: 'September', short: 'Sep', month: 9,  fc: 13, rc: 14 },
+  { key: 'oct', label: 'October',   short: 'Oct', month: 10, fc: 16, rc: 17 },
+  { key: 'nov', label: 'November',  short: 'Nov', month: 11, fc: 19, rc: 20 },
+  { key: 'dec', label: 'December',  short: 'Dec', month: 12, fc: 22, rc: 23 }
+];
+const SOND_COL = { area: 1, storeCode: 2, storeName: 3, sku: 4, desc: 5, vendor: 6, category: 7, skuStatus: 8, sts: 9, totFc: 25, totRc: 26 };
+
+function sondNum(v) {
+  if (v == null) return 0;
+  const n = parseFloat(String(v).replace(/[, %]/g, ''));
+  return isNaN(n) ? 0 : n;
+}
+// Month lifecycle drives the colouring: upcoming months are never marked short.
+function sondMonthState(m) {
+  const now = new Date();
+  const cur = now.getMonth() + 1;
+  if (cur > m.month) return 'closed';
+  if (cur === m.month) return 'current';
+  return 'upcoming';
+}
+// Target is 100%. Over-delivery is called out separately — it is excess stock, not success.
+function sondBand(pct, state) {
+  if (state === 'upcoming') return 'upcoming';
+  if (pct == null) return 'none';
+  if (pct > 120) return 'over';
+  if (pct >= 100) return 'met';
+  if (pct >= 90) return 'close';
+  return 'short';
+}
+function sondPct(f, r) { return f > 0 ? +((r / f) * 100).toFixed(1) : null; }
+
+async function loadSondData() {
+  if (!SOND_SHEET_ID) { cache.sond.error = 'SOND_SHEET_ID not set'; return; }
+  try {
+    const t0 = Date.now();
+    const sheets = await getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SOND_SHEET_ID, fields: 'sheets(properties(title,index))' });
+    const tabs = (meta.data.sheets || []).map(s => s.properties.title);
+    if (!tabs.length) throw new Error('No tabs found in SOND sheet');
+    // Prefer a consolidated tab; otherwise the first one.
+    const tab = tabs.find(t => /consolidat|master|all|source|summary/i.test(t)) || tabs[0];
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SOND_SHEET_ID, range: "'" + tab + "'!A1:AB" });
+    const values = resp.data.values || [];
+    // Header row is whichever of the first rows carries "Store Code"
+    let hdrIdx = values.findIndex(r => (r || []).some(c => String(c).trim().toLowerCase() === 'store code'));
+    if (hdrIdx < 0) hdrIdx = 0;
+    const rows = [];
+    for (let i = hdrIdx + 1; i < values.length; i++) {
+      const r = values[i] || [];
+      const storeCode = String(r[SOND_COL.storeCode] || '').trim();
+      const sku = String(r[SOND_COL.sku] || '').trim();
+      if (!storeCode || !sku) continue;
+      if (storeCode.toLowerCase() === 'store code') continue;   // repeated header inside the tab
+      const rec = {
+        area: String(r[SOND_COL.area] || '').trim(),
+        storeCode, storeName: String(r[SOND_COL.storeName] || '').trim(),
+        sku, desc: String(r[SOND_COL.desc] || '').trim(),
+        vendor: String(r[SOND_COL.vendor] || '').trim(),
+        category: String(r[SOND_COL.category] || '').trim(),
+        skuStatus: String(r[SOND_COL.skuStatus] || '').trim(),
+        sts: String(r[SOND_COL.sts] || '').trim(),
+        m: {}
+      };
+      let tf = 0, tr = 0;
+      for (const mo of SOND_MONTHS) {
+        const f = sondNum(r[mo.fc]), rc = sondNum(r[mo.rc]);
+        rec.m[mo.key] = { f, r: rc };
+        tf += f; tr += rc;
+      }
+      // Percentages are always recomputed, never read from the sheet's % columns.
+      rec.totalF = tf; rec.totalR = tr;
+      rec.sheetTotalF = sondNum(r[SOND_COL.totFc]);
+      rows.push(rec);
+    }
+    cache.sond = { ready: true, rows, tab, tabs, lastRefresh: new Date().toISOString(), error: null };
+    console.log('[SOND] loaded ' + rows.length + ' rows from tab "' + tab + '" in ' + (Date.now() - t0) + 'ms');
+  } catch (e) {
+    cache.sond.error = e.message;
+    cache.sond.ready = cache.sond.rows.length > 0;
+    console.warn('[SOND] load failed:', e.message);
+  }
+}
+
+function sondFiltered(req) {
+  const q = req.query || {};
+  const s = sessions[q.token || ''];
+  let rows = cache.sond.rows;
+  const area = (q.area || '').trim();
+  const store = (q.store || '').trim();
+  const vendor = (q.vendor || '').trim();
+  const category = (q.category || '').trim();
+  const search = (q.search || '').trim().toLowerCase();
+  // Area lock for non-admins, applied only when their area exists in the SOND sheet
+  let lock = '';
+  if (s && !s.isAdmin && s.area) {
+    const areas = new Set(cache.sond.rows.map(r => r.area));
+    if (areas.has(s.area)) lock = s.area;
+  }
+  const useArea = lock || area;
+  return rows.filter(r =>
+    (!useArea || r.area === useArea) &&
+    (!store || r.storeCode === store) &&
+    (!vendor || r.vendor === vendor) &&
+    (!category || r.category === category) &&
+    (!search || (r.sku + ' ' + r.desc + ' ' + r.storeName + ' ' + r.vendor).toLowerCase().includes(search))
+  );
+}
+
+app.get('/api/sond/summary', (req, res) => {
+  if (!cache.sond.ready) {
+    if (!cache.sond.error) loadSondData();
+    return res.json({ ready: false, error: cache.sond.error || 'SOND data loading, try again shortly' });
+  }
+  const rows = sondFiltered(req);
+  const months = SOND_MONTHS.map(mo => {
+    const state = sondMonthState(mo);
+    let f = 0, r = 0;
+    for (const x of rows) { f += x.m[mo.key].f; r += x.m[mo.key].r; }
+    const pct = sondPct(f, r);
+    return { key: mo.key, label: mo.label, short: mo.short, state, forecast: Math.round(f), received: Math.round(r), pct, band: sondBand(pct, state) };
+  });
+  const totF = rows.reduce((a, x) => a + x.totalF, 0);
+  const totR = rows.reduce((a, x) => a + x.totalR, 0);
+  // Per-store rollup
+  const g = {};
+  for (const x of rows) {
+    const k = x.storeCode;
+    if (!g[k]) { g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, totalF: 0, totalR: 0, m: {} };
+      SOND_MONTHS.forEach(mo => { g[k].m[mo.key] = { f: 0, r: 0 }; }); }
+    const row = g[k];
+    row.skus++;
+    row.totalF += x.totalF; row.totalR += x.totalR;
+    SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
+  }
+  const stores = Object.values(g).map(row => {
+    SOND_MONTHS.forEach(mo => {
+      const c = row.m[mo.key];
+      c.f = Math.round(c.f); c.r = Math.round(c.r);
+      c.pct = sondPct(c.f, c.r);
+      c.band = sondBand(c.pct, sondMonthState(mo));
+      // share of this store's season forecast — the skew bar
+      c.share = row.totalF > 0 ? +((c.f / row.totalF) * 100).toFixed(1) : 0;
+    });
+    row.totalF = Math.round(row.totalF); row.totalR = Math.round(row.totalR);
+    row.pct = sondPct(row.totalF, row.totalR);
+    row.band = sondBand(row.pct, 'closed');
+    // items with a closed-month forecast but nothing received at all
+    return row;
+  }).sort((a, b) => b.totalF - a.totalF);
+  // Zero-received alert: closed or current months where forecast existed and nothing arrived
+  let missed = 0;
+  for (const x of rows) {
+    for (const mo of SOND_MONTHS) {
+      const st = sondMonthState(mo);
+      if (st === 'upcoming') continue;
+      if (x.m[mo.key].f > 0 && x.m[mo.key].r === 0) { missed++; break; }
+    }
+  }
+  res.json({
+    ready: true,
+    lastRefresh: cache.sond.lastRefresh,
+    tab: cache.sond.tab,
+    rowCount: rows.length,
+    months,
+    total: { forecast: Math.round(totF), received: Math.round(totR), pct: sondPct(totF, totR) },
+    missedSkus: missed,
+    stores,
+    areas: [...new Set(cache.sond.rows.map(r => r.area))].filter(Boolean).sort(),
+    storeList: [...new Map(cache.sond.rows.map(r => [r.storeCode, r.storeName])).entries()]
+      .map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name))
+  });
+});
+
+app.post('/api/sond/reload', async (req, res) => {
+  await loadSondData();
+  res.json({ ok: !cache.sond.error, error: cache.sond.error, rows: cache.sond.rows.length, lastRefresh: cache.sond.lastRefresh });
+});
+
 // ─── AI ASSISTANT ─────────────────────────────────────────────────────────────
 // Builds a compact JSON snapshot of the currently-filtered dataset so the model
 // can answer questions without receiving 10k+ rows.
@@ -4514,6 +4701,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU Blitz</div>
       <div class="tab" onclick="showTab('ricereview')">🌾 Rice Stock Review</div>
       <div class="tab" onclick="showTab('agingblack')">📉 Aging & Black Summary</div>
+      <div class="tab" onclick="showTab('sond')">🎄 SOND</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
     </div>
 
@@ -5299,6 +5487,54 @@ canvas { max-height:260px; }
         </div>
         <div class="pagination" id="skus-pagination"></div>
         </div><!-- /sku-subtab-list -->
+      </div>
+    </div>
+
+    <!-- SOND SEASONAL TAB -->
+    <div id="tab-sond" style="display:none;">
+      <style>
+        .sond-strip { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:14px; }
+        .sond-mcard { background:var(--bg2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; }
+        .sond-mcard.cur { border:2px solid var(--blue); background:rgba(31,111,235,0.10); }
+        .sond-mcard .lab { font-size:10px; color:var(--text2); text-transform:uppercase; letter-spacing:0.5px; }
+        .sond-mcard .val { font-size:22px; font-weight:700; margin:2px 0; }
+        .sond-mcard .sub { font-size:11px; color:var(--text2); font-family:'IBM Plex Mono',monospace; }
+        .b-met { color:var(--green-bright); } .b-close { color:var(--yellow-light); }
+        .b-short { color:var(--red-light); } .b-over { color:var(--blue); }
+        .b-upcoming, .b-none { color:var(--text2); }
+        #sond-store-table td.cell-met { background:rgba(46,160,67,0.12); }
+        #sond-store-table td.cell-close { background:rgba(210,153,34,0.14); }
+        #sond-store-table td.cell-short { background:rgba(218,54,51,0.14); }
+        #sond-store-table td.cell-over { background:rgba(31,111,235,0.14); }
+        #sond-store-table td.cell-upcoming { color:var(--text2); }
+        #sond-store-table th.mcur, #sond-store-table td.mcur { border-left:2px solid var(--blue); border-right:2px solid var(--blue); }
+        .sond-skew { display:flex; height:9px; width:110px; border-radius:5px; overflow:hidden; background:var(--bg2); }
+        .sond-skew span { display:block; height:100%; }
+      </style>
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">🎄 SOND Seasonal Delivery
+            <span class="badge badge-blue" id="sond-count" style="margin-left:8px;">0</span>
+            <span id="sond-meta" style="font-size:10px;color:var(--text2);font-weight:400;margin-left:6px;"></span>
+          </div>
+          <div class="section-actions">
+            <select class="filter-select" id="sond-area" onchange="loadSOND()" style="width:150px;"><option value="">All Areas</option></select>
+            <select class="filter-select" id="sond-store" onchange="loadSOND()" style="width:190px;"><option value="">All Stores</option></select>
+            <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('sond-store-table',this.value)"/>
+            <button class="btn btn-sm" onclick="reloadSOND()" id="sond-reload-btn">↻ Reload Sheet</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--text2);margin-bottom:10px;">
+          Target 100%. Percentages are recomputed from Forecast and Received — the sheet's % columns are ignored.
+          Months that have not started are shown grey, never as a shortfall. Quantities are in <b>cases</b>.
+        </div>
+        <div class="sond-strip" id="sond-months"></div>
+        <div class="table-wrap" style="max-height:560px;">
+          <table id="sond-store-table">
+            <thead id="sond-store-head"></thead>
+            <tbody id="sond-store-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -6529,7 +6765,115 @@ async function loadTabData() {
   if (activeTab === 'top300') await loadTop300();
   if (activeTab === 'ricereview') await loadRiceReview();
   if (activeTab === 'agingblack') await loadAgingBlack();
+  if (activeTab === 'sond') await loadSOND();
   if (activeTab === 'logs') await loadLogs();
+}
+
+// ─── SOND SEASONAL TAB ────────────────────────────────────────────────────────
+const sondState = { months: [], filled: false };
+const SOND_SKEW_COLORS = ['#3fb950', '#1f6feb', '#8b949e', '#6e7681', '#484f58'];
+
+async function reloadSOND() {
+  const btn = document.getElementById('sond-reload-btn');
+  btn.disabled = true; btn.textContent = 'Reloading...';
+  try { await fetch('/api/sond/reload' + tokenParam('?'), { method: 'POST' }); } catch (e) {}
+  btn.disabled = false; btn.textContent = '↻ Reload Sheet';
+  await loadSOND();
+}
+
+async function loadSOND() {
+  const areaEl = document.getElementById('sond-area');
+  const storeEl = document.getElementById('sond-store');
+  const params = new URLSearchParams();
+  if (areaEl && areaEl.value) params.set('area', areaEl.value);
+  if (storeEl && storeEl.value) params.set('store', storeEl.value);
+  if (authToken) params.set('token', authToken);
+  let d;
+  try {
+    const r = await fetch('/api/sond/summary?' + params.toString());
+    d = await r.json();
+  } catch (e) {
+    document.getElementById('sond-store-body').innerHTML = '<tr><td colspan="9" class="empty">Could not reach server</td></tr>';
+    return;
+  }
+  if (!d || !d.ready) {
+    const msg = (d && d.error) ? d.error : 'SOND data not loaded';
+    document.getElementById('sond-months').innerHTML = '';
+    document.getElementById('sond-store-body').innerHTML = '<tr><td colspan="9" class="empty">' + esc(msg) + '</td></tr>';
+    return;
+  }
+  sondState.months = d.months;
+  document.getElementById('sond-count').textContent = fmt(d.rowCount) + ' rows';
+  const when = d.lastRefresh ? new Date(d.lastRefresh).toLocaleTimeString() : '';
+  document.getElementById('sond-meta').textContent = 'tab: ' + d.tab + (when ? ' · updated ' + when : '');
+  // Populate filters once
+  if (!sondState.filled) {
+    if (areaEl) areaEl.innerHTML = '<option value="">All Areas</option>' +
+      d.areas.map(a => '<option value="' + esc(a) + '">' + esc(a) + '</option>').join('');
+    if (storeEl) storeEl.innerHTML = '<option value="">All Stores</option>' +
+      d.storeList.map(s => '<option value="' + esc(s.code) + '">' + esc(s.name) + '</option>').join('');
+    sondState.filled = true;
+  }
+  renderSondMonths(d);
+  renderSondStores(d);
+}
+
+function sondPctText(pct, band) {
+  if (band === 'upcoming') return '—';
+  if (pct == null) return '—';
+  return fmtN(pct) + '%';
+}
+
+function renderSondMonths(d) {
+  const strip = document.getElementById('sond-months');
+  const cards = d.months.map(m => {
+    const stateLabel = m.state === 'closed' ? 'closed' : (m.state === 'current' ? 'in progress' : 'upcoming');
+    return '<div class="sond-mcard' + (m.state === 'current' ? ' cur' : '') + '">' +
+      '<div class="lab">' + m.short + ' · ' + stateLabel + '</div>' +
+      '<div class="val b-' + m.band + '">' + sondPctText(m.pct, m.band) + '</div>' +
+      '<div class="sub">' + fmt(m.received) + ' / ' + fmt(m.forecast) + '</div>' +
+    '</div>';
+  });
+  const t = d.total;
+  cards.push('<div class="sond-mcard" style="border-color:var(--text2);">' +
+    '<div class="lab">Season total</div>' +
+    '<div class="val">' + (t.pct == null ? '—' : fmtN(t.pct) + '%') + '</div>' +
+    '<div class="sub">' + fmt(t.received) + ' / ' + fmt(t.forecast) + '</div>' +
+  '</div>');
+  cards.push('<div class="sond-mcard" style="border-color:var(--red-light);">' +
+    '<div class="lab">SKUs with nothing received</div>' +
+    '<div class="val b-short">' + fmt(d.missedSkus) + '</div>' +
+    '<div class="sub">forecast set, zero delivered</div>' +
+  '</div>');
+  strip.innerHTML = cards.join('');
+}
+
+function renderSondStores(d) {
+  const head = document.getElementById('sond-store-head');
+  const body = document.getElementById('sond-store-body');
+  const mh = d.months.map(m => '<th class="' + (m.state === 'current' ? 'mcur' : '') + '" title="' + m.label + '">' + m.short + '</th>').join('');
+  head.innerHTML = '<tr><th>Area</th><th>Store</th><th>SKUs</th>' + mh +
+    '<th>Season %</th><th>Fcst</th><th>Recd</th><th>Skew</th></tr>';
+  if (!d.stores.length) { body.innerHTML = '<tr><td colspan="' + (8 + d.months.length) + '" class="empty">No data found</td></tr>'; return; }
+  body.innerHTML = d.stores.map(s => {
+    const cells = d.months.map(m => {
+      const c = s.m[m.key];
+      return '<td class="mono cell-' + c.band + (m.state === 'current' ? ' mcur' : '') + '" title="' +
+        fmt(c.r) + ' of ' + fmt(c.f) + ' cases">' + sondPctText(c.pct, c.band) + '</td>';
+    }).join('');
+    const skew = d.months.map((m, i) =>
+      '<span style="width:' + s.m[m.key].share + '%;background:' + SOND_SKEW_COLORS[i] + ';"></span>').join('');
+    return '<tr>' +
+      '<td><span class="badge badge-blue">' + esc(s.area || '') + '</span></td>' +
+      '<td>' + esc(s.storeName || s.storeCode) + '</td>' +
+      '<td class="mono">' + fmt(s.skus) + '</td>' +
+      cells +
+      '<td class="mono b-' + s.band + '" style="font-weight:600;">' + (s.pct == null ? '—' : fmtN(s.pct) + '%') + '</td>' +
+      '<td class="mono">' + fmt(s.totalF) + '</td>' +
+      '<td class="mono">' + fmt(s.totalR) + '</td>' +
+      '<td><div class="sond-skew" title="Share of season forecast per month">' + skew + '</div></td>' +
+    '</tr>';
+  }).join('');
 }
 
 // Stores the full unpaginated dataset for each table — used by sortTable to sort across all pages
@@ -8227,7 +8571,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','agingblack','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','agingblack','sond','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
@@ -8833,5 +9177,6 @@ app.listen(PORT, () => {
     console.log('[Server] Starting initial data load...');
     loadUsersEarly();     // small file — makes sign-in available in seconds
     refreshData(true);    // big file — runs in parallel
+    loadSondData();       // SOND sheet — independent of the inventory pipeline
   }
 });
