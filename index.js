@@ -7174,7 +7174,7 @@ async function loadTabData() {
 
 // ─── SOND SEASONAL TAB ────────────────────────────────────────────────────────
 const sondState = {
-  months: [], filled: false, d: null, sub: 'item',
+  months: [], areaSig: null, storeSig: null, d: null, sub: 'item',
   sort: {
     item: { key: 'totalF', dir: 'desc' }, store: { key: 'totalF', dir: 'desc' },
     vendor: { key: 'totalF', dir: 'desc' }, category: { key: 'totalF', dir: 'desc' }
@@ -7227,13 +7227,24 @@ async function loadSOND() {
   el.title = 'Tabs in sheet: ' + ((dg.tabs || []).join(', ')) +
     (dg.skippedSample && dg.skippedSample.length ? '\\nSkipped sample: ' + dg.skippedSample.map(s => 'line ' + s.line + ' (' + s.forecast + ')').join('; ') : '');
   if (dg.skippedRowsWithForecast) el.style.color = 'var(--red-light)';
-  // Populate filters once
-  if (!sondState.filled) {
-    if (areaEl) areaEl.innerHTML = '<option value="">All Areas</option>' +
+  // Rebuild the filters whenever the sheet's areas/stores change (e.g. a new area was
+  // added to the sheet), preserving the current selection. Populating only once meant
+  // new areas never appeared until a full page reload.
+  const areaSig = (d.areas || []).join('|');
+  const storeSig = (d.storeList || []).map(s => s.code).join('|');
+  if (areaEl && sondState.areaSig !== areaSig) {
+    const keep = areaEl.value;
+    areaEl.innerHTML = '<option value="">All Areas</option>' +
       d.areas.map(a => '<option value="' + esc(a) + '">' + esc(a) + '</option>').join('');
-    if (storeEl) storeEl.innerHTML = '<option value="">All Stores</option>' +
+    if (keep && d.areas.indexOf(keep) >= 0) areaEl.value = keep;
+    sondState.areaSig = areaSig;
+  }
+  if (storeEl && sondState.storeSig !== storeSig) {
+    const keep = storeEl.value;
+    storeEl.innerHTML = '<option value="">All Stores</option>' +
       d.storeList.map(s => '<option value="' + esc(s.code) + '">' + esc(s.name) + '</option>').join('');
-    sondState.filled = true;
+    if (keep && d.storeList.some(s => s.code === keep)) storeEl.value = keep;
+    sondState.storeSig = storeSig;
   }
   sondState.d = d;
   renderSondMonths(d);
