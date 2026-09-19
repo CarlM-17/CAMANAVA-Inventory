@@ -3583,6 +3583,16 @@ function sondSummary(req) {
     const pct = sondPct(f, r);
     return { key: mo.key, label: mo.label, short: mo.short, state, forecast: f, received: r, pct, band: sondBand(pct, state, f, r) };
   });
+  // Running totals across the network, same rule as the per-row version
+  let mcf = 0, mcr = 0;
+  months.forEach(m => {
+    if (m.state === 'upcoming') { m.cumForecast = null; m.cumReceived = null; m.cumPct = null; m.cumBand = 'upcoming'; return; }
+    mcf += m.forecast; mcr += m.received;
+    m.cumForecast = sond2(mcf); m.cumReceived = sond2(mcr);
+    m.cumPct = sondPct(m.cumForecast, m.cumReceived);
+    m.cumBand = sondBand(m.cumPct, 'closed', m.cumForecast, m.cumReceived);
+  });
+  const backlogTotal = sond2(Math.max(0, mcf - mcr));
   const totF = rows.reduce((a, x) => a + x.totalF, 0);
   const totR = rows.reduce((a, x) => a + x.totalR, 0);
   // Per-store rollup
@@ -3622,6 +3632,22 @@ function sondSummary(req) {
     row.band = sondBand(row.pct, 'closed', row.totalF, row.totalR);
     // months where nothing was committed but stock still arrived
     row.unplanned = SOND_MONTHS.filter(mo => row.m[mo.key].f === 0 && row.m[mo.key].r > 0).map(mo => mo.short);
+    // Running totals. A delivery that slipped into the next month still counts toward the
+    // combined commitment, so late deliveries no longer look like over-delivery.
+    // Upcoming months are excluded — their forecast is not due yet.
+    let cf = 0, cr = 0;
+    SOND_MONTHS.forEach(mo => {
+      const c = row.m[mo.key];
+      if (sondMonthState(mo) === 'upcoming') { c.cumF = null; c.cumR = null; c.cumPct = null; c.cumBand = 'upcoming'; return; }
+      cf += c.f; cr += c.r;
+      c.cumF = sond2(cf); c.cumR = sond2(cr);
+      c.cumPct = sondPct(c.cumF, c.cumR);
+      c.cumBand = sondBand(c.cumPct, 'closed', c.cumF, c.cumR);
+    });
+    // Cases still owed across every month due so far. Floored at zero — being ahead is
+    // not a debt; the cumulative % above 100 already says that.
+    row.backlog = sond2(Math.max(0, cf - cr));
+    row.dueF = sond2(cf); row.dueR = sond2(cr);
     return row;
   };
   const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
@@ -3682,6 +3708,8 @@ function sondSummary(req) {
     months,
     total: { forecast: sond2(totF), received: sond2(totR), pct: sondPct(totF, totR) },
     missedSkus: missed,
+    backlogTotal,
+    dueForecast: sond2(mcf), dueReceived: sond2(mcr),
     unplannedSkus: unplanned,
     unplannedCases: sond2(unplannedCases),
     stores: storeRows.map(finish).sort((a, b) => b.totalF - a.totalF),
@@ -3720,7 +3748,7 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
     wb.created = new Date();
     const ws = wb.addWorksheet('SOND ' + def.label);
     const nLead = def.cols.length;
-    const nCols = nLead + d.months.length * 3 + 3;
+    const nCols = nLead + d.months.length * 4 + 1 + 3;   // 4 per month + backlog + grand total
 
     // Row 1 — title
     ws.mergeCells(1, 1, 1, nCols);
@@ -3757,14 +3785,14 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
       c++;
     });
     d.months.forEach(m => {
-      ws.mergeCells(3, c, 3, c + 2);
+      ws.mergeCells(3, c, 3, c + 3);
       const g = ws.getCell(3, c);
       g.value = m.label + (m.state === 'current' ? ' (in progress)' : (m.state === 'upcoming' ? ' (upcoming)' : ''));
       g.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
       g.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: MONTH_FILL[m.key] } };
       g.alignment = { vertical: 'middle', horizontal: 'center' };
       g.border = border;
-      ['Forecast', 'Received', 'Received %'].forEach((lbl, i) => {
+      ['Forecast', 'Received', 'Received %', 'Cum %'].forEach((lbl, i) => {
         const h = ws.getCell(4, c + i);
         h.value = lbl;
         h.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -3773,8 +3801,18 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
         h.border = border;
         ws.getColumn(c + i).width = 13;
       });
-      c += 3;
+      c += 4;
     });
+    // Backlog sits between the months and the grand total, matching the on-screen table
+    ws.mergeCells(3, c, 4, c);
+    const bkh = ws.getCell(3, c);
+    bkh.value = 'Backlog';
+    bkh.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    bkh.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC62828' } };
+    bkh.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    bkh.border = border;
+    ws.getColumn(c).width = 12;
+    c += 1;
     ws.mergeCells(3, c, 3, c + 2);
     const gt = ws.getCell(3, c);
     gt.value = 'Grand Total';
@@ -3816,8 +3854,17 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
         pc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[mc.band] || 'FFFFFFFF' } };
         pc.alignment = { horizontal: 'right' };
         pc.border = border;
-        cc += 3;
+        const cum = ws.getCell(r, cc + 3);
+        if (mc.cumPct == null) { cum.value = '—'; cum.font = { italic: true, color: { argb: 'FF9E9E9E' }, size: 9 }; }
+        else { cum.value = mc.cumPct / 100; cum.numFmt = '0.0%'; cum.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[mc.cumBand] || 'FFFFFFFF' } }; }
+        cum.alignment = { horizontal: 'right' };
+        cum.border = border;
+        cc += 4;
       });
+      const bk = ws.getCell(r, cc);
+      bk.value = row.backlog || 0; bk.numFmt = '#,##0.##'; bk.border = border;
+      if (row.backlog > 0) { bk.font = { bold: true, color: { argb: 'FFC62828' } }; bk.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFCDD2' } }; }
+      cc += 1;
       const tf = ws.getCell(r, cc); tf.value = row.totalF; tf.numFmt = '#,##0.##'; tf.border = border;
       const tr = ws.getCell(r, cc + 1); tr.value = row.totalR; tr.numFmt = '#,##0.##'; tr.border = border;
       const tp = ws.getCell(r, cc + 2);
@@ -3845,8 +3892,16 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
       if (m.forecast === 0) pp.value = '—'; else { pp.value = (m.pct || 0) / 100; pp.numFmt = '0.0%'; }
       [f, rr, pp].forEach(x => { x.font = { bold: true }; x.border = border;
         x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } }; });
-      tc += 3;
+      const cu = ws.getCell(totRow, tc + 3);
+      if (m.cumPct == null) cu.value = '—'; else { cu.value = m.cumPct / 100; cu.numFmt = '0.0%'; }
+      cu.font = { bold: true }; cu.border = border;
+      cu.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+      tc += 4;
     });
+    const bkt = ws.getCell(totRow, tc); bkt.value = d.backlogTotal || 0; bkt.numFmt = '#,##0.##';
+    bkt.font = { bold: true, color: { argb: 'FFC62828' } }; bkt.border = border;
+    bkt.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFCDD2' } };
+    tc += 1;
     const gf = ws.getCell(totRow, tc); gf.value = d.total.forecast; gf.numFmt = '#,##0.##';
     const gr = ws.getCell(totRow, tc + 1); gr.value = d.total.received; gr.numFmt = '#,##0.##';
     const gp = ws.getCell(totRow, tc + 2); gp.value = (d.total.pct || 0) / 100; gp.numFmt = '0.0%';
@@ -3857,8 +3912,8 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
     // Visuals: data bars on the season totals, so volume is readable at a glance
     if (rows.length) {
       const colLetter = (n) => { let s = ''; while (n > 0) { const m2 = (n - 1) % 26; s = String.fromCharCode(65 + m2) + s; n = Math.floor((n - 1) / 26); } return s; };
-      const fCol = colLetter(nLead + d.months.length * 3 + 1);
-      const rCol = colLetter(nLead + d.months.length * 3 + 2);
+      const fCol = colLetter(nLead + d.months.length * 4 + 2);
+      const rCol = colLetter(nLead + d.months.length * 4 + 3);
       // dataBar needs an explicit cfvo range or ExcelJS throws while writing
       const bar = (argb) => ({ type: 'dataBar', gradient: false, color: { argb },
         cfvo: [{ type: 'min' }, { type: 'max' }], minLength: 0, maxLength: 100 });
@@ -5875,6 +5930,12 @@ canvas { max-height:260px; }
         .sond-matrix .gstart { border-left:2px solid var(--border); }
         .sond-matrix .nofc { color:var(--text2); font-style:italic; font-size:10px; }
         .sond-sortind { font-size:9px; color:var(--blue); margin-left:2px; }
+        .sond-mode { padding:6px 12px; font-size:11px; font-weight:600; cursor:pointer; color:var(--text2); user-select:none; }
+        .sond-mode.active { background:var(--blue); color:#fff; }
+        .sond-matrix .m-bkl { background:rgba(218,54,51,0.10); }
+        .sond-matrix thead tr.grprow th.m-bkl { border-top:3px solid var(--red-light); }
+        .sond-matrix td.bkl-has { color:var(--red-light); font-weight:700; }
+        .sond-matrix td.bkl-none { color:var(--text2); }
       </style>
       <div class="section">
         <div class="section-header">
@@ -5903,8 +5964,12 @@ canvas { max-height:260px; }
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-          <div style="font-size:11px;color:var(--text2);">Forecast and received cases by delivery month. Scroll sideways for all months. Click any header to sort.</div>
-          <div style="display:flex;gap:6px;">
+          <div style="font-size:11px;color:var(--text2);" id="sond-mode-note">Forecast and received cases by delivery month. Scroll sideways for all months. Click any header to sort.</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;">
+              <div class="sond-mode active" id="sond-mode-monthly" onclick="setSondMode('monthly')">Monthly</div>
+              <div class="sond-mode" id="sond-mode-cumulative" onclick="setSondMode('cumulative')">Cumulative</div>
+            </div>
             <input type="text" class="table-search" id="sond-matrix-search" placeholder="Search SKU, description, vendor..." oninput="renderSondActive()" style="width:260px;"/>
             <button class="btn btn-sm" onclick="exportSondExcel()">⬇ Export Excel</button>
           </div>
@@ -7181,7 +7246,7 @@ async function loadTabData() {
 
 // ─── SOND SEASONAL TAB ────────────────────────────────────────────────────────
 const sondState = {
-  months: [], areaSig: null, storeSig: null, d: null, sub: 'item',
+  months: [], areaSig: null, storeSig: null, d: null, sub: 'item', mode: 'monthly',
   sort: {
     item: { key: 'totalF', dir: 'desc' }, store: { key: 'totalF', dir: 'desc' },
     vendor: { key: 'totalF', dir: 'desc' }, category: { key: 'totalF', dir: 'desc' }
@@ -7290,8 +7355,16 @@ function renderSondMonths(d) {
       '<div class="lab">' + m.short + ' · ' + stateLabel + '</div>' +
       '<div class="val b-' + m.band + '">' + sondPctText(m.pct, m.band) + '</div>' +
       '<div class="sub">' + sondQty(m.received) + ' / ' + sondQty(m.forecast) + '</div>' +
+      (m.cumPct != null
+        ? '<div class="sub" style="margin-top:2px;">cumulative <span class="b-' + m.cumBand + '" style="font-weight:700;">' + fmtN(m.cumPct) + '%</span></div>'
+        : '') +
     '</div>';
   });
+  cards.push('<div class="sond-mcard" style="border-color:var(--red-light);">' +
+    '<div class="lab">Backlog owed</div>' +
+    '<div class="val b-short">' + sondQty(d.backlogTotal || 0) + '</div>' +
+    '<div class="sub">cases due but not received</div>' +
+  '</div>');
   const t = d.total;
   cards.push('<div class="sond-mcard" style="border-color:var(--text2);">' +
     '<div class="lab">Season total</div>' +
@@ -7359,6 +7432,22 @@ function showSondSub(which) {
 
 function sondGet(o, path) { return path.split('.').reduce((x, p) => (x == null ? x : x[p]), o); }
 
+function setSondMode(mode) {
+  sondState.mode = mode;
+  const mEl = document.getElementById('sond-mode-monthly');
+  const cEl = document.getElementById('sond-mode-cumulative');
+  if (mEl) mEl.classList.toggle('active', mode === 'monthly');
+  if (cEl) cEl.classList.toggle('active', mode === 'cumulative');
+  const note = document.getElementById('sond-mode-note');
+  if (note) note.innerHTML = mode === 'cumulative'
+    ? 'Running totals: each month shows forecast and received <b>added up from August</b>, so a delivery that slipped into the next month still counts. Months not yet due are excluded.'
+    : 'Forecast and received cases by delivery month. Scroll sideways for all months. Click any header to sort.';
+  // A sort key from the other mode no longer exists — fall back to the season total
+  const st = sondState.sort[sondState.sub];
+  if (st && st.key.indexOf('m.') === 0) { st.key = 'totalF'; st.dir = 'desc'; }
+  renderSondActive();
+}
+
 function sondSort(view, key) {
   const st = sondState.sort[view];
   if (st.key === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
@@ -7380,18 +7469,23 @@ function renderSondMatrix(view) {
   const ms = d.months;
   const totalCols = cfg.cols.length + ms.length * 3 + 3;
 
-  // ── header: group row, then Forecast / Received / Received % under each month
+  // ── header: group row, then three columns under each month.
+  // Monthly mode shows that month alone; Cumulative shows the running total to date.
+  const cum = sondState.mode === 'cumulative';
+  const kF = cum ? 'cumF' : 'f', kR = cum ? 'cumR' : 'r', kP = cum ? 'cumPct' : 'pct';
+  const hF = cum ? 'Cum Forecast' : 'Forecast', hR = cum ? 'Cum Received' : 'Received', hP = cum ? 'Cum %' : 'Received %';
   const st = sondState.sort[view];
   const ind = (k) => st.key === k ? '<span class="sond-sortind">' + (st.dir === 'asc' ? '\\u25B2' : '\\u25BC') + '</span>' : '';
   let g = '<tr class="grprow">';
   cfg.cols.forEach(c => { g += '<th rowspan="2" data-k="' + c.k + '">' + c.h + ind(c.k) + '</th>'; });
   ms.forEach(m => { g += '<th colspan="3" class="grp m-' + m.key + ' gstart">' + m.label + '</th>'; });
+  g += '<th rowspan="2" class="num m-bkl gstart" data-k="backlog" title="Cases still owed across every month due so far (cumulative forecast minus cumulative received)">Backlog' + ind('backlog') + '</th>';
   g += '<th colspan="3" class="grp m-tot gstart">Grand Total</th></tr>';
   let s2 = '<tr>';
   ms.forEach(m => {
-    s2 += '<th class="num m-' + m.key + ' gstart" data-k="m.' + m.key + '.f">Forecast' + ind('m.' + m.key + '.f') + '</th>';
-    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.r">Received' + ind('m.' + m.key + '.r') + '</th>';
-    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.pct">Received %' + ind('m.' + m.key + '.pct') + '</th>';
+    s2 += '<th class="num m-' + m.key + ' gstart" data-k="m.' + m.key + '.' + kF + '">' + hF + ind('m.' + m.key + '.' + kF) + '</th>';
+    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.' + kR + '">' + hR + ind('m.' + m.key + '.' + kR) + '</th>';
+    s2 += '<th class="num m-' + m.key + '" data-k="m.' + m.key + '.' + kP + '">' + hP + ind('m.' + m.key + '.' + kP) + '</th>';
   });
   s2 += '<th class="num m-tot gstart" data-k="totalF">Total Forecast' + ind('totalF') + '</th>';
   s2 += '<th class="num m-tot" data-k="totalR">Total Received' + ind('totalR') + '</th>';
@@ -7435,10 +7529,26 @@ function renderSondMatrix(view) {
     });
     ms.forEach(m => {
       const c = r.m[m.key];
-      h += '<td class="num mono m-' + m.key + ' gstart">' + sondQty(c.f) + '</td>';
-      h += '<td class="num mono m-' + m.key + (c.band === 'unplanned' ? ' cell-unplanned b-unplanned' : '') + '">' + sondQty(c.r) + '</td>';
-      h += pctCell(c, m, 'm-' + m.key);
+      if (cum) {
+        if (c.cumF == null) {
+          h += '<td class="num m-' + m.key + ' gstart"><span class="nofc">—</span></td>' +
+               '<td class="num m-' + m.key + '"><span class="nofc">—</span></td>' +
+               '<td class="num m-' + m.key + '"><span class="nofc">not due yet</span></td>';
+        } else {
+          h += '<td class="num mono m-' + m.key + ' gstart">' + sondQty(c.cumF) + '</td>';
+          h += '<td class="num mono m-' + m.key + '">' + sondQty(c.cumR) + '</td>';
+          h += '<td class="num mono m-' + m.key + ' b-' + c.cumBand + '" style="font-weight:600;" title="Running total through ' + m.label + '">' +
+               (c.cumPct == null ? '—' : fmtN(c.cumPct) + '%') + '</td>';
+        }
+      } else {
+        h += '<td class="num mono m-' + m.key + ' gstart">' + sondQty(c.f) + '</td>';
+        h += '<td class="num mono m-' + m.key + (c.band === 'unplanned' ? ' cell-unplanned b-unplanned' : '') + '">' + sondQty(c.r) + '</td>';
+        h += pctCell(c, m, 'm-' + m.key);
+      }
     });
+    h += '<td class="num mono m-bkl gstart ' + (r.backlog > 0 ? 'bkl-has' : 'bkl-none') + '" title="' +
+         (r.backlog > 0 ? sondQty(r.backlog) + ' cases still owed' : 'Nothing outstanding') + '">' +
+         (r.backlog > 0 ? sondQty(r.backlog) : '—') + '</td>';
     h += '<td class="num mono m-tot gstart">' + sondQty(r.totalF) + '</td>';
     h += '<td class="num mono m-tot">' + sondQty(r.totalR) + '</td>';
     h += '<td class="num mono m-tot b-' + r.band + '" style="font-weight:600;">' + (r.totalF === 0 ? '<span class="nofc">No forecast</span>' : (r.pct == null ? '—' : fmtN(r.pct) + '%')) + '</td>';
