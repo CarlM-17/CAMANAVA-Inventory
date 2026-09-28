@@ -3595,14 +3595,30 @@ function sondSummary(req) {
   const backlogTotal = sond2(Math.max(0, mcf - mcr));
   const totF = rows.reduce((a, x) => a + x.totalF, 0);
   const totR = rows.reduce((a, x) => a + x.totalR, 0);
+  // System on hand, joined from the live inventory cache on storeNumber + skuCode.
+  // Counted once per store+SKU so a duplicated SOND row cannot double it.
+  const invIdx = cache.storeSkuIndex || {};
+  const invReady = cache.ready && Object.keys(invIdx).length > 0;
+  // Resolved once per row here, then simply summed by every rollup below — the rollups
+  // each re-iterate `rows`, so a shared "already counted" set would zero out later passes.
+  const seenSoh = new Set();
+  for (const x of rows) {
+    if (!invReady) { x._soh = null; continue; }
+    const k = x.storeCode + '|' + x.sku;
+    if (seenSoh.has(k)) { x._soh = 0; continue; }
+    seenSoh.add(k);
+    const inv = invIdx[x.storeCode + '_' + x.sku];
+    x._soh = inv ? (Number(inv.onHand) || 0) : 0;
+  }
   // Per-store rollup
   const g = {};
   for (const x of rows) {
     const k = x.storeCode;
-    if (!g[k]) { g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, totalF: 0, totalR: 0, m: {} };
+    if (!g[k]) { g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, totalF: 0, totalR: 0, m: {} };
       SOND_MONTHS.forEach(mo => { g[k].m[mo.key] = { f: 0, r: 0 }; }); }
     const row = g[k];
     row.skus++;
+    row.soh += (x._soh || 0);
     row.totalF += x.totalF; row.totalR += x.totalR;
     SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
   }
@@ -3612,10 +3628,11 @@ function sondSummary(req) {
   for (const x of rows) {
     const k = x.sku;
     if (!gi[k]) { gi[k] = { sku: x.sku, desc: x.desc, vendor: x.vendor, category: x.category,
-      skuStatus: x.skuStatus, sts: x.sts, stores: 0, totalF: 0, totalR: 0, m: {} };
+      skuStatus: x.skuStatus, sts: x.sts, stores: 0, soh: 0, totalF: 0, totalR: 0, m: {} };
       SOND_MONTHS.forEach(mo => { gi[k].m[mo.key] = { f: 0, r: 0 }; }); }
     const row = gi[k];
     row.stores++;
+    row.soh += (x._soh || 0);
     row.totalF += x.totalF; row.totalR += x.totalR;
     SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
   }
@@ -3657,11 +3674,12 @@ function sondSummary(req) {
     for (const x of rows) {
       const k = (keyFn(x) || '').trim() || '(blank)';
       if (!gg[k]) {
-        gg[k] = { [keyField]: k, totalF: 0, totalR: 0, m: {}, _sku: new Set(), _store: new Set() };
+        gg[k] = { [keyField]: k, soh: 0, totalF: 0, totalR: 0, m: {}, _sku: new Set(), _store: new Set() };
         SOND_MONTHS.forEach(mo => { gg[k].m[mo.key] = { f: 0, r: 0 }; });
       }
       const row = gg[k];
       row._sku.add(x.sku); row._store.add(x.storeCode);
+      row.soh += (x._soh || 0);
       row.totalF += x.totalF; row.totalR += x.totalR;
       SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
     }
@@ -3691,6 +3709,7 @@ function sondSummary(req) {
     lastRefresh: cache.sond.lastRefresh,
     tab: cache.sond.tab,
     rowCount: rows.length,
+    sohReady: invReady,
     diag: {
       tab: cache.sond.tab,
       tabs: cache.sond.tabs,
@@ -3724,9 +3743,9 @@ app.get('/api/sond/summary', (req, res) => res.json(sondSummary(req)));
 
 // Styled XLSX export — one sheet per view, matching the on-screen month matrix.
 const SOND_VIEW_DEFS = {
-  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9]] },
-  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9]] },
-  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9]] },
+  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand','soh',14]] },
+  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9],['System On Hand','soh',14]] },
+  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9],['System On Hand','soh',14]] },
   category: { label: 'Per Category',   key: 'categories', cols: [['Category','category',20],['SKUs','skus',9],['Stores','stores',9]] }
 };
 
@@ -7391,7 +7410,8 @@ const SOND_VIEWS = {
     cols: [
       { k: 'sku', h: 'SKU' }, { k: 'desc', h: 'Description' }, { k: 'vendor', h: 'Vendor' },
       { k: 'category', h: 'Category' }, { k: 'skuStatus', h: 'SKU Status', badge: true },
-      { k: 'sts', h: 'STS Tagging', badge: true }, { k: 'stores', h: 'Stores', num: true }
+      { k: 'sts', h: 'STS Tagging', badge: true }, { k: 'stores', h: 'Stores', num: true },
+      { k: 'soh', h: 'System On Hand', num: true, soh: true }
     ],
     searchOn: ['sku', 'desc', 'vendor', 'category']
   },
@@ -7399,14 +7419,16 @@ const SOND_VIEWS = {
     data: () => sondState.d.stores,
     cols: [
       { k: 'area', h: 'Area', badge: true }, { k: 'storeCode', h: 'Store Code' },
-      { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true }
+      { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true },
+      { k: 'soh', h: 'System On Hand', num: true, soh: true }
     ],
     searchOn: ['area', 'storeCode', 'storeName']
   },
   vendor: {
     data: () => sondState.d.vendors,
     cols: [
-      { k: 'vendor', h: 'Vendor' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true }
+      { k: 'vendor', h: 'Vendor' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true },
+      { k: 'soh', h: 'System On Hand', num: true, soh: true }
     ],
     searchOn: ['vendor']
   },
@@ -7524,6 +7546,8 @@ function renderSondMatrix(view) {
     cfg.cols.forEach(c => {
       const v = r[c.k];
       if (c.badge) h += '<td><span class="badge badge-blue">' + esc(String(v == null ? '' : v)) + '</span></td>';
+      else if (c.soh) h += '<td class="num mono" title="Units on hand from the inventory system, joined on store and SKU">' +
+        (sondState.d.sohReady ? fmt(v || 0) : '<span class="nofc">—</span>') + '</td>';
       else if (c.num) h += '<td class="num mono">' + fmt(v || 0) + '</td>';
       else h += '<td>' + esc(String(v == null ? '' : v)) + '</td>';
     });
