@@ -3602,13 +3602,19 @@ function sondSummary(req) {
   // Resolved once per row here, then simply summed by every rollup below — the rollups
   // each re-iterate `rows`, so a shared "already counted" set would zero out later passes.
   const seenSoh = new Set();
+  let sohNoPack = 0;
   for (const x of rows) {
     if (!invReady) { x._soh = null; continue; }
     const k = x.storeCode + '|' + x.sku;
     if (seenSoh.has(k)) { x._soh = 0; continue; }
     seenSoh.add(k);
     const inv = invIdx[x.storeCode + '_' + x.sku];
-    x._soh = inv ? (Number(inv.onHand) || 0) : 0;
+    // SOND is expressed in cases, so convert on-hand units with the SKU's standard pack.
+    // No stdPack means the pack size is unknown — contributes 0 rather than a wrong number.
+    if (!inv) { x._soh = 0; continue; }
+    const pack = Number(inv.stdPack) || 0;
+    x._soh = pack > 0 ? (Number(inv.onHand) || 0) / pack : 0;
+    if (pack <= 0 && (Number(inv.onHand) || 0) !== 0) sohNoPack++;
   }
   // Per-store rollup
   const g = {};
@@ -3665,6 +3671,7 @@ function sondSummary(req) {
     // not a debt; the cumulative % above 100 already says that.
     row.backlog = sond2(Math.max(0, cf - cr));
     row.dueF = sond2(cf); row.dueR = sond2(cr);
+    if (row.soh != null) row.soh = sond2(row.soh);   // cases, 2dp like every other quantity
     return row;
   };
   const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
@@ -3743,9 +3750,9 @@ app.get('/api/sond/summary', (req, res) => res.json(sondSummary(req)));
 
 // Styled XLSX export — one sheet per view, matching the on-screen month matrix.
 const SOND_VIEW_DEFS = {
-  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand','soh',14]] },
-  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9],['System On Hand','soh',14]] },
-  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9],['System On Hand','soh',14]] },
+  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand (CS)','soh',15]] },
+  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9],['System On Hand (CS)','soh',15]] },
+  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9],['System On Hand (CS)','soh',15]] },
   category: { label: 'Per Category',   key: 'categories', cols: [['Category','category',20],['SKUs','skus',9],['Stores','stores',9]] }
 };
 
@@ -3858,7 +3865,7 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
       def.cols.forEach(([, key]) => {
         const cell = ws.getCell(r, cc);
         cell.value = row[key] == null ? '' : row[key];
-        if (typeof row[key] === 'number') cell.numFmt = '#,##0';
+        if (typeof row[key] === 'number') cell.numFmt = (key === 'soh') ? '#,##0.##' : '#,##0';
         cell.border = border;
         cc++;
       });
@@ -7411,7 +7418,7 @@ const SOND_VIEWS = {
       { k: 'sku', h: 'SKU' }, { k: 'desc', h: 'Description' }, { k: 'vendor', h: 'Vendor' },
       { k: 'category', h: 'Category' }, { k: 'skuStatus', h: 'SKU Status', badge: true },
       { k: 'sts', h: 'STS Tagging', badge: true }, { k: 'stores', h: 'Stores', num: true },
-      { k: 'soh', h: 'System On Hand', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
     ],
     searchOn: ['sku', 'desc', 'vendor', 'category']
   },
@@ -7420,7 +7427,7 @@ const SOND_VIEWS = {
     cols: [
       { k: 'area', h: 'Area', badge: true }, { k: 'storeCode', h: 'Store Code' },
       { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true },
-      { k: 'soh', h: 'System On Hand', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
     ],
     searchOn: ['area', 'storeCode', 'storeName']
   },
@@ -7428,7 +7435,7 @@ const SOND_VIEWS = {
     data: () => sondState.d.vendors,
     cols: [
       { k: 'vendor', h: 'Vendor' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true },
-      { k: 'soh', h: 'System On Hand', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
     ],
     searchOn: ['vendor']
   },
@@ -7546,8 +7553,8 @@ function renderSondMatrix(view) {
     cfg.cols.forEach(c => {
       const v = r[c.k];
       if (c.badge) h += '<td><span class="badge badge-blue">' + esc(String(v == null ? '' : v)) + '</span></td>';
-      else if (c.soh) h += '<td class="num mono" title="Units on hand from the inventory system, joined on store and SKU">' +
-        (sondState.d.sohReady ? fmt(v || 0) : '<span class="nofc">—</span>') + '</td>';
+      else if (c.soh) h += '<td class="num mono" title="On hand converted to cases (units divided by standard pack), joined on store and SKU">' +
+        (sondState.d.sohReady ? sondQty(v || 0) : '<span class="nofc">—</span>') + '</td>';
       else if (c.num) h += '<td class="num mono">' + fmt(v || 0) + '</td>';
       else h += '<td>' + esc(String(v == null ? '' : v)) + '</td>';
     });
