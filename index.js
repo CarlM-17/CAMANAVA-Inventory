@@ -919,6 +919,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
       qtyCasesNum: (_stdPack > 0 && _stdPack !== onHand) ? (onHand / _stdPack) : null,
       ico: (row[COL.ico] || '').toString().trim(),
       merchGro: (row[COL.merchGro] || '').toString().trim().toUpperCase(),
+      poType: (row[COL.poType] || '').toString().trim(),   // column BK
       totalPO,
       poValue,
       trfValue,
@@ -1084,7 +1085,8 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
     suppliers: uniq(enriched.map(r => r.supplierName)).filter(d => d.length > 0),
     brands: uniq(enriched.map(r => r.brand)).filter(d => d.length > 0),
     skuStatuses: uniq(enriched.map(r => r.skuStatus)),
-    categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0)
+    categories: uniq(enriched.map(r => r.catName)).filter(d => d.length > 0),
+    poTypes: uniq(enriched.map(r => r.poType)).filter(d => d.length > 0)
   };
 
   return { kpis, filterMeta, rows: enriched };
@@ -1289,6 +1291,7 @@ function applyFilters(rows, filters = {}) {
     if (filters.area && r.area !== filters.area) return false;
     if (filters.store && r.storeNumber !== filters.store) return false;
     if (filters.category && r.catName !== filters.category) return false;
+    if (filters.poType && r.poType !== filters.poType) return false;
     if (filters.dept && r.deptName !== filters.dept) return false;
     if (filters.subDept && r.subDeptName !== filters.subDept) return false;
     if (filters.cls && r.clsName !== filters.cls) return false;
@@ -4214,6 +4217,64 @@ function requireAdminForAI(req, res) {
   return s;
 }
 
+// ─── PWA (installable app) ────────────────────────────────────────────────────
+// Served from code so deployment stays a single-file upload; the icon is read from
+// Inv_icon.png sitting next to index.js.
+app.get('/manifest.webmanifest', (req, res) => {
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.json({
+    name: 'CAMANAVA Inventory Dashboard',
+    short_name: 'CMNV INV',
+    description: 'Inventory analysis and SOND seasonal monitoring for 31 CAMANAVA stores',
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'any',
+    background_color: '#0d1117',
+    theme_color: '#1b5e20',
+    icons: [
+      { src: '/icon.png', sizes: '1254x1254', type: 'image/png', purpose: 'any' },
+      { src: '/icon.png', sizes: '1254x1254', type: 'image/png', purpose: 'maskable' }
+    ]
+  });
+});
+
+app.get('/icon.png', (req, res) => {
+  const p = require('path').join(__dirname, 'Inv_icon.png');
+  res.setHeader('Cache-Control', 'public, max-age=604800');
+  res.sendFile(p, (err) => {
+    if (err) { console.warn('[PWA] Inv_icon.png not found next to index.js'); if (!res.headersSent) res.status(404).end(); }
+  });
+});
+
+// Service worker. Deliberately network-first for pages and never caches /api, so a
+// Railway deploy is picked up immediately instead of serving a stale shell.
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send([
+    "const CACHE = 'cmnv-inv-v1';",
+    "self.addEventListener('install', e => { self.skipWaiting(); });",
+    "self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(",
+    "  ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim())); });",
+    "self.addEventListener('fetch', e => {",
+    "  const u = new URL(e.request.url);",
+    "  if (e.request.method !== 'GET' || u.origin !== location.origin) return;",
+    "  if (u.pathname.startsWith('/api/')) return;                 // always live",
+    "  if (u.pathname === '/icon.png' || u.pathname === '/manifest.webmanifest') {",
+    "    e.respondWith(caches.open(CACHE).then(c => c.match(e.request).then(hit =>",
+    "      hit || fetch(e.request).then(r => { c.put(e.request, r.clone()); return r; }))));",
+    "    return;",
+    "  }",
+    "  e.respondWith(fetch(e.request).then(r => {",
+    "    const copy = r.clone();",
+    "    caches.open(CACHE).then(c => c.put(e.request, copy));",
+    "    return r;",
+    "  }).catch(() => caches.match(e.request)));                   // offline fallback",
+    "});"
+  ].join('\n'));
+});
+
 // Public build stamp — no secrets, just booleans. Lets you confirm from a phone browser
 // which build Railway is serving, without a token or devtools.
 app.get('/api/version', (req, res) => {
@@ -4372,6 +4433,14 @@ app.get('*', (req, res) => {
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>CAMANAVA Inventory Dashboard</title>
+<link rel="manifest" href="/manifest.webmanifest"/>
+<meta name="theme-color" content="#1b5e20"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="CMNV INV"/>
+<link rel="icon" type="image/png" href="/icon.png"/>
+<link rel="apple-touch-icon" href="/icon.png"/>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0/dist/chartjs-plugin-datalabels.min.js"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
@@ -5087,6 +5156,12 @@ canvas { max-height:260px; }
         <label>Class</label>
         <select class="filter-select" id="f-cls" onchange="applyFilter('cls',this.value)">
           <option value="">All Classes</option>
+        </select>
+      </div>
+      <div class="fb-group">
+        <label>PO Type</label>
+        <select class="filter-select" id="f-potype" onchange="applyFilter('poType',this.value)">
+          <option value="">All PO Types</option>
         </select>
       </div>
       <div class="fb-group">
@@ -5947,12 +6022,18 @@ canvas { max-height:260px; }
         .sond-matrix .m-nov { background:rgba(210,153,34,0.12); }
         .sond-matrix .m-dec { background:rgba(31,111,235,0.10); }
         .sond-matrix .m-tot { background:rgba(45,164,157,0.13); }
-        .sond-matrix thead tr.grprow th.m-aug { border-top:3px solid var(--red-light); }
-        .sond-matrix thead tr.grprow th.m-sep { border-top:3px solid var(--green-bright); }
-        .sond-matrix thead tr.grprow th.m-oct { border-top:3px solid #7eb43c; }
-        .sond-matrix thead tr.grprow th.m-nov { border-top:3px solid var(--yellow-light); }
-        .sond-matrix thead tr.grprow th.m-dec { border-top:3px solid var(--blue); }
-        .sond-matrix thead tr.grprow th.m-tot { border-top:3px solid #2da49d; }
+        /* Headers get solid month colours with white text. The pale body tints sit on
+           thead's dark background in light mode, leaving white header text unreadable. */
+        .sond-matrix thead th.m-aug { background:#c62828 !important; color:#fff !important; }
+        .sond-matrix thead th.m-sep { background:#2e7d32 !important; color:#fff !important; }
+        .sond-matrix thead th.m-oct { background:#6a9e2f !important; color:#fff !important; }
+        .sond-matrix thead th.m-nov { background:#b8860b !important; color:#fff !important; }
+        .sond-matrix thead th.m-dec { background:#1565c0 !important; color:#fff !important; }
+        .sond-matrix thead th.m-tot { background:#1b7f78 !important; color:#fff !important; }
+        .sond-matrix thead th.m-bkl { background:#a01c1c !important; color:#fff !important; }
+        /* Sub-header row darkened so the group and its columns read as one block */
+        .sond-matrix thead tr:nth-child(2) th[class*="m-"] { box-shadow: inset 0 0 0 999px rgba(0,0,0,0.22); }
+        .sond-matrix thead th { border-bottom:1px solid rgba(0,0,0,0.25); }
         .sond-matrix .gstart { border-left:2px solid var(--border); }
         .sond-matrix .nofc { color:var(--text2); font-style:italic; font-size:10px; }
         .sond-sortind { font-size:9px; color:var(--blue); margin-left:2px; }
@@ -6825,6 +6906,7 @@ async function loadFilters() {
   populateSelect('f-dept', d.depts, 'All Departments');
   populateSelect('f-subdept', d.subDepts, 'All Sub-Depts');
   populateSelect('f-cls', d.classes, 'All Classes');
+  populateSelect('f-potype', d.poTypes || [], 'All PO Types');
   populateSelect('f-supplier', d.suppliers, 'All Suppliers');
 
   populateStores(d.stores);
@@ -6893,7 +6975,7 @@ function removeFilterTag(btn) {
   if (!key) return;
   // Prevent non-admin from removing their locked area
   if (key === 'area' && currentUser && !currentUser.isAdmin && currentUser.area) return;
-  const idMap = { category: 'f-category', area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier' };
+  const idMap = { category: 'f-category', area: 'f-area', store: 'f-store', dept: 'f-dept', subDept: 'f-subdept', cls: 'f-cls', supplier: 'f-supplier', poType: 'f-potype' };
   const sel = document.getElementById(idMap[key]);
   if (sel) sel.value = '';
   applyFilter(key, '');
@@ -6901,7 +6983,7 @@ function removeFilterTag(btn) {
 
 function clearFilters() {
   activeFilters = {};
-  ['f-category','f-store','f-dept','f-subdept','f-cls','f-supplier']
+  ['f-category','f-store','f-dept','f-subdept','f-cls','f-supplier','f-potype']
     .forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   // Non-admin: keep area locked
   if (currentUser && !currentUser.isAdmin && currentUser.area) {
@@ -9829,6 +9911,13 @@ function clearAskInput() {
   input.value = '';
   input.focus();
   document.getElementById('ai-ask-answer').innerHTML = '<div style="color:var(--text2);font-size:12px;">Ask anything about your currently-filtered inventory. Answers scope to the current area filter.</div>';
+}
+
+// Register the service worker so the dashboard can be installed to a phone home screen.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(e => console.warn('[PWA] SW failed:', e.message));
+  });
 }
 
 // Show which build Railway is actually serving, right on the brief card.
