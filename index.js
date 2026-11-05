@@ -3783,12 +3783,13 @@ app.get('/api/sond/analysis', (req, res) => {
   const seen = new Set();
   for (const x of rows) {
     const k = x.storeCode;
-    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, valuation: 0, matched: 0 };
+    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, valuation: 0, matched: 0, seasonF: 0, seasonR: 0 };
     const row = g[k];
     const dedupe = k + '|' + x.sku;
     if (seen.has(dedupe)) continue;       // duplicated sheet rows must not double-count
     seen.add(dedupe);
     row.skus++;
+    row.seasonF += x.totalF; row.seasonR += x.totalR;   // sheet columns Z / AA
     const inv = sondInvOf(x);
     if (inv) {
       row.matched++;
@@ -3803,6 +3804,9 @@ app.get('/api/sond/analysis', (req, res) => {
     r.valuation = Math.round(r.valuation);
     r.storeTotalVal = Math.round(svm[r.storeCode] || 0);
     r.pctOfTotal = r.storeTotalVal > 0 ? +((r.valuation / r.storeTotalVal) * 100).toFixed(2) : null;
+    r.seasonF = sond2(r.seasonF); r.seasonR = sond2(r.seasonR);
+    r.seasonPct = sondPct(r.seasonF, r.seasonR);
+    r.seasonBand = sondBand(r.seasonPct, 'closed', r.seasonF, r.seasonR);
     return r;
   }).sort((a, b) => b.valuation - a.valuation);
   const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
@@ -3815,6 +3819,9 @@ app.get('/api/sond/analysis', (req, res) => {
       skus: stores.reduce((a, r) => a + r.skus, 0),
       soh: sond2(stores.reduce((a, r) => a + r.soh, 0)),
       valuation: Math.round(sumVal),
+      seasonF: sond2(stores.reduce((a, r) => a + r.seasonF, 0)),
+      seasonR: sond2(stores.reduce((a, r) => a + r.seasonR, 0)),
+      seasonPct: sondPct(stores.reduce((a, r) => a + r.seasonF, 0), stores.reduce((a, r) => a + r.seasonR, 0)),
       storeTotalVal: Math.round(sumStoreTotal),
       pctOfTotal: sumStoreTotal > 0 ? +((sumVal / sumStoreTotal) * 100).toFixed(2) : null
     }
@@ -6234,7 +6241,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:620px;">
             <table id="sond-an-table" class="sond-matrix">
               <thead id="sond-an-head"></thead>
-              <tbody id="sond-an-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-an-body"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -7730,12 +7737,12 @@ async function loadSondAnalysis(force) {
     const d = await r.json();
     if (!d || !d.ready) {
       document.getElementById('sond-an-body').innerHTML =
-        '<tr><td colspan="7" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
+        '<tr><td colspan="11" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
       return;
     }
     sondAn.data = d;
   } catch (e) {
-    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="7" class="empty">Could not reach server</td></tr>';
+    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="11" class="empty">Could not reach server</td></tr>';
     return;
   }
   renderSondAnalysis();
@@ -7778,6 +7785,7 @@ function renderSondAnalysis() {
   const cols = [
     ['', '', false], ['area', 'Area', false], ['storeCode', 'Store Code', false], ['storeName', 'Store Name', false],
     ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true],
+    ['seasonF', 'Season Forecast', true], ['seasonR', 'Season Received', true], ['seasonPct', '%', true],
     ['pctOfTotal', '% of Total Val.', true]
   ];
   head.innerHTML = '<tr>' + cols.map(([k, h, num]) =>
@@ -7795,7 +7803,7 @@ function renderSondAnalysis() {
     return String(av || '').localeCompare(String(bv || '')) * dir;
   });
   renderSondAnCards(rows);
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">No data found</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="11" class="empty">No data found</td></tr>'; return; }
 
   let html = '';
   rows.forEach(r => {
@@ -7808,12 +7816,16 @@ function renderSondAnalysis() {
       '<td class="num mono">' + fmt(r.skus) + '</td>' +
       '<td class="num mono">' + sondQty(r.soh) + '</td>' +
       '<td class="num mono" style="color:var(--green-bright);font-weight:600;">\\u20b1' + fmtN(r.valuation) + '</td>' +
+      '<td class="num mono">' + sondQty(r.seasonF) + '</td>' +
+      '<td class="num mono">' + sondQty(r.seasonR) + '</td>' +
+      '<td class="num mono b-' + (r.seasonBand || 'none') + '" style="font-weight:600;" title="Season received against forecast, in cases">' +
+        (r.seasonPct == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.seasonPct) + '%') + '</td>' +
       '<td class="num mono" style="font-weight:600;" title="SOND valuation as a share of this store\\'s entire inventory value (\\u20b1' +
         fmtN(r.storeTotalVal || 0) + ')">' +
         (r.pctOfTotal == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.pctOfTotal) + '%') + '</td>' +
     '</tr>';
     if (isOpen) {
-      html += '<tr><td colspan="8" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
+      html += '<tr><td colspan="11" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
     }
   });
   body.innerHTML = html;
