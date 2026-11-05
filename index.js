@@ -3751,6 +3751,95 @@ function sondSummary(req) {
 
 app.get('/api/sond/summary', (req, res) => res.json(sondSummary(req)));
 
+// ─── SOND ANALYSIS (store groups, expandable to SKU detail) ───────────────────
+// Groups are returned alone; the SKU rows load per store on expand, so a 21k-row
+// sheet does not ship to the browser up front.
+function sondInvOf(x) {
+  const inv = (cache.storeSkuIndex || {})[x.storeCode + '_' + x.sku];
+  return inv || null;
+}
+
+app.get('/api/sond/analysis', (req, res) => {
+  if (!cache.sond.ready) return res.json({ ready: false, error: cache.sond.error || 'SOND data loading' });
+  const rows = sondFiltered(req);
+  const invReady = cache.ready && Object.keys(cache.storeSkuIndex || {}).length > 0;
+  const g = {};
+  const seen = new Set();
+  for (const x of rows) {
+    const k = x.storeCode;
+    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, valuation: 0, matched: 0 };
+    const row = g[k];
+    const dedupe = k + '|' + x.sku;
+    if (seen.has(dedupe)) continue;       // duplicated sheet rows must not double-count
+    seen.add(dedupe);
+    row.skus++;
+    const inv = sondInvOf(x);
+    if (inv) {
+      row.matched++;
+      const pack = Number(inv.stdPack) || 0;
+      if (pack > 0) row.soh += (Number(inv.onHand) || 0) / pack;   // cases
+      row.valuation += Number(inv.onHandValue) || 0;
+    }
+  }
+  const stores = Object.values(g).map(r => {
+    r.soh = sond2(r.soh);
+    r.valuation = Math.round(r.valuation);
+    return r;
+  }).sort((a, b) => b.valuation - a.valuation);
+  res.json({
+    ready: true, invReady,
+    stores,
+    totals: {
+      stores: stores.length,
+      skus: stores.reduce((a, r) => a + r.skus, 0),
+      soh: sond2(stores.reduce((a, r) => a + r.soh, 0)),
+      valuation: Math.round(stores.reduce((a, r) => a + r.valuation, 0))
+    }
+  });
+});
+
+app.get('/api/sond/analysis/skus', (req, res) => {
+  if (!cache.sond.ready) return res.json({ ready: false, error: 'SOND data loading' });
+  const store = (req.query.store || '').trim();
+  if (!store) return res.status(400).json({ error: 'store required' });
+  const rows = sondFiltered(req).filter(x => x.storeCode === store);
+  const seen = new Set();
+  const out = [];
+  for (const x of rows) {
+    if (seen.has(x.sku)) continue;
+    seen.add(x.sku);
+    const inv = sondInvOf(x);
+    let seasonF = 0, seasonR = 0, dueF = 0, dueR = 0;
+    SOND_MONTHS.forEach(mo => {
+      seasonF += x.m[mo.key].f; seasonR += x.m[mo.key].r;
+      if (sondMonthState(mo) !== 'upcoming') { dueF += x.m[mo.key].f; dueR += x.m[mo.key].r; }
+    });
+    let qtyCases = null;
+    if (inv) {
+      const pack = Number(inv.stdPack) || 0;
+      qtyCases = pack > 0 ? +((Number(inv.onHand) || 0) / pack).toFixed(2) : null;
+    }
+    out.push({
+      sku: x.sku, desc: x.desc, vendor: x.vendor, category: x.category,
+      abc: inv ? (inv.abc || 'C') : null,
+      onHand: inv ? inv.onHand : null,
+      qtyCases,
+      invValue: inv ? Math.round(inv.onHandValue || 0) : null,
+      daysCover: inv && inv.skuDaysCover != null ? Math.round(inv.skuDaysCover) : null,
+      p8ave: inv ? inv.p8ave : null,
+      status: inv ? statusLabel(inv.status) : null,
+      poOrderGR: inv ? inv.poOrderGR : null,
+      trfOrderGR: inv ? inv.trfOrderGR : null,
+      seasonF: sond2(x.totalF), seasonR: sond2(x.totalR),
+      pct: sondPct(x.totalF, x.totalR),
+      backlog: sond2(Math.max(0, dueF - dueR)),
+      inInventory: !!inv
+    });
+  }
+  out.sort((a, b) => (b.invValue || 0) - (a.invValue || 0));
+  res.json({ ready: true, store, rows: out });
+});
+
 // Styled XLSX export — one sheet per view, matching the on-screen month matrix.
 const SOND_VIEW_DEFS = {
   item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand (CS)','soh',15]] },
@@ -6068,6 +6157,7 @@ canvas { max-height:260px; }
           <div class="sond-subtab" id="sond-sub-btn-store" onclick="showSondSub('store')">🏪 Per Store</div>
           <div class="sond-subtab" id="sond-sub-btn-vendor" onclick="showSondSub('vendor')">🏭 Per Vendor</div>
           <div class="sond-subtab" id="sond-sub-btn-category" onclick="showSondSub('category')">🗂 Per Category</div>
+          <div class="sond-subtab" id="sond-sub-btn-analysis" onclick="showSondSub('analysis')">🔬 SOND Analysis</div>
         </div>
 
         <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
@@ -6105,6 +6195,22 @@ canvas { max-height:260px; }
             <table id="sond-vendor-table" class="sond-matrix">
               <thead id="sond-vendor-head"></thead>
               <tbody id="sond-vendor-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="sond-sub-analysis" style="display:none;">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+            <div style="font-size:11px;color:var(--text2);">Grouped by store. Click a row to expand its SOND SKUs. Click any header to sort.</div>
+            <div style="display:flex;gap:6px;">
+              <input type="text" class="table-search" id="sond-an-search" placeholder="Search store..." oninput="renderSondAnalysis()" style="width:200px;"/>
+              <button class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
+            </div>
+          </div>
+          <div class="table-wrap" style="max-height:620px;">
+            <table id="sond-an-table" class="sond-matrix">
+              <thead id="sond-an-head"></thead>
+              <tbody id="sond-an-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -7532,7 +7638,7 @@ const SOND_VIEWS = {
 
 function showSondSub(which) {
   sondState.sub = which;
-  ['item', 'store', 'vendor', 'category'].forEach(k => {
+  ['item', 'store', 'vendor', 'category', 'analysis'].forEach(k => {
     const pane = document.getElementById('sond-sub-' + k);
     const btn = document.getElementById('sond-sub-btn-' + k);
     if (pane) pane.style.display = (k === which) ? '' : 'none';
@@ -7567,8 +7673,147 @@ function sondSort(view, key) {
 }
 
 function renderSondActive() {
+  if (sondState.sub === 'analysis') { loadSondAnalysis(); return; }
   if (!sondState.d) return;
   renderSondMatrix(sondState.sub);
+}
+
+// ─── SOND Analysis: store groups, expandable to SKU detail ───────────────────
+const sondAn = { data: null, sort: { key: 'valuation', dir: 'desc' }, open: {}, skus: {}, loading: {} };
+
+function sondAnQS() {
+  const p = new URLSearchParams();
+  const a = document.getElementById('sond-area'), s = document.getElementById('sond-store');
+  if (a && a.value) p.set('area', a.value);
+  if (s && s.value) p.set('store', s.value);
+  if (authToken) p.set('token', authToken);
+  return p;
+}
+
+async function loadSondAnalysis(force) {
+  if (sondAn.data && !force) { renderSondAnalysis(); return; }
+  try {
+    const r = await fetch('/api/sond/analysis?' + sondAnQS().toString());
+    const d = await r.json();
+    if (!d || !d.ready) {
+      document.getElementById('sond-an-body').innerHTML =
+        '<tr><td colspan="7" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
+      return;
+    }
+    sondAn.data = d;
+  } catch (e) {
+    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="7" class="empty">Could not reach server</td></tr>';
+    return;
+  }
+  renderSondAnalysis();
+}
+
+function sortSondAn(key) {
+  const st = sondAn.sort;
+  if (st.key === key) st.dir = st.dir === 'asc' ? 'desc' : 'asc';
+  else { st.key = key; st.dir = (key === 'area' || key === 'storeName' || key === 'storeCode') ? 'asc' : 'desc'; }
+  renderSondAnalysis();
+}
+
+function sondExpandAll(open) {
+  if (!open) sondAn.open = {};
+  renderSondAnalysis();
+}
+
+async function toggleSondStore(code) {
+  if (sondAn.open[code]) { delete sondAn.open[code]; renderSondAnalysis(); return; }
+  sondAn.open[code] = true;
+  renderSondAnalysis();
+  if (sondAn.skus[code] || sondAn.loading[code]) return;
+  sondAn.loading[code] = true;
+  try {
+    const p = sondAnQS(); p.set('store', code);
+    const r = await fetch('/api/sond/analysis/skus?' + p.toString());
+    const d = await r.json();
+    sondAn.skus[code] = (d && d.rows) || [];
+  } catch (e) { sondAn.skus[code] = []; }
+  sondAn.loading[code] = false;
+  renderSondAnalysis();
+}
+
+function renderSondAnalysis() {
+  const head = document.getElementById('sond-an-head');
+  const body = document.getElementById('sond-an-body');
+  if (!head || !body || !sondAn.data) return;
+  const st = sondAn.sort;
+  const ind = (k) => st.key === k ? '<span class="sond-sortind">' + (st.dir === 'asc' ? '\\u25B2' : '\\u25BC') + '</span>' : '';
+  const cols = [
+    ['', '', false], ['area', 'Area', false], ['storeCode', 'Store Code', false], ['storeName', 'Store Name', false],
+    ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true]
+  ];
+  head.innerHTML = '<tr>' + cols.map(([k, h, num]) =>
+    '<th' + (num ? ' class="num"' : '') + (k ? ' data-k="' + k + '"' : '') + ' style="' + (k ? 'cursor:pointer;' : 'width:28px;') + '">' +
+    h + (k ? ind(k) : '') + '</th>').join('') + '</tr>';
+  head.onclick = (ev) => { const th = ev.target.closest('th[data-k]'); if (th) sortSondAn(th.getAttribute('data-k')); };
+
+  const q = (document.getElementById('sond-an-search').value || '').trim().toLowerCase();
+  let rows = sondAn.data.stores.slice();
+  if (q) rows = rows.filter(r => (r.storeName + ' ' + r.storeCode + ' ' + r.area).toLowerCase().includes(q));
+  const dir = st.dir === 'asc' ? 1 : -1;
+  rows.sort((a, b) => {
+    const av = a[st.key], bv = b[st.key];
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av || '').localeCompare(String(bv || '')) * dir;
+  });
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No data found</td></tr>'; return; }
+
+  let html = '';
+  rows.forEach(r => {
+    const isOpen = !!sondAn.open[r.storeCode];
+    html += '<tr class="sond-an-grp" data-store="' + esc(r.storeCode) + '" style="cursor:pointer;background:var(--bg2);">' +
+      '<td style="text-align:center;color:var(--blue);font-weight:700;">' + (isOpen ? '&#9660;' : '&#9654;') + '</td>' +
+      '<td><span class="badge badge-blue">' + esc(r.area || '') + '</span></td>' +
+      '<td class="mono">' + esc(r.storeCode) + '</td>' +
+      '<td style="font-weight:600;">' + esc(r.storeName || r.storeCode) + '</td>' +
+      '<td class="num mono">' + fmt(r.skus) + '</td>' +
+      '<td class="num mono">' + sondQty(r.soh) + '</td>' +
+      '<td class="num mono" style="color:var(--green-bright);font-weight:600;">\\u20b1' + fmtN(r.valuation) + '</td>' +
+    '</tr>';
+    if (isOpen) {
+      html += '<tr><td colspan="7" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
+    }
+  });
+  body.innerHTML = html;
+  body.querySelectorAll('tr.sond-an-grp').forEach(tr => {
+    tr.onclick = () => toggleSondStore(tr.getAttribute('data-store'));
+  });
+}
+
+function sondAnDetail(code) {
+  if (sondAn.loading[code] || !sondAn.skus[code]) return '<div style="padding:10px;color:var(--text2);font-size:11px;">Loading SKUs...</div>';
+  const rows = sondAn.skus[code];
+  if (!rows.length) return '<div style="padding:10px;color:var(--text2);font-size:11px;">No SKUs</div>';
+  const h = ['SKU', 'Description', 'Vendor', 'ABC', 'On Hand', 'Qty in Cases', 'Inv Value', 'Days Cover',
+             'P8 Ave/Week', 'Status', 'PO On Order', 'Trf On Order', 'Season Fcst', 'Season Recd', '%', 'Backlog'];
+  const dash = '<span style="color:var(--text2);">\\u2014</span>';
+  return '<div class="table-wrap" style="max-height:340px;margin:0;">' +
+    '<table style="font-size:11px;"><thead><tr>' +
+    h.map((x, i) => '<th class="' + (i >= 4 ? 'num' : '') + '">' + x + '</th>').join('') +
+    '</tr></thead><tbody>' +
+    rows.map(r => '<tr>' +
+      '<td class="mono">' + esc(r.sku) + '</td>' +
+      '<td>' + esc(r.desc || '') + '</td>' +
+      '<td style="color:var(--text2);">' + esc(r.vendor || '') + '</td>' +
+      (r.abc ? abcCell(r.abc) : '<td>' + dash + '</td>') +
+      '<td class="num mono">' + (r.onHand == null ? dash : fmt(r.onHand)) + '</td>' +
+      '<td class="num mono">' + (r.qtyCases == null ? dash : fmtN(r.qtyCases)) + '</td>' +
+      '<td class="num mono">' + (r.invValue == null ? dash : '\\u20b1' + fmtN(r.invValue)) + '</td>' +
+      '<td class="num mono">' + (r.daysCover == null ? dash : fmt(r.daysCover)) + '</td>' +
+      '<td class="num mono">' + (r.p8ave == null ? dash : fmtN(r.p8ave)) + '</td>' +
+      '<td>' + (r.status ? esc(r.status) : dash) + '</td>' +
+      '<td class="num mono">' + (r.poOrderGR == null ? dash : fmt(r.poOrderGR)) + '</td>' +
+      '<td class="num mono">' + (r.trfOrderGR == null ? dash : fmt(r.trfOrderGR)) + '</td>' +
+      '<td class="num mono">' + sondQty(r.seasonF) + '</td>' +
+      '<td class="num mono">' + sondQty(r.seasonR) + '</td>' +
+      '<td class="num mono">' + (r.pct == null ? dash : fmtN(r.pct) + '%') + '</td>' +
+      '<td class="num mono' + (r.backlog > 0 ? ' bkl-has' : '') + '">' + (r.backlog > 0 ? sondQty(r.backlog) : dash) + '</td>' +
+    '</tr>').join('') +
+    '</tbody></table></div>';
 }
 
 function renderSondMatrix(view) {
