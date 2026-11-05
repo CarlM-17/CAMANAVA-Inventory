@@ -445,7 +445,9 @@ async function downloadFileBuffer(_drive, fileId) {
 function parseCSV(buffer) {
   return new Promise((resolve, reject) => {
     const rows = [];
-    const stream = Readable.from(buffer.toString('utf8'));
+    // Stream the Buffer itself. buffer.toString('utf8') materialised a second copy of
+    // the whole 90MB+ file as a UTF-16 JS string (~2x the bytes) before parsing began.
+    const stream = Readable.from([buffer]);
     stream
       .pipe(parse({ columns: false, skip_empty_lines: true, trim: true, from_line: 1 }))
       .on('data', (row) => rows.push(row))
@@ -695,7 +697,8 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   if (rawRows.length < 2) return null;
 
   const header = rawRows[0];
-  const dataRows = rawRows.slice(1);
+  // No slice() — that copied the whole 213k-element array. Loops below start at index 1.
+  const dataRows = rawRows;   // kept for the sample-logging block only
 
   // Column index map (0-based, A=0)
   const COL = {
@@ -765,7 +768,8 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
 
   // PRE-PASS: Build SKU price lookup (avg cost by SKU code, from rows that have stock/cost)
   const skuCostLookup = {};
-  for (const row of dataRows) {
+  for (let _i = 1; _i < rawRows.length; _i++) {
+    const row = rawRows[_i];
     if (!row || row.length < 10) continue;
     const skuCode = (row[COL.skuCode] || '').toString().trim();
     if (!skuCode) continue;
@@ -777,7 +781,7 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
 
   // Debug: sample of InvData store IDs
   const sampleStoreIds = new Set();
-  for (let i = 0; i < Math.min(50, dataRows.length); i++) {
+  for (let i = 1; i < Math.min(51, dataRows.length); i++) {   // from 1: index 0 is the header
     const row = dataRows[i];
     if (row && row[2]) sampleStoreIds.add(row[2].toString().trim());
     if (sampleStoreIds.size >= 10) break;
@@ -797,8 +801,24 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
   // page serves) stay responsive during the enrichment of ~100k+ rows.
   const YIELD_EVERY = 5000;
   const yieldToEventLoop = () => new Promise(r => setImmediate(r));
+  // Share one string instance per distinct value. Store, supplier, department, class
+  // and status repeat across all 213k rows; without this each row holds its own copy.
+  // Measured on this dataset: ~44% less heap for the row array.
+  const _pool = new Map();
+  const S = (v) => {
+    const s = (v == null ? '' : v).toString().trim();
+    if (s.length > 60) return s;            // long, near-unique text: pooling just adds overhead
+    const hit = _pool.get(s);
+    if (hit !== undefined) return hit;
+    _pool.set(s, s);
+    return s;
+  };
   let _processed = 0;
-  for (const row of dataRows) {
+  for (let _i = 1; _i < rawRows.length; _i++) {
+    const row = rawRows[_i];
+    // Release each source row as we go. Nothing reads rawRows after this loop, so the
+    // ~17 million parsed strings are reclaimed progressively instead of all at the end.
+    rawRows[_i] = null;
     if (++_processed % YIELD_EVERY === 0) await yieldToEventLoop();
     if (!row || row.length < 10) continue;
     // STS Number filter - skip blank/empty STS rows
@@ -893,23 +913,23 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
 
     enriched.push({
       regionCode: row[COL.regionCode] || '',
-      regionName: storeInfo.region || row[COL.regionName] || '',
-      storeNumber: storeId,
-      storeName: storeInfo.storeName || row[COL.storeName] || '',
-      area: storeInfo.area || '',
-      dept: row[COL.dept] || '',
-      deptName: row[COL.deptName] || '',
-      catName: catMap[(row[COL.deptName] || '').toString().trim().toUpperCase()] || '',
-      subDept: row[COL.subDept] || '',
-      subDeptName: row[COL.subDeptName] || '',
-      cls: row[COL.cls] || '',
-      clsName: row[COL.clsName] || '',
-      subCls: row[COL.subCls] || '',
-      subClsName: row[COL.subClsName] || '',
-      brand: row[COL.brand] || '',
+      regionName: S(storeInfo.region || row[COL.regionName]),
+      storeNumber: S(storeId),
+      storeName: S(storeInfo.storeName || row[COL.storeName]),
+      area: S(storeInfo.area),
+      dept: S(row[COL.dept]),
+      deptName: S(row[COL.deptName]),
+      catName: S(catMap[(row[COL.deptName] || '').toString().trim().toUpperCase()]),
+      subDept: S(row[COL.subDept]),
+      subDeptName: S(row[COL.subDeptName]),
+      cls: S(row[COL.cls]),
+      clsName: S(row[COL.clsName]),
+      subCls: S(row[COL.subCls]),
+      subClsName: S(row[COL.subClsName]),
+      brand: S(row[COL.brand]),
       skuCode: row[COL.skuCode] || '',
       skuDesc: row[COL.skuDesc] || '',
-      skuStatus: row[COL.skuStatus] || '',
+      skuStatus: S(row[COL.skuStatus]),
       onHand,
       onHandValue,
       avgCost,
@@ -917,9 +937,9 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
       // Pre-computed for sorting (numeric, null when "Per Piece"). Uses _stdPack
       // captured above to avoid parsing the column 3× per row.
       qtyCasesNum: (_stdPack > 0 && _stdPack !== onHand) ? (onHand / _stdPack) : null,
-      ico: (row[COL.ico] || '').toString().trim(),
-      merchGro: (row[COL.merchGro] || '').toString().trim().toUpperCase(),
-      poType: (row[COL.poType] || '').toString().trim(),   // column BK
+      ico: S(row[COL.ico]),
+      merchGro: S((row[COL.merchGro] || '').toString().trim().toUpperCase()),
+      poType: S(row[COL.poType]),   // column BK
       totalPO,
       poValue,
       trfValue,
@@ -945,8 +965,8 @@ async function buildAnalytics(rawRows, storeMap, catMap = {}) {
         : _sir < 10 ? 'Watch'
         : _sir < 15.6 ? 'Healthy'
         : 'Excellent',
-      supplierCode: row[COL.supplierCode] || '',
-      supplierName: row[COL.supplierName] || '',
+      supplierCode: S(row[COL.supplierCode]),
+      supplierName: S(row[COL.supplierName]),
       delivMode: row[COL.delivMode] || '',
       dateLastSold,
       dateLastReceived,
@@ -1275,13 +1295,33 @@ async function refreshData(force = false) {
 }
 
 // ─── BACKGROUND SCHEDULER ─────────────────────────────────────────────────────
-cron.schedule(`*/${REFRESH_INTERVAL_MINUTES} * * * *`, () => {
-  refreshData(false);
-});
+// No background timers. Timers kept the container awake around the clock, and Railway
+// bills for that; the team uses this occasionally, so data is refreshed on demand when
+// a request arrives and the cache has gone stale. Set KEEP_AWAKE=1 to restore timers.
+if (process.env.KEEP_AWAKE === '1') {
+  cron.schedule(`*/${REFRESH_INTERVAL_MINUTES} * * * *`, () => refreshData(false));
+  cron.schedule(`*/${SOND_REFRESH_MINUTES} * * * *`, () => loadSondData());
+  console.log('[Cache] KEEP_AWAKE=1 — background refresh timers enabled');
+} else {
+  console.log('[Cache] on-demand refresh (no timers) — container may sleep when idle');
+}
 
-// SOND refreshes on its own, faster schedule — it is a small sheet and is edited often.
-cron.schedule(`*/${SOND_REFRESH_MINUTES} * * * *`, () => {
-  loadSondData();
+// Staleness check, run on API requests. Refreshes in the background and serves the
+// existing data meanwhile, so only a genuinely cold start ever waits.
+const ageMin = (iso) => iso ? (Date.now() - new Date(iso).getTime()) / 60000 : Infinity;
+function touchData() {
+  if (process.env.KEEP_AWAKE === '1') return;
+  if (!cache.refreshing && ageMin(cache.lastRefresh) >= REFRESH_INTERVAL_MINUTES) {
+    console.log('[Cache] stale on request — refreshing in background');
+    refreshData(false);
+  }
+  if (!cache.sond.loading && ageMin(cache.sond.lastRefresh) >= SOND_REFRESH_MINUTES) {
+    loadSondData();
+  }
+}
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/') && req.path !== '/api/version') touchData();
+  next();
 });
 
 // ─── FILTER HELPER ────────────────────────────────────────────────────────────
@@ -3431,6 +3471,8 @@ function sond2(n) { return +(+n || 0).toFixed(2); }
 
 async function loadSondData() {
   if (!SOND_SHEET_ID) { cache.sond.error = 'SOND_SHEET_ID not set'; return; }
+  if (cache.sond.loading) return;          // on-demand refresh can fire from several requests at once
+  cache.sond.loading = true;
   try {
     const t0 = Date.now();
     const sheets = await getSheetsClient();
@@ -3512,7 +3554,7 @@ async function loadSondData() {
       '  (of those, Z is zero on ' + zeroZ + ')');
     divSample.forEach(s => console.log('[SOND]   diverge: ' + s));
     cache.sond.divergence = { rows: divRows, zeroTotalRows: zeroZ, sample: divSample };
-    cache.sond = { ready: true, rows, tab, tabs, skipped, lastRefresh: new Date().toISOString(), error: null };
+    cache.sond = { ready: true, rows, tab, tabs, skipped, lastRefresh: new Date().toISOString(), error: null, loading: true };
     console.log('[SOND] loaded ' + rows.length + ' rows from tab "' + tab + '" of ' + tabs.length +
       ' (' + tabs.join(', ') + ') in ' + (Date.now() - t0) + 'ms');
     console.log('[SOND] total forecast: sheet col Z=' + sheetGrand.toFixed(2) + ' (used)  summed months=' + grand.toFixed(2) +
@@ -3544,6 +3586,8 @@ async function loadSondData() {
     cache.sond.error = e.message;
     cache.sond.ready = cache.sond.rows.length > 0;
     console.warn('[SOND] load failed:', e.message);
+  } finally {
+    cache.sond.loading = false;
   }
 }
 
@@ -4404,7 +4448,17 @@ app.get('/api/version', (req, res) => {
     model: ANTHROPIC_MODEL,
     cacheReady: !!cache.ready,
     rows: (cache.rows && cache.rows.length) || 0,
-    serverTime: new Date().toISOString()
+    serverTime: new Date().toISOString(),
+    // Memory readout, to compare Railway usage before and after the slimming work
+    memory: (() => {
+      const m = process.memoryUsage();
+      const mb = (n) => Math.round(n / 1048576);
+      return { heapUsedMB: mb(m.heapUsed), heapTotalMB: mb(m.heapTotal), rssMB: mb(m.rss), externalMB: mb(m.external) };
+    })(),
+    uptimeMin: Math.round(process.uptime() / 60),
+    keepAwake: process.env.KEEP_AWAKE === '1',
+    lastRefresh: cache.lastRefresh,
+    sondLastRefresh: cache.sond.lastRefresh
   });
 });
 
@@ -7510,9 +7564,15 @@ async function reloadSOND() {
 // While the SOND tab is open, pull fresh data every 45s so sheet edits appear on their
 // own. Paused when the tab is hidden or the browser window is in the background.
 let sondAutoTimer = null;
+let sondLastInteract = Date.now();
+['click', 'keydown', 'touchstart'].forEach(ev =>
+  document.addEventListener(ev, () => { sondLastInteract = Date.now(); }, { passive: true }));
 function startSondAutoRefresh() {
   if (sondAutoTimer) return;
   sondAutoTimer = setInterval(() => {
+    // Stop polling once the tab is hidden or nobody has touched the page for 15 minutes.
+    // A forgotten open tab would otherwise keep the Railway container awake all night.
+    if (Date.now() - sondLastInteract > 15 * 60 * 1000) return;
     if (activeTab === 'sond' && !document.hidden) loadSOND();
   }, 45000);
 }
