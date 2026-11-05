@@ -3759,6 +3759,22 @@ function sondInvOf(x) {
   return inv || null;
 }
 
+// Whole-store inventory valuation (every SKU, not just the SOND ones) so the SOND
+// slice can be shown as a share of the store. Memoised per cache refresh — this walks
+// all ~213k rows and the analysis tab is opened repeatedly.
+const storeValMemo = { key: null, map: null };
+function storeValuationMap() {
+  const key = cache.lastRefresh || '';
+  if (storeValMemo.key === key && storeValMemo.map) return storeValMemo.map;
+  const map = {};
+  for (const r of (cache.rows || [])) {
+    const k = (r.storeNumber || '').toString().trim();
+    map[k] = (map[k] || 0) + (Number(r.onHandValue) || 0);
+  }
+  storeValMemo.key = key; storeValMemo.map = map;
+  return map;
+}
+
 app.get('/api/sond/analysis', (req, res) => {
   if (!cache.sond.ready) return res.json({ ready: false, error: cache.sond.error || 'SOND data loading' });
   const rows = sondFiltered(req);
@@ -3781,11 +3797,16 @@ app.get('/api/sond/analysis', (req, res) => {
       row.valuation += Number(inv.onHandValue) || 0;
     }
   }
+  const svm = storeValuationMap();
   const stores = Object.values(g).map(r => {
     r.soh = sond2(r.soh);
     r.valuation = Math.round(r.valuation);
+    r.storeTotalVal = Math.round(svm[r.storeCode] || 0);
+    r.pctOfTotal = r.storeTotalVal > 0 ? +((r.valuation / r.storeTotalVal) * 100).toFixed(2) : null;
     return r;
   }).sort((a, b) => b.valuation - a.valuation);
+  const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
+  const sumStoreTotal = stores.reduce((a, r) => a + r.storeTotalVal, 0);
   res.json({
     ready: true, invReady,
     stores,
@@ -3793,7 +3814,9 @@ app.get('/api/sond/analysis', (req, res) => {
       stores: stores.length,
       skus: stores.reduce((a, r) => a + r.skus, 0),
       soh: sond2(stores.reduce((a, r) => a + r.soh, 0)),
-      valuation: Math.round(stores.reduce((a, r) => a + r.valuation, 0))
+      valuation: Math.round(sumVal),
+      storeTotalVal: Math.round(sumStoreTotal),
+      pctOfTotal: sumStoreTotal > 0 ? +((sumVal / sumStoreTotal) * 100).toFixed(2) : null
     }
   });
 });
@@ -6207,6 +6230,7 @@ canvas { max-height:260px; }
               <button class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
             </div>
           </div>
+          <div class="sond-strip" id="sond-an-cards"></div>
           <div class="table-wrap" style="max-height:620px;">
             <table id="sond-an-table" class="sond-matrix">
               <thead id="sond-an-head"></thead>
@@ -7679,7 +7703,16 @@ function renderSondActive() {
 }
 
 // ─── SOND Analysis: store groups, expandable to SKU detail ───────────────────
-const sondAn = { data: null, sort: { key: 'valuation', dir: 'desc' }, open: {}, skus: {}, loading: {} };
+const sondAn = { data: null, sort: { key: 'valuation', dir: 'desc' }, open: {}, skus: {}, loading: {}, detSort: {} };
+
+// Each expanded store keeps its own SKU sort, so sorting one does not disturb another.
+function sortSondAnDet(code, key) {
+  const cur = sondAn.detSort[code] || { key: 'invValue', dir: 'desc' };
+  if (cur.key === key) cur.dir = cur.dir === 'asc' ? 'desc' : 'asc';
+  else { cur.key = key; cur.dir = (key === 'sku' || key === 'desc' || key === 'vendor' || key === 'status' || key === 'abc') ? 'asc' : 'desc'; }
+  sondAn.detSort[code] = cur;
+  renderSondAnalysis();
+}
 
 function sondAnQS() {
   const p = new URLSearchParams();
@@ -7744,7 +7777,8 @@ function renderSondAnalysis() {
   const ind = (k) => st.key === k ? '<span class="sond-sortind">' + (st.dir === 'asc' ? '\\u25B2' : '\\u25BC') + '</span>' : '';
   const cols = [
     ['', '', false], ['area', 'Area', false], ['storeCode', 'Store Code', false], ['storeName', 'Store Name', false],
-    ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true]
+    ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true],
+    ['pctOfTotal', '% of Total Val.', true]
   ];
   head.innerHTML = '<tr>' + cols.map(([k, h, num]) =>
     '<th' + (num ? ' class="num"' : '') + (k ? ' data-k="' + k + '"' : '') + ' style="' + (k ? 'cursor:pointer;' : 'width:28px;') + '">' +
@@ -7760,7 +7794,8 @@ function renderSondAnalysis() {
     if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
     return String(av || '').localeCompare(String(bv || '')) * dir;
   });
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No data found</td></tr>'; return; }
+  renderSondAnCards(rows);
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="empty">No data found</td></tr>'; return; }
 
   let html = '';
   rows.forEach(r => {
@@ -7773,27 +7808,76 @@ function renderSondAnalysis() {
       '<td class="num mono">' + fmt(r.skus) + '</td>' +
       '<td class="num mono">' + sondQty(r.soh) + '</td>' +
       '<td class="num mono" style="color:var(--green-bright);font-weight:600;">\\u20b1' + fmtN(r.valuation) + '</td>' +
+      '<td class="num mono" style="font-weight:600;" title="SOND valuation as a share of this store\\'s entire inventory value (\\u20b1' +
+        fmtN(r.storeTotalVal || 0) + ')">' +
+        (r.pctOfTotal == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.pctOfTotal) + '%') + '</td>' +
     '</tr>';
     if (isOpen) {
-      html += '<tr><td colspan="7" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
+      html += '<tr><td colspan="8" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
     }
   });
   body.innerHTML = html;
   body.querySelectorAll('tr.sond-an-grp').forEach(tr => {
     tr.onclick = () => toggleSondStore(tr.getAttribute('data-store'));
   });
+  // Detail header clicks sort that store's SKUs; stop them reaching the group row
+  body.querySelectorAll('th[data-det-k]').forEach(th => {
+    th.onclick = (ev) => {
+      ev.stopPropagation();
+      sortSondAnDet(th.getAttribute('data-det-store'), th.getAttribute('data-det-k'));
+    };
+  });
+}
+
+// Region cards reflect whatever is currently in view (area/store filter + search),
+// so the totals always match the rows underneath them.
+function renderSondAnCards(rows) {
+  const el = document.getElementById('sond-an-cards');
+  if (!el) return;
+  const skus = rows.reduce((a, r) => a + (r.skus || 0), 0);
+  const val = rows.reduce((a, r) => a + (r.valuation || 0), 0);
+  const storeTot = rows.reduce((a, r) => a + (r.storeTotalVal || 0), 0);
+  const pct = storeTot > 0 ? (val / storeTot) * 100 : null;
+  const soh = rows.reduce((a, r) => a + (r.soh || 0), 0);
+  el.innerHTML =
+    '<div class="sond-mcard"><div class="lab">Region total SKUs</div>' +
+      '<div class="val">' + fmt(skus) + '</div>' +
+      '<div class="sub">' + fmt(rows.length) + ' stores &middot; ' + sondQty(soh) + ' cases on hand</div></div>' +
+    '<div class="sond-mcard" style="border-color:var(--green-bright);"><div class="lab">SOND valuation</div>' +
+      '<div class="val" style="color:var(--green-bright);">\\u20b1' + fmtM(val) + '</div>' +
+      '<div class="sub">\\u20b1' + fmtN(val) + '</div></div>' +
+    '<div class="sond-mcard" style="border-color:var(--blue);"><div class="lab">% of Total Val.</div>' +
+      '<div class="val" style="color:var(--blue);">' + (pct == null ? '\\u2014' : fmtN(pct) + '%') + '</div>' +
+      '<div class="sub">of \\u20b1' + fmtM(storeTot) + ' total inventory</div></div>';
 }
 
 function sondAnDetail(code) {
   if (sondAn.loading[code] || !sondAn.skus[code]) return '<div style="padding:10px;color:var(--text2);font-size:11px;">Loading SKUs...</div>';
-  const rows = sondAn.skus[code];
-  if (!rows.length) return '<div style="padding:10px;color:var(--text2);font-size:11px;">No SKUs</div>';
-  const h = ['SKU', 'Description', 'Vendor', 'ABC', 'On Hand', 'Qty in Cases', 'Inv Value', 'Days Cover',
-             'P8 Ave/Week', 'Status', 'PO On Order', 'Trf On Order', 'Season Fcst', 'Season Recd', '%', 'Backlog'];
+  const all = sondAn.skus[code];
+  if (!all.length) return '<div style="padding:10px;color:var(--text2);font-size:11px;">No SKUs</div>';
+  const h = [
+    ['sku', 'SKU'], ['desc', 'Description'], ['vendor', 'Vendor'], ['abc', 'ABC'],
+    ['onHand', 'On Hand'], ['qtyCases', 'Qty in Cases'], ['invValue', 'Inv Value'], ['daysCover', 'Days Cover'],
+    ['p8ave', 'P8 Ave/Week'], ['status', 'Status'], ['poOrderGR', 'PO On Order'], ['trfOrderGR', 'Trf On Order'],
+    ['seasonF', 'Season Fcst'], ['seasonR', 'Season Recd'], ['pct', '%'], ['backlog', 'Backlog']
+  ];
+  const ds = sondAn.detSort[code] || { key: 'invValue', dir: 'desc' };
+  const dir = ds.dir === 'asc' ? 1 : -1;
+  const rows = all.slice().sort((x, y) => {
+    const av = x[ds.key], bv = y[ds.key];
+    const an = (av == null || av === ''), bn = (bv == null || bv === '');
+    if (an && bn) return 0;
+    if (an) return 1;            // unmatched SKUs sink, both directions
+    if (bn) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+  const dind = (k) => ds.key === k ? '<span class="sond-sortind">' + (ds.dir === 'asc' ? '\\u25B2' : '\\u25BC') + '</span>' : '';
   const dash = '<span style="color:var(--text2);">\\u2014</span>';
   return '<div class="table-wrap" style="max-height:340px;margin:0;">' +
     '<table style="font-size:11px;"><thead><tr>' +
-    h.map((x, i) => '<th class="' + (i >= 4 ? 'num' : '') + '">' + x + '</th>').join('') +
+    h.map(([k, label], i) => '<th class="' + (i >= 4 ? 'num' : '') + '" data-det-k="' + k +
+      '" data-det-store="' + esc(code) + '" style="cursor:pointer;">' + label + dind(k) + '</th>').join('') +
     '</tr></thead><tbody>' +
     rows.map(r => '<tr>' +
       '<td class="mono">' + esc(r.sku) + '</td>' +
