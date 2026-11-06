@@ -3944,7 +3944,7 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
     wb.created = new Date();
 
     // Shared header block: merged title, context line, then column headers
-    const header = (ws, cols, subtitle) => {
+    const header = (ws, cols, subtitle, skipColHeaders) => {
       ws.mergeCells(1, 1, 1, cols.length);
       const t = ws.getCell(1, 1);
       t.value = 'CAMANAVA SOND Forecast Status (SOND Analysis)';
@@ -3959,15 +3959,16 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       s.alignment = { vertical: 'middle', horizontal: 'center' };
       ws.getRow(2).height = 20;
       cols.forEach(([label, , width], i) => {
+        ws.getColumn(i + 1).width = width;
+        if (skipColHeaders) return;     // Per Item repeats headers inside each store block
         const c = ws.getCell(3, i + 1);
         c.value = label;
         c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
         c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
         c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
         c.border = border;
-        ws.getColumn(i + 1).width = width;
       });
-      ws.getRow(3).height = 24;
+      if (!skipColHeaders) ws.getRow(3).height = 24;
     };
 
     // ── Sheet 1: per store
@@ -4029,28 +4030,47 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       ['Season Fcst', 'seasonF', 13], ['Season Recd', 'seasonR', 13], ['%', 'pct', 9], ['Backlog', 'backlog', 12]
     ];
     const ws2 = wb.addWorksheet('Per Item');
-    header(ws2, iCols, 'As of ' + today + '  |  ' + scope + '  |  SKUs grouped by store, each store summary shown above its items');
+    header(ws2, iCols, 'As of ' + today + '  |  ' + scope + '  |  SKUs grouped by store, each store summary shown above its items', true);
     let r2 = 4;
+    // Each store block mirrors the screen: store column headers, the store's summary
+    // row, then the item column headers, then its items.
+    const storeHdr = ['Area', 'Store Code', 'Store Name', 'No. of SKUs', 'System On Hand (CS)',
+                      'Valuation', 'Season Forecast', 'Season Received', '%', '% of Total Val.'];
     d.stores.forEach(s => {
-      // Store summary band
-      ws2.mergeCells(r2, 1, r2, 5);
-      const lab = ws2.getCell(r2, 1);
-      lab.value = s.area + '  •  ' + s.storeCode + '  •  ' + s.storeName;
-      lab.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-      lab.alignment = { vertical: 'middle', indent: 1 };
-      const band = [
-        [6, s.skus, '#,##0'], [7, s.soh, '#,##0.##'], [8, s.valuation, '₱#,##0'],
-        [14, s.seasonF, '#,##0.##'], [15, s.seasonR, '#,##0.##'],
-        [16, s.seasonPct == null ? null : s.seasonPct / 100, '0.0%']
-      ];
-      band.forEach(([col, v, fmt]) => { const c = ws2.getCell(r2, col); c.value = v == null ? '—' : v; c.numFmt = fmt; });
-      for (let i = 1; i <= iCols.length; i++) {
-        const c = ws2.getCell(r2, i);
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TEAL } };
-        c.font = Object.assign({ bold: true, color: { argb: 'FFFFFFFF' } }, c.font || {});
+      storeHdr.forEach((h, i) => {
+        const c = ws2.getCell(r2, i + 1);
+        c.value = h;
+        c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+        c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
         c.border = border;
-      }
+      });
+      r2++;
+      const sv = [s.area, s.storeCode, s.storeName, s.skus, s.soh, s.valuation, s.seasonF, s.seasonR,
+                  s.seasonPct == null ? null : s.seasonPct / 100,
+                  s.pctOfTotal == null ? null : s.pctOfTotal / 100];
+      sv.forEach((v, i) => {
+        const c = ws2.getCell(r2, i + 1);
+        c.value = v == null ? '—' : v;
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TEAL } };
+        c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+        c.border = border;
+        if (i === 3) c.numFmt = '#,##0';
+        if (i === 4 || i === 6 || i === 7) c.numFmt = '#,##0.##';
+        if (i === 5) c.numFmt = '₱#,##0';
+        if (i === 8) c.numFmt = '0.0%';
+        if (i === 9) c.numFmt = '0.00%';
+      });
       ws2.getRow(r2).height = 19;
+      r2++;
+      iCols.forEach(([label], i) => {
+        const c = ws2.getCell(r2, i + 1);
+        c.value = label;
+        c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2E5E3A' } };
+        c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        c.border = border;
+      });
       r2++;
       const skus = sondAnalysisSkus(req, s.storeCode);
       skus.forEach(k => {
@@ -4070,8 +4090,9 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
         });
         r2++;
       });
+      r2++;   // blank line between store blocks
     });
-    ws2.views = [{ state: 'frozen', ySplit: 3 }];
+    ws2.views = [{ state: 'frozen', ySplit: 2 }];   // title + context only; headers repeat per block
 
     const fname = 'CAMANAVA_SOND_Analysis_' + new Date().toISOString().slice(0, 10) + '.xlsx';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -6458,8 +6479,9 @@ canvas { max-height:260px; }
             <div style="font-size:11px;color:var(--text2);">Grouped by store. Click a row to expand its SOND SKUs. Click any header to sort.</div>
             <div style="display:flex;gap:6px;">
               <input type="text" class="table-search" id="sond-an-search" placeholder="Search store..." oninput="renderSondAnalysis()" style="width:200px;"/>
-              <button class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
-              <button class="btn btn-sm" onclick="exportSondAnalysisExcel()">⬇ Export Excel</button>
+              <button type="button" class="btn btn-sm" onclick="sondExpandAll(true)">Expand all</button>
+              <button type="button" class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
+              <button type="button" class="btn btn-sm" onclick="exportSondAnalysisExcel()">⬇ Export Excel</button>
             </div>
           </div>
           <div class="sond-strip" id="sond-an-cards"></div>
@@ -7994,14 +8016,26 @@ function sortSondAn(key) {
 }
 
 function sondExpandAll(open) {
-  if (!open) sondAn.open = {};
+  if (!open) {
+    // Rebuild the map rather than mutating it, and clear any in-flight loads so a
+    // late-arriving fetch cannot re-render an expanded row after the collapse.
+    sondAn.open = {};
+    sondAn.loading = {};
+    const body = document.getElementById('sond-an-body');
+    if (body) body.innerHTML = '';
+    renderSondAnalysis();
+    return;
+  }
+  if (!sondAn.data) return;
+  (sondAn.data.stores || []).forEach(s => { sondAn.open[s.storeCode] = true; });
   renderSondAnalysis();
+  // Fetch any store whose SKUs are not cached yet
+  (sondAn.data.stores || []).forEach(s => {
+    if (!sondAn.skus[s.storeCode] && !sondAn.loading[s.storeCode]) loadSondStoreSkus(s.storeCode);
+  });
 }
 
-async function toggleSondStore(code) {
-  if (sondAn.open[code]) { delete sondAn.open[code]; renderSondAnalysis(); return; }
-  sondAn.open[code] = true;
-  renderSondAnalysis();
+async function loadSondStoreSkus(code) {
   if (sondAn.skus[code] || sondAn.loading[code]) return;
   sondAn.loading[code] = true;
   try {
@@ -8011,7 +8045,14 @@ async function toggleSondStore(code) {
     sondAn.skus[code] = (d && d.rows) || [];
   } catch (e) { sondAn.skus[code] = []; }
   sondAn.loading[code] = false;
+  if (sondAn.open[code]) renderSondAnalysis();
+}
+
+function toggleSondStore(code) {
+  if (sondAn.open[code]) { delete sondAn.open[code]; renderSondAnalysis(); return; }
+  sondAn.open[code] = true;
   renderSondAnalysis();
+  loadSondStoreSkus(code);
 }
 
 function renderSondAnalysis() {
