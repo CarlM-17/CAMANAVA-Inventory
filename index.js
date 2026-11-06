@@ -3819,8 +3819,8 @@ function storeValuationMap() {
   return map;
 }
 
-app.get('/api/sond/analysis', (req, res) => {
-  if (!cache.sond.ready) return res.json({ ready: false, error: cache.sond.error || 'SOND data loading' });
+function sondAnalysisData(req) {
+  if (!cache.sond.ready) return { ready: false, error: cache.sond.error || 'SOND data loading' };
   const rows = sondFiltered(req);
   const invReady = cache.ready && Object.keys(cache.storeSkuIndex || {}).length > 0;
   const g = {};
@@ -3855,7 +3855,7 @@ app.get('/api/sond/analysis', (req, res) => {
   }).sort((a, b) => b.valuation - a.valuation);
   const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
   const sumStoreTotal = stores.reduce((a, r) => a + r.storeTotalVal, 0);
-  res.json({
+  return {
     ready: true, invReady,
     stores,
     totals: {
@@ -3869,13 +3869,12 @@ app.get('/api/sond/analysis', (req, res) => {
       storeTotalVal: Math.round(sumStoreTotal),
       pctOfTotal: sumStoreTotal > 0 ? +((sumVal / sumStoreTotal) * 100).toFixed(2) : null
     }
-  });
-});
+  };
+}
 
-app.get('/api/sond/analysis/skus', (req, res) => {
-  if (!cache.sond.ready) return res.json({ ready: false, error: 'SOND data loading' });
-  const store = (req.query.store || '').trim();
-  if (!store) return res.status(400).json({ error: 'store required' });
+app.get('/api/sond/analysis', (req, res) => res.json(sondAnalysisData(req)));
+
+function sondAnalysisSkus(req, store) {
   const rows = sondFiltered(req).filter(x => x.storeCode === store);
   const seen = new Set();
   const out = [];
@@ -3911,7 +3910,178 @@ app.get('/api/sond/analysis/skus', (req, res) => {
     });
   }
   out.sort((a, b) => (b.invValue || 0) - (a.invValue || 0));
-  res.json({ ready: true, store, rows: out });
+  return out;
+}
+
+app.get('/api/sond/analysis/skus', (req, res) => {
+  if (!cache.sond.ready) return res.json({ ready: false, error: 'SOND data loading' });
+  const store = (req.query.store || '').trim();
+  if (!store) return res.status(400).json({ error: 'store required' });
+  res.json({ ready: true, store, rows: sondAnalysisSkus(req, store) });
+});
+
+// SOND Analysis export — sheet 1 the store summary, sheet 2 every SKU grouped under
+// its store's summary row. Styling matches the other SOND exports.
+app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
+  try {
+    const d = sondAnalysisData(req);
+    if (!d.ready) return res.status(503).send(d.error || 'SOND data not ready');
+    const DARK_GREEN = 'FF1B5E20', TEAL = 'FF1B7F78', GREY = 'FFECEFF1';
+    const thin = { style: 'thin', color: { argb: 'FFBDBDBD' } };
+    const border = { top: thin, bottom: thin, left: thin, right: thin };
+    const bandFill = (pct) => {
+      if (pct == null) return null;
+      if (pct > 120) return 'FFBBDEFB';
+      if (pct >= 100) return 'FFC8E6C9';
+      if (pct >= 90) return 'FFFFF3C4';
+      return 'FFFFCDD2';
+    };
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const scope = req.query.area ? 'Area: ' + req.query.area : 'All areas';
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'CAMANAVA Inventory Dashboard';
+    wb.created = new Date();
+
+    // Shared header block: merged title, context line, then column headers
+    const header = (ws, cols, subtitle) => {
+      ws.mergeCells(1, 1, 1, cols.length);
+      const t = ws.getCell(1, 1);
+      t.value = 'CAMANAVA SOND Forecast Status (SOND Analysis)';
+      t.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 15 };
+      t.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+      t.alignment = { vertical: 'middle', horizontal: 'center' };
+      ws.getRow(1).height = 30;
+      ws.mergeCells(2, 1, 2, cols.length);
+      const s = ws.getCell(2, 1);
+      s.value = subtitle;
+      s.font = { italic: true, size: 10, color: { argb: 'FF37474F' } };
+      s.alignment = { vertical: 'middle', horizontal: 'center' };
+      ws.getRow(2).height = 20;
+      cols.forEach(([label, , width], i) => {
+        const c = ws.getCell(3, i + 1);
+        c.value = label;
+        c.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+        c.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+        c.border = border;
+        ws.getColumn(i + 1).width = width;
+      });
+      ws.getRow(3).height = 24;
+    };
+
+    // ── Sheet 1: per store
+    const sCols = [
+      ['Area', 'area', 18], ['Store Code', 'storeCode', 12], ['Store Name', 'storeName', 30],
+      ['No. of SKUs', 'skus', 12], ['System On Hand (CS)', 'soh', 18], ['Valuation', 'valuation', 18],
+      ['Season Forecast', 'seasonF', 16], ['Season Received', 'seasonR', 16], ['%', 'seasonPct', 10],
+      ['% of Total Val.', 'pctOfTotal', 15]
+    ];
+    const ws1 = wb.addWorksheet('Per Store');
+    header(ws1, sCols, 'As of ' + today + '  |  ' + scope + '  |  ' + d.totals.stores + ' stores  |  ' +
+      d.totals.skus.toLocaleString() + ' SKUs  |  Valuation ₱' + d.totals.valuation.toLocaleString() +
+      '  |  ' + (d.totals.pctOfTotal == null ? '-' : d.totals.pctOfTotal + '%') + ' of total inventory value');
+    let r1 = 4;
+    d.stores.forEach(s => {
+      const vals = [s.area, s.storeCode, s.storeName, s.skus, s.soh, s.valuation, s.seasonF, s.seasonR,
+                    s.seasonPct == null ? null : s.seasonPct / 100, s.pctOfTotal == null ? null : s.pctOfTotal / 100];
+      vals.forEach((v, i) => {
+        const c = ws1.getCell(r1, i + 1);
+        c.value = v == null ? '—' : v;
+        c.border = border;
+        if (i === 3) c.numFmt = '#,##0';
+        if (i === 4 || i === 6 || i === 7) c.numFmt = '#,##0.##';
+        if (i === 5) { c.numFmt = '₱#,##0'; c.font = { color: { argb: 'FF1B5E20' }, bold: true }; }
+        if (i === 8) { c.numFmt = '0.0%'; const f = bandFill(s.seasonPct); if (f) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: f } }; }
+        if (i === 9) c.numFmt = '0.00%';
+      });
+      r1++;
+    });
+    const tr = ws1.getRow(r1);
+    [['TOTAL (' + d.totals.stores + ' stores)', 1], [d.totals.skus, 4], [d.totals.soh, 5], [d.totals.valuation, 6],
+     [d.totals.seasonF, 7], [d.totals.seasonR, 8],
+     [d.totals.seasonPct == null ? null : d.totals.seasonPct / 100, 9],
+     [d.totals.pctOfTotal == null ? null : d.totals.pctOfTotal / 100, 10]].forEach(([v, col]) => {
+      const c = ws1.getCell(r1, col);
+      c.value = v == null ? '—' : v;
+      if (col === 4) c.numFmt = '#,##0';
+      if (col === 5 || col === 7 || col === 8) c.numFmt = '#,##0.##';
+      if (col === 6) c.numFmt = '₱#,##0';
+      if (col === 9) c.numFmt = '0.0%';
+      if (col === 10) c.numFmt = '0.00%';
+    });
+    for (let i = 1; i <= sCols.length; i++) {
+      const c = ws1.getCell(r1, i);
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: DARK_GREEN } };
+      c.border = border;
+    }
+    tr.height = 20;
+    ws1.views = [{ state: 'frozen', ySplit: 3 }];
+    ws1.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: sCols.length } };
+
+    // ── Sheet 2: per item, each store's SKUs under that store's summary row
+    const iCols = [
+      ['SKU', 'sku', 14], ['Description', 'desc', 38], ['Vendor', 'vendor', 30], ['Category', 'category', 12],
+      ['ABC', 'abc', 7], ['On Hand', 'onHand', 11], ['Qty in Cases', 'qtyCases', 13], ['Inv Value', 'invValue', 15],
+      ['Days Cover', 'daysCover', 12], ['P8 Ave/Week', 'p8ave', 13], ['Status', 'status', 15],
+      ['PO On Order', 'poOrderGR', 12], ['Trf On Order', 'trfOrderGR', 12],
+      ['Season Fcst', 'seasonF', 13], ['Season Recd', 'seasonR', 13], ['%', 'pct', 9], ['Backlog', 'backlog', 12]
+    ];
+    const ws2 = wb.addWorksheet('Per Item');
+    header(ws2, iCols, 'As of ' + today + '  |  ' + scope + '  |  SKUs grouped by store, each store summary shown above its items');
+    let r2 = 4;
+    d.stores.forEach(s => {
+      // Store summary band
+      ws2.mergeCells(r2, 1, r2, 5);
+      const lab = ws2.getCell(r2, 1);
+      lab.value = s.area + '  •  ' + s.storeCode + '  •  ' + s.storeName;
+      lab.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      lab.alignment = { vertical: 'middle', indent: 1 };
+      const band = [
+        [6, s.skus, '#,##0'], [7, s.soh, '#,##0.##'], [8, s.valuation, '₱#,##0'],
+        [14, s.seasonF, '#,##0.##'], [15, s.seasonR, '#,##0.##'],
+        [16, s.seasonPct == null ? null : s.seasonPct / 100, '0.0%']
+      ];
+      band.forEach(([col, v, fmt]) => { const c = ws2.getCell(r2, col); c.value = v == null ? '—' : v; c.numFmt = fmt; });
+      for (let i = 1; i <= iCols.length; i++) {
+        const c = ws2.getCell(r2, i);
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TEAL } };
+        c.font = Object.assign({ bold: true, color: { argb: 'FFFFFFFF' } }, c.font || {});
+        c.border = border;
+      }
+      ws2.getRow(r2).height = 19;
+      r2++;
+      const skus = sondAnalysisSkus(req, s.storeCode);
+      skus.forEach(k => {
+        const vals = [k.sku, k.desc, k.vendor, k.category, k.abc, k.onHand, k.qtyCases, k.invValue,
+                      k.daysCover, k.p8ave, k.status, k.poOrderGR, k.trfOrderGR,
+                      k.seasonF, k.seasonR, k.pct == null ? null : k.pct / 100, k.backlog];
+        vals.forEach((v, i) => {
+          const c = ws2.getCell(r2, i + 1);
+          c.value = (v == null || v === '') ? '—' : v;
+          c.border = border;
+          if ([5, 8, 9, 11, 12].indexOf(i) >= 0) c.numFmt = '#,##0';
+          if ([6, 9, 13, 14, 16].indexOf(i) >= 0) c.numFmt = '#,##0.##';
+          if (i === 7) c.numFmt = '₱#,##0';
+          if (i === 15) { c.numFmt = '0.0%'; const f = bandFill(k.pct); if (f) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: f } }; }
+          if (i === 16 && k.backlog > 0) c.font = { bold: true, color: { argb: 'FFC62828' } };
+          if (!k.inInventory) c.fill = c.fill || { type: 'pattern', pattern: 'solid', fgColor: { argb: GREY } };
+        });
+        r2++;
+      });
+    });
+    ws2.views = [{ state: 'frozen', ySplit: 3 }];
+
+    const fname = 'CAMANAVA_SOND_Analysis_' + new Date().toISOString().slice(0, 10) + '.xlsx';
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="' + fname + '"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    console.error('[SOND analysis export]', e.message);
+    res.status(500).send('Export failed: ' + e.message);
+  }
 });
 
 // Styled XLSX export — one sheet per view, matching the on-screen month matrix.
@@ -6289,6 +6459,7 @@ canvas { max-height:260px; }
             <div style="display:flex;gap:6px;">
               <input type="text" class="table-search" id="sond-an-search" placeholder="Search store..." oninput="renderSondAnalysis()" style="width:200px;"/>
               <button class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
+              <button class="btn btn-sm" onclick="exportSondAnalysisExcel()">⬇ Export Excel</button>
             </div>
           </div>
           <div class="sond-strip" id="sond-an-cards"></div>
@@ -7806,6 +7977,13 @@ async function loadSondAnalysis(force) {
     return;
   }
   renderSondAnalysis();
+}
+
+function exportSondAnalysisExcel() {
+  const a = document.createElement('a');
+  a.href = '/api/sond/analysis/export-xlsx?' + sondAnQS().toString();
+  a.download = '';
+  document.body.appendChild(a); a.click(); a.remove();
 }
 
 function sortSondAn(key) {
