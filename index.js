@@ -3719,6 +3719,11 @@ function sondSummary(req) {
     row.backlog = sond2(Math.max(0, cf - cr));
     row.dueF = sond2(cf); row.dueR = sond2(cr);
     if (row.soh != null) row.soh = sond2(row.soh);   // cases, 2dp like every other quantity
+    // Season forecast against what is physically on hand, both in cases.
+    // Positive variance = more stock on hand than the whole season calls for.
+    const _soh = row.soh || 0;
+    row.sohVar = sond2(_soh - row.totalF);
+    row.sohCover = row.totalF > 0 ? +((_soh / row.totalF) * 100).toFixed(1) : null;
     return row;
   };
   const items = Object.values(gi).map(finish).sort((a, b) => b.totalF - a.totalF);
@@ -4131,7 +4136,7 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
     wb.created = new Date();
     const ws = wb.addWorksheet('SOND ' + def.label);
     const nLead = def.cols.length;
-    const nCols = nLead + d.months.length * 4 + 1 + 3;   // 4 per month + backlog + grand total
+    const nCols = nLead + d.months.length * 4 + 1 + 3 + 2;   // 4/month + backlog + grand total + fcst-vs-on-hand
 
     // Row 1 — title
     ws.mergeCells(1, 1, 1, nCols);
@@ -4212,6 +4217,24 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
       h.border = border;
       ws.getColumn(c + i).width = 15;
     });
+    c += 3;
+    // Forecast vs On Hand group
+    ws.mergeCells(3, c, 3, c + 1);
+    const vh = ws.getCell(3, c);
+    vh.value = 'Forecast vs On Hand';
+    vh.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    vh.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6A3FB5' } };
+    vh.alignment = { vertical: 'middle', horizontal: 'center' };
+    vh.border = border;
+    ['Variance (CS)', 'On Hand %'].forEach((lbl, i) => {
+      const h = ws.getCell(4, c + i);
+      h.value = lbl;
+      h.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      h.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6A3FB5' } };
+      h.alignment = { vertical: 'middle', horizontal: 'center' };
+      h.border = border;
+      ws.getColumn(c + i).width = 14;
+    });
     ws.getRow(3).height = 22;
     ws.getRow(4).height = 20;
 
@@ -4255,6 +4278,15 @@ app.get('/api/sond/export-xlsx', async (req, res) => {
       else { tp.value = (row.pct || 0) / 100; tp.numFmt = '0.0%'; tp.font = { bold: true }; }
       tp.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAND_FILL[row.band] || 'FFFFFFFF' } };
       tp.border = border;
+      const vv = ws.getCell(r, cc + 3);
+      vv.value = row.sohVar == null ? 0 : row.sohVar;
+      vv.numFmt = '+#,##0.##;-#,##0.##;0';
+      vv.font = { color: { argb: (row.sohVar || 0) < 0 ? 'FFC62828' : 'FF1B5E20' }, bold: true };
+      vv.border = border;
+      const vc = ws.getCell(r, cc + 4);
+      if (row.sohCover == null) { vc.value = '—'; vc.font = { italic: true, color: { argb: 'FF9E9E9E' }, size: 9 }; }
+      else { vc.value = row.sohCover / 100; vc.numFmt = '0.0%'; }
+      vc.border = border;
       r++;
     });
 
@@ -6386,6 +6418,9 @@ canvas { max-height:260px; }
         .sond-matrix .m-nov { background:rgba(210,153,34,0.12); }
         .sond-matrix .m-dec { background:rgba(31,111,235,0.10); }
         .sond-matrix .m-tot { background:rgba(45,164,157,0.13); }
+        .sond-matrix .m-soh { background:rgba(163,113,247,0.12); }
+        .sond-matrix thead tr.grprow th.m-soh { border-top:3px solid #a371f7; }
+        .sond-matrix thead th.m-soh { background:#6a3fb5 !important; color:#fff !important; }
         /* Headers get solid month colours with white text. The pale body tints sit on
            thead's dark background in light mode, leaving white header text unreadable. */
         .sond-matrix thead th.m-aug { background:#c62828 !important; color:#fff !important; }
@@ -8198,7 +8233,7 @@ function renderSondMatrix(view) {
   const body = document.getElementById('sond-' + view + '-body');
   if (!head || !body) return;
   const ms = d.months;
-  const totalCols = cfg.cols.length + ms.length * 3 + 3;
+  const totalCols = cfg.cols.length + ms.length * 3 + 3 + 2;   // +2 = forecast vs on hand
 
   // ── header: group row, then three columns under each month.
   // Monthly mode shows that month alone; Cumulative shows the running total to date.
@@ -8211,7 +8246,8 @@ function renderSondMatrix(view) {
   cfg.cols.forEach(c => { g += '<th rowspan="2" data-k="' + c.k + '">' + c.h + ind(c.k) + '</th>'; });
   ms.forEach(m => { g += '<th colspan="3" class="grp m-' + m.key + ' gstart">' + m.label + '</th>'; });
   g += '<th rowspan="2" class="num m-bkl gstart" data-k="backlog" title="Cases still owed across every month due so far (cumulative forecast minus cumulative received)">Backlog' + ind('backlog') + '</th>';
-  g += '<th colspan="3" class="grp m-tot gstart">Grand Total</th></tr>';
+  g += '<th colspan="3" class="grp m-tot gstart">Grand Total</th>';
+  g += '<th colspan="2" class="grp m-soh gstart">Forecast vs On Hand</th></tr>';
   let s2 = '<tr>';
   ms.forEach(m => {
     s2 += '<th class="num m-' + m.key + ' gstart" data-k="m.' + m.key + '.' + kF + '">' + hF + ind('m.' + m.key + '.' + kF) + '</th>';
@@ -8220,7 +8256,9 @@ function renderSondMatrix(view) {
   });
   s2 += '<th class="num m-tot gstart" data-k="totalF">Total Forecast' + ind('totalF') + '</th>';
   s2 += '<th class="num m-tot" data-k="totalR">Total Received' + ind('totalR') + '</th>';
-  s2 += '<th class="num m-tot" data-k="pct">Received %' + ind('pct') + '</th></tr>';
+  s2 += '<th class="num m-tot" data-k="pct">Received %' + ind('pct') + '</th>';
+  s2 += '<th class="num m-soh gstart" data-k="sohVar" title="System on hand minus season forecast, in cases. Positive = more on hand than the season needs.">Variance (CS)' + ind('sohVar') + '</th>';
+  s2 += '<th class="num m-soh" data-k="sohCover" title="System on hand as a percentage of the season forecast">On Hand %' + ind('sohCover') + '</th></tr>';
   head.innerHTML = g + s2;
   // Delegated sorting — avoids escaping quotes inside generated onclick attributes
   head.onclick = (ev) => {
@@ -8285,6 +8323,12 @@ function renderSondMatrix(view) {
     h += '<td class="num mono m-tot gstart">' + sondQty(r.totalF) + '</td>';
     h += '<td class="num mono m-tot">' + sondQty(r.totalR) + '</td>';
     h += '<td class="num mono m-tot b-' + r.band + '" style="font-weight:600;">' + (r.totalF === 0 ? '<span class="nofc">No forecast</span>' : (r.pct == null ? '—' : fmtN(r.pct) + '%')) + '</td>';
+    // Forecast vs on hand: short of the season = red, comfortably covered = green
+    const vclr = r.sohVar < 0 ? 'var(--red-light)' : 'var(--green-bright)';
+    h += '<td class="num mono m-soh gstart" style="color:' + vclr + ';">' +
+         (r.sohVar > 0 ? '+' : '') + sondQty(r.sohVar) + '</td>';
+    h += '<td class="num mono m-soh" style="font-weight:600;">' +
+         (r.sohCover == null ? '<span class="nofc">—</span>' : fmtN(r.sohCover) + '%') + '</td>';
     return h + '</tr>';
   }).join('');
 }
