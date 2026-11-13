@@ -3651,27 +3651,30 @@ function sondSummary(req) {
   const seenSoh = new Set();
   let sohNoPack = 0;
   for (const x of rows) {
-    if (!invReady) { x._soh = null; continue; }
+    if (!invReady) { x._soh = null; x._po = null; x._trf = null; continue; }
     const k = x.storeCode + '|' + x.sku;
-    if (seenSoh.has(k)) { x._soh = 0; continue; }
+    if (seenSoh.has(k)) { x._soh = 0; x._po = 0; x._trf = 0; continue; }
     seenSoh.add(k);
     const inv = invIdx[x.storeCode + '_' + x.sku];
-    // SOND is expressed in cases, so convert on-hand units with the SKU's standard pack.
-    // No stdPack means the pack size is unknown — contributes 0 rather than a wrong number.
-    if (!inv) { x._soh = 0; continue; }
+    // SOND is expressed in cases, so convert on-hand and incoming units with the SKU's
+    // standard pack. No stdPack means pack size is unknown — contributes 0 rather than
+    // a wrong number.
+    if (!inv) { x._soh = 0; x._po = 0; x._trf = 0; continue; }
     const pack = Number(inv.stdPack) || 0;
     x._soh = pack > 0 ? (Number(inv.onHand) || 0) / pack : 0;
+    x._po  = pack > 0 ? (Number(inv.poOrderGR) || 0) / pack : 0;
+    x._trf = pack > 0 ? (Number(inv.trfOrderGR) || 0) / pack : 0;
     if (pack <= 0 && (Number(inv.onHand) || 0) !== 0) sohNoPack++;
   }
   // Per-store rollup
   const g = {};
   for (const x of rows) {
     const k = x.storeCode;
-    if (!g[k]) { g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, totalF: 0, totalR: 0, m: {} };
+    if (!g[k]) { g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, poCs: 0, trfCs: 0, totalF: 0, totalR: 0, m: {} };
       SOND_MONTHS.forEach(mo => { g[k].m[mo.key] = { f: 0, r: 0 }; }); }
     const row = g[k];
     row.skus++;
-    row.soh += (x._soh || 0);
+    row.soh += (x._soh || 0); row.poCs += (x._po || 0); row.trfCs += (x._trf || 0);
     row.totalF += x.totalF; row.totalR += x.totalR;
     SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
   }
@@ -3681,11 +3684,11 @@ function sondSummary(req) {
   for (const x of rows) {
     const k = x.sku;
     if (!gi[k]) { gi[k] = { sku: x.sku, desc: x.desc, vendor: x.vendor, category: x.category,
-      skuStatus: x.skuStatus, sts: x.sts, stores: 0, soh: 0, totalF: 0, totalR: 0, m: {} };
+      skuStatus: x.skuStatus, sts: x.sts, stores: 0, soh: 0, poCs: 0, trfCs: 0, totalF: 0, totalR: 0, m: {} };
       SOND_MONTHS.forEach(mo => { gi[k].m[mo.key] = { f: 0, r: 0 }; }); }
     const row = gi[k];
     row.stores++;
-    row.soh += (x._soh || 0);
+    row.soh += (x._soh || 0); row.poCs += (x._po || 0); row.trfCs += (x._trf || 0);
     row.totalF += x.totalF; row.totalR += x.totalR;
     SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
   }
@@ -3719,6 +3722,8 @@ function sondSummary(req) {
     row.backlog = sond2(Math.max(0, cf - cr));
     row.dueF = sond2(cf); row.dueR = sond2(cr);
     if (row.soh != null) row.soh = sond2(row.soh);   // cases, 2dp like every other quantity
+    if (row.poCs != null) row.poCs = sond2(row.poCs);
+    if (row.trfCs != null) row.trfCs = sond2(row.trfCs);
     // Season forecast against what is physically on hand, both in cases.
     // Positive variance = more stock on hand than the whole season calls for.
     const _soh = row.soh || 0;
@@ -3733,12 +3738,12 @@ function sondSummary(req) {
     for (const x of rows) {
       const k = (keyFn(x) || '').trim() || '(blank)';
       if (!gg[k]) {
-        gg[k] = { [keyField]: k, soh: 0, totalF: 0, totalR: 0, m: {}, _sku: new Set(), _store: new Set() };
+        gg[k] = { [keyField]: k, soh: 0, poCs: 0, trfCs: 0, totalF: 0, totalR: 0, m: {}, _sku: new Set(), _store: new Set() };
         SOND_MONTHS.forEach(mo => { gg[k].m[mo.key] = { f: 0, r: 0 }; });
       }
       const row = gg[k];
       row._sku.add(x.sku); row._store.add(x.storeCode);
-      row.soh += (x._soh || 0);
+      row.soh += (x._soh || 0); row.poCs += (x._po || 0); row.trfCs += (x._trf || 0);
       row.totalF += x.totalF; row.totalR += x.totalR;
       SOND_MONTHS.forEach(mo => { row.m[mo.key].f += x.m[mo.key].f; row.m[mo.key].r += x.m[mo.key].r; });
     }
@@ -3832,7 +3837,7 @@ function sondAnalysisData(req) {
   const seen = new Set();
   for (const x of rows) {
     const k = x.storeCode;
-    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, valuation: 0, matched: 0, seasonF: 0, seasonR: 0 };
+    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, poCs: 0, trfCs: 0, valuation: 0, matched: 0, seasonF: 0, seasonR: 0 };
     const row = g[k];
     const dedupe = k + '|' + x.sku;
     if (seen.has(dedupe)) continue;       // duplicated sheet rows must not double-count
@@ -4112,9 +4117,9 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
 
 // Styled XLSX export — one sheet per view, matching the on-screen month matrix.
 const SOND_VIEW_DEFS = {
-  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand (CS)','soh',15]] },
-  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9],['System On Hand (CS)','soh',15]] },
-  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9],['System On Hand (CS)','soh',15]] },
+  item:     { label: 'Per Items',      key: 'items',      cols: [['SKU','sku',14],['Description','desc',36],['Vendor','vendor',30],['Category','category',12],['SKU Status','skuStatus',11],['STS Tagging','sts',12],['Stores','stores',9],['System On Hand (CS)','soh',15],['PO On Order (CS)','poCs',15],['TRF On Order (CS)','trfCs',15]] },
+  store:    { label: 'Per Store',      key: 'stores',     cols: [['Area','area',18],['Store Code','storeCode',12],['Store','storeName',30],['SKUs','skus',9],['System On Hand (CS)','soh',15],['PO On Order (CS)','poCs',15],['TRF On Order (CS)','trfCs',15]] },
+  vendor:   { label: 'Per Vendor',     key: 'vendors',    cols: [['Vendor','vendor',38],['SKUs','skus',9],['Stores','stores',9],['System On Hand (CS)','soh',15],['PO On Order (CS)','poCs',15],['TRF On Order (CS)','trfCs',15]] },
   category: { label: 'Per Category',   key: 'categories', cols: [['Category','category',20],['SKUs','skus',9],['Stores','stores',9]] }
 };
 
@@ -7925,7 +7930,7 @@ const SOND_VIEWS = {
       { k: 'sku', h: 'SKU' }, { k: 'desc', h: 'Description' }, { k: 'vendor', h: 'Vendor' },
       { k: 'category', h: 'Category' }, { k: 'skuStatus', h: 'SKU Status', badge: true },
       { k: 'sts', h: 'STS Tagging', badge: true }, { k: 'stores', h: 'Stores', num: true },
-      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }, { k: 'poCs', h: 'PO On Order (CS)', num: true, soh: true }, { k: 'trfCs', h: 'TRF On Order (CS)', num: true, soh: true }
     ],
     searchOn: ['sku', 'desc', 'vendor', 'category']
   },
@@ -7934,7 +7939,7 @@ const SOND_VIEWS = {
     cols: [
       { k: 'area', h: 'Area', badge: true }, { k: 'storeCode', h: 'Store Code' },
       { k: 'storeName', h: 'Store' }, { k: 'skus', h: 'SKUs', num: true },
-      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }, { k: 'poCs', h: 'PO On Order (CS)', num: true, soh: true }, { k: 'trfCs', h: 'TRF On Order (CS)', num: true, soh: true }
     ],
     searchOn: ['area', 'storeCode', 'storeName']
   },
@@ -7942,7 +7947,7 @@ const SOND_VIEWS = {
     data: () => sondState.d.vendors,
     cols: [
       { k: 'vendor', h: 'Vendor' }, { k: 'skus', h: 'SKUs', num: true }, { k: 'stores', h: 'Stores', num: true },
-      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }
+      { k: 'soh', h: 'System On Hand (CS)', num: true, soh: true }, { k: 'poCs', h: 'PO On Order (CS)', num: true, soh: true }, { k: 'trfCs', h: 'TRF On Order (CS)', num: true, soh: true }
     ],
     searchOn: ['vendor']
   },
