@@ -3861,6 +3861,8 @@ function sondAnalysisData(req) {
     r.seasonF = sond2(r.seasonF); r.seasonR = sond2(r.seasonR);
     r.seasonPct = sondPct(r.seasonF, r.seasonR);
     r.seasonBand = sondBand(r.seasonPct, 'closed', r.seasonF, r.seasonR);
+    // On hand against season forecast — both in cases
+    r.sohPct = r.seasonF > 0 ? +((r.soh / r.seasonF) * 100).toFixed(1) : null;
     return r;
   }).sort((a, b) => b.valuation - a.valuation);
   const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
@@ -3916,6 +3918,8 @@ function sondAnalysisSkus(req, store) {
       seasonF: sond2(x.totalF), seasonR: sond2(x.totalR),
       pct: sondPct(x.totalF, x.totalR),
       backlog: sond2(Math.max(0, dueF - dueR)),
+      // On hand against season forecast, same rule as the group table
+      sohPct: (qtyCases != null && x.totalF > 0) ? +((qtyCases / x.totalF) * 100).toFixed(1) : null,
       inInventory: !!inv
     });
   }
@@ -3986,7 +3990,7 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       ['Area', 'area', 18], ['Store Code', 'storeCode', 12], ['Store Name', 'storeName', 30],
       ['No. of SKUs', 'skus', 12], ['System On Hand (CS)', 'soh', 18], ['Valuation', 'valuation', 18],
       ['Season Forecast', 'seasonF', 16], ['Season Received', 'seasonR', 16], ['%', 'seasonPct', 10],
-      ['% of Total Val.', 'pctOfTotal', 15]
+      ['% On Hand vs Fcst', 'sohPct', 15], ['% of Total Val.', 'pctOfTotal', 15]
     ];
     const ws1 = wb.addWorksheet('Per Store');
     header(ws1, sCols, 'As of ' + today + '  |  ' + scope + '  |  ' + d.totals.stores + ' stores  |  ' +
@@ -3995,7 +3999,9 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
     let r1 = 4;
     d.stores.forEach(s => {
       const vals = [s.area, s.storeCode, s.storeName, s.skus, s.soh, s.valuation, s.seasonF, s.seasonR,
-                    s.seasonPct == null ? null : s.seasonPct / 100, s.pctOfTotal == null ? null : s.pctOfTotal / 100];
+                    s.seasonPct == null ? null : s.seasonPct / 100,
+                    s.sohPct == null ? null : s.sohPct / 100,
+                    s.pctOfTotal == null ? null : s.pctOfTotal / 100];
       vals.forEach((v, i) => {
         const c = ws1.getCell(r1, i + 1);
         c.value = v == null ? '—' : v;
@@ -4004,22 +4010,29 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
         if (i === 4 || i === 6 || i === 7) c.numFmt = '#,##0.##';
         if (i === 5) { c.numFmt = '₱#,##0'; c.font = { color: { argb: 'FF1B5E20' }, bold: true }; }
         if (i === 8) { c.numFmt = '0.0%'; const f = bandFill(s.seasonPct); if (f) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: f } }; }
-        if (i === 9) c.numFmt = '0.00%';
+        if (i === 9) { c.numFmt = '0.0%'; c.font = { color: { argb: (s.sohPct != null && s.sohPct >= 100) ? 'FF1B5E20' : 'FFC62828' }, bold: true }; }
+        if (i === 10) c.numFmt = '0.00%';
       });
       r1++;
     });
+    const tsohPct = (() => {
+      const f = d.stores.reduce((a, s) => a + (s.seasonF || 0), 0);
+      const o = d.stores.reduce((a, s) => a + (s.soh || 0), 0);
+      return f > 0 ? +((o / f) * 100).toFixed(1) : null;
+    })();
     const tr = ws1.getRow(r1);
     [['TOTAL (' + d.totals.stores + ' stores)', 1], [d.totals.skus, 4], [d.totals.soh, 5], [d.totals.valuation, 6],
      [d.totals.seasonF, 7], [d.totals.seasonR, 8],
      [d.totals.seasonPct == null ? null : d.totals.seasonPct / 100, 9],
-     [d.totals.pctOfTotal == null ? null : d.totals.pctOfTotal / 100, 10]].forEach(([v, col]) => {
+     [tsohPct == null ? null : tsohPct / 100, 10],
+     [d.totals.pctOfTotal == null ? null : d.totals.pctOfTotal / 100, 11]].forEach(([v, col]) => {
       const c = ws1.getCell(r1, col);
       c.value = v == null ? '—' : v;
       if (col === 4) c.numFmt = '#,##0';
       if (col === 5 || col === 7 || col === 8) c.numFmt = '#,##0.##';
       if (col === 6) c.numFmt = '₱#,##0';
-      if (col === 9) c.numFmt = '0.0%';
-      if (col === 10) c.numFmt = '0.00%';
+      if (col === 9 || col === 10) c.numFmt = '0.0%';
+      if (col === 11) c.numFmt = '0.00%';
     });
     for (let i = 1; i <= sCols.length; i++) {
       const c = ws1.getCell(r1, i);
@@ -4037,7 +4050,8 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       ['ABC', 'abc', 7], ['On Hand', 'onHand', 11], ['Qty in Cases', 'qtyCases', 13], ['Inv Value', 'invValue', 15],
       ['Days Cover', 'daysCover', 12], ['P8 Ave/Week', 'p8ave', 13], ['Status', 'status', 15],
       ['PO On Order', 'poOrderGR', 12], ['Trf On Order', 'trfOrderGR', 12],
-      ['Season Fcst', 'seasonF', 13], ['Season Recd', 'seasonR', 13], ['%', 'pct', 9], ['Backlog', 'backlog', 12]
+      ['Season Fcst', 'seasonF', 13], ['Season Recd', 'seasonR', 13], ['%', 'pct', 9],
+      ['% On Hand vs Fcst', 'sohPct', 15], ['Backlog', 'backlog', 12]
     ];
     const ws2 = wb.addWorksheet('Per Item');
     header(ws2, iCols, 'As of ' + today + '  |  ' + scope + '  |  SKUs grouped by store, each store summary shown above its items', true);
@@ -4086,16 +4100,18 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       skus.forEach(k => {
         const vals = [k.sku, k.desc, k.vendor, k.category, k.abc, k.onHand, k.qtyCases, k.invValue,
                       k.daysCover, k.p8ave, k.status, k.poOrderGR, k.trfOrderGR,
-                      k.seasonF, k.seasonR, k.pct == null ? null : k.pct / 100, k.backlog];
+                      k.seasonF, k.seasonR, k.pct == null ? null : k.pct / 100,
+                      k.sohPct == null ? null : k.sohPct / 100, k.backlog];
         vals.forEach((v, i) => {
           const c = ws2.getCell(r2, i + 1);
           c.value = (v == null || v === '') ? '—' : v;
           c.border = border;
           if ([5, 8, 9, 11, 12].indexOf(i) >= 0) c.numFmt = '#,##0';
-          if ([6, 9, 13, 14, 16].indexOf(i) >= 0) c.numFmt = '#,##0.##';
+          if ([6, 9, 13, 14, 17].indexOf(i) >= 0) c.numFmt = '#,##0.##';
           if (i === 7) c.numFmt = '₱#,##0';
           if (i === 15) { c.numFmt = '0.0%'; const f = bandFill(k.pct); if (f) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: f } }; }
-          if (i === 16 && k.backlog > 0) c.font = { bold: true, color: { argb: 'FFC62828' } };
+          if (i === 16) { c.numFmt = '0.0%'; c.font = { bold: true, color: { argb: (k.sohPct != null && k.sohPct >= 100) ? 'FF1B5E20' : 'FFC62828' } }; }
+          if (i === 17 && k.backlog > 0) c.font = { bold: true, color: { argb: 'FFC62828' } };
           if (!k.inInventory) c.fill = c.fill || { type: 'pattern', pattern: 'solid', fgColor: { argb: GREY } };
         });
         r2++;
@@ -6528,7 +6544,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:620px;">
             <table id="sond-an-table" class="sond-matrix">
               <thead id="sond-an-head"></thead>
-              <tbody id="sond-an-body"><tr><td colspan="11" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-an-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -8030,12 +8046,12 @@ async function loadSondAnalysis(force) {
     const d = await r.json();
     if (!d || !d.ready) {
       document.getElementById('sond-an-body').innerHTML =
-        '<tr><td colspan="11" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
+        '<tr><td colspan="12" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
       return;
     }
     sondAn.data = d;
   } catch (e) {
-    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="11" class="empty">Could not reach server</td></tr>';
+    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="12" class="empty">Could not reach server</td></tr>';
     return;
   }
   renderSondAnalysis();
@@ -8105,6 +8121,7 @@ function renderSondAnalysis() {
     ['', '', false], ['area', 'Area', false], ['storeCode', 'Store Code', false], ['storeName', 'Store Name', false],
     ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true],
     ['seasonF', 'Season Forecast', true], ['seasonR', 'Season Received', true], ['seasonPct', '%', true],
+    ['sohPct', '% On Hand vs Fcst', true],
     ['pctOfTotal', '% of Total Val.', true]
   ];
   head.innerHTML = '<tr>' + cols.map(([k, h, num]) =>
@@ -8122,7 +8139,7 @@ function renderSondAnalysis() {
     return String(av || '').localeCompare(String(bv || '')) * dir;
   });
   renderSondAnCards(rows);
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="11" class="empty">No data found</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="12" class="empty">No data found</td></tr>'; return; }
 
   let html = '';
   rows.forEach(r => {
@@ -8139,12 +8156,15 @@ function renderSondAnalysis() {
       '<td class="num mono">' + sondQty(r.seasonR) + '</td>' +
       '<td class="num mono b-' + (r.seasonBand || 'none') + '" style="font-weight:600;" title="Season received against forecast, in cases">' +
         (r.seasonPct == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.seasonPct) + '%') + '</td>' +
+      '<td class="num mono" style="font-weight:600;color:' + (r.sohPct == null ? 'var(--text2)' : (r.sohPct >= 100 ? 'var(--green-bright)' : 'var(--red-light)')) +
+        ';" title="System on hand (cases) as a share of the whole season forecast">' +
+        (r.sohPct == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.sohPct) + '%') + '</td>' +
       '<td class="num mono" style="font-weight:600;" title="SOND valuation as a share of this store\\'s entire inventory value (\\u20b1' +
         fmtN(r.storeTotalVal || 0) + ')">' +
         (r.pctOfTotal == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.pctOfTotal) + '%') + '</td>' +
     '</tr>';
     if (isOpen) {
-      html += '<tr><td colspan="11" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
+      html += '<tr><td colspan="12" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
     }
   });
   body.innerHTML = html;
@@ -8190,7 +8210,8 @@ function sondAnDetail(code) {
     ['sku', 'SKU'], ['desc', 'Description'], ['vendor', 'Vendor'], ['abc', 'ABC'],
     ['onHand', 'On Hand'], ['qtyCases', 'Qty in Cases'], ['invValue', 'Inv Value'], ['daysCover', 'Days Cover'],
     ['p8ave', 'P8 Ave/Week'], ['status', 'Status'], ['poOrderGR', 'PO On Order'], ['trfOrderGR', 'Trf On Order'],
-    ['seasonF', 'Season Fcst'], ['seasonR', 'Season Recd'], ['pct', '%'], ['backlog', 'Backlog']
+    ['seasonF', 'Season Fcst'], ['seasonR', 'Season Recd'], ['pct', '%'],
+    ['sohPct', '% On Hand vs Fcst'], ['backlog', 'Backlog']
   ];
   const ds = sondAn.detSort[code] || { key: 'invValue', dir: 'desc' };
   const dir = ds.dir === 'asc' ? 1 : -1;
@@ -8226,6 +8247,8 @@ function sondAnDetail(code) {
       '<td class="num mono">' + sondQty(r.seasonF) + '</td>' +
       '<td class="num mono">' + sondQty(r.seasonR) + '</td>' +
       '<td class="num mono">' + (r.pct == null ? dash : fmtN(r.pct) + '%') + '</td>' +
+      '<td class="num mono" style="font-weight:600;color:' + (r.sohPct == null ? 'var(--text2)' : (r.sohPct >= 100 ? 'var(--green-bright)' : 'var(--red-light)')) + ';">' +
+        (r.sohPct == null ? dash : fmtN(r.sohPct) + '%') + '</td>' +
       '<td class="num mono' + (r.backlog > 0 ? ' bkl-has' : '') + '">' + (r.backlog > 0 ? sondQty(r.backlog) : dash) + '</td>' +
     '</tr>').join('') +
     '</tbody></table></div>';
@@ -8644,7 +8667,7 @@ function renderTop300SirBody() {
   const countEl = document.getElementById('top300-sir-count');
   if (countEl) countEl.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="11" class="empty">No data</td></tr>'
+    ? '<tr><td colspan="12" class="empty">No data</td></tr>'
     : view.map(renderTop300SirRow).join('');
 }
 // Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
