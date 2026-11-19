@@ -6491,8 +6491,22 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <select class="filter-select" id="sond-area" onchange="loadSOND()" style="width:150px;"><option value="">All Areas</option></select>
-            <select class="filter-select" id="sond-store" multiple size="1" onchange="loadSOND()" style="width:220px;height:34px;" title="Hold Ctrl (Windows) or Cmd (Mac) to pick multiple stores. Clear with the X."><option value="">All Stores</option></select>
-            <button type="button" class="btn btn-sm" onclick="sondClearStores()" title="Clear store selection" style="padding:4px 8px;">✕</button>
+            <div class="sond-ms" id="sond-store-ms" style="position:relative;display:inline-block;width:220px;">
+              <button type="button" class="filter-select" id="sond-store-btn" onclick="toggleSondStorePop(event)"
+                style="width:100%;text-align:left;cursor:pointer;height:34px;">All Stores</button>
+              <div id="sond-store-pop" style="display:none;position:absolute;top:100%;left:0;z-index:50;background:var(--bg1);
+                   border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.3);
+                   min-width:260px;max-width:340px;max-height:360px;overflow:hidden;margin-top:2px;">
+                <div style="padding:6px;border-bottom:1px solid var(--border);display:flex;gap:4px;">
+                  <input type="text" id="sond-store-pop-search" placeholder="Search..." oninput="filterSondStorePop(this.value)"
+                         style="flex:1;padding:4px 8px;font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text1);"/>
+                  <button type="button" onclick="sondClearStores()" style="padding:2px 8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:4px;cursor:pointer;">Clear</button>
+                </div>
+                <div id="sond-store-pop-list" style="max-height:280px;overflow-y:auto;padding:4px 0;"></div>
+              </div>
+              <!-- Hidden native select mirrors the checked items, so existing code reading storeEl keeps working -->
+              <select id="sond-store" multiple style="display:none;"></select>
+            </div>
             <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('sond-store-table',this.value)"/>
             <button class="btn btn-sm" onclick="reloadSOND()" id="sond-reload-btn">↻ Reload Sheet</button>
           </div>
@@ -7898,14 +7912,16 @@ async function loadSOND() {
     sondState.areaSig = areaSig;
   }
   if (storeEl && sondState.storeSig !== storeSig) {
-    // Preserve every currently-selected store when the list rebuilds (multi-select)
+    // Preserve every currently-selected store across list rebuilds (new stores on sheet,
+    // area filter change, etc). The hidden <select> is still the source of truth.
     const keep = new Set(sondStoreValues());
-    const valid = new Set(d.storeList.map(s => s.code));
     storeEl.innerHTML = d.storeList.map(s =>
       '<option value="' + esc(s.code) + '"' + (keep.has(s.code) ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
-    // Drop any kept code that no longer exists after refresh
-    Array.from(storeEl.options).forEach(o => { if (!valid.has(o.value)) o.selected = false; });
     sondState.storeSig = storeSig;
+    sondUpdateStoreBtn();
+    // If the popover is open, refresh its visible rows so checkboxes match the new list
+    const pop = document.getElementById('sond-store-pop');
+    if (pop && pop.style.display === 'block') renderSondStorePop(document.getElementById('sond-store-pop-search').value || '');
   }
   sondState.d = d;
   renderSondMonths(d);
@@ -8046,15 +8062,87 @@ const sondAn = { data: null, sig: null, sort: { key: 'valuation', dir: 'desc' },
 
 // A key that changes whenever the top-bar filters change, so the analysis cache can
 // invalidate itself instead of silently showing stale rows for the old filter.
+// Multi-select store picker — custom checklist popover with a hidden native <select>
+// kept in sync, so the existing sondStoreValues / cache signature / query-string path
+// does not need to know about the UI change.
 function sondStoreValues() {
   const s = document.getElementById('sond-store');
   if (!s) return [];
   return Array.from(s.selectedOptions || []).map(o => o.value).filter(Boolean);
 }
+function sondStoreList() {
+  // Source of truth for the list — comes from /api/sond/summary
+  return (sondState.d && sondState.d.storeList) || [];
+}
+function sondUpdateStoreBtn() {
+  const btn = document.getElementById('sond-store-btn');
+  if (!btn) return;
+  const sel = sondStoreValues();
+  if (!sel.length) { btn.textContent = 'All Stores'; return; }
+  if (sel.length === 1) {
+    const hit = sondStoreList().find(x => x.code === sel[0]);
+    btn.textContent = hit ? hit.name : sel[0];
+    return;
+  }
+  btn.textContent = sel.length + ' stores selected';
+}
+function renderSondStorePop(q) {
+  const list = document.getElementById('sond-store-pop-list');
+  if (!list) return;
+  const sel = new Set(sondStoreValues());
+  const needle = (q || '').trim().toLowerCase();
+  const rows = sondStoreList().filter(s => !needle ||
+    (s.name + ' ' + s.code).toLowerCase().includes(needle));
+  list.innerHTML = rows.map(s =>
+    '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;font-size:12px;" ' +
+      'onmouseover="this.style.background=\\'var(--bg2)\\'" onmouseout="this.style.background=\\'\\'">' +
+      '<input type="checkbox" value="' + esc(s.code) + '" ' + (sel.has(s.code) ? 'checked' : '') +
+        ' onchange="onSondStoreCheck(this)"/>' +
+      '<span style="color:var(--text2);width:40px;">' + esc(s.code) + '</span>' +
+      '<span>' + esc(s.name) + '</span>' +
+    '</label>').join('') || '<div style="padding:10px;color:var(--text2);font-size:11px;">No matches</div>';
+}
+function toggleSondStorePop(ev) {
+  if (ev) ev.stopPropagation();
+  const pop = document.getElementById('sond-store-pop');
+  if (!pop) return;
+  if (pop.style.display === 'none') {
+    renderSondStorePop('');
+    pop.style.display = 'block';
+    setTimeout(() => {
+      const s = document.getElementById('sond-store-pop-search');
+      if (s) s.focus();
+      // Click-away listener, registered once per opening so we don't leak
+      document.addEventListener('click', closeSondStorePopOnOutside, true);
+    }, 0);
+  } else {
+    closeSondStorePop();
+  }
+}
+function closeSondStorePop() {
+  const pop = document.getElementById('sond-store-pop');
+  if (pop) pop.style.display = 'none';
+  document.removeEventListener('click', closeSondStorePopOnOutside, true);
+}
+function closeSondStorePopOnOutside(ev) {
+  const ms = document.getElementById('sond-store-ms');
+  if (ms && !ms.contains(ev.target)) closeSondStorePop();
+}
+function filterSondStorePop(q) { renderSondStorePop(q); }
+function onSondStoreCheck(cb) {
+  const sel = document.getElementById('sond-store');
+  if (!sel) return;
+  const opt = Array.from(sel.options).find(o => o.value === cb.value);
+  if (opt) opt.selected = cb.checked;
+  sondUpdateStoreBtn();
+  loadSOND();
+}
 function sondClearStores() {
-  const s = document.getElementById('sond-store');
-  if (!s) return;
-  Array.from(s.options).forEach(o => { o.selected = false; });
+  const sel = document.getElementById('sond-store');
+  if (!sel) return;
+  Array.from(sel.options).forEach(o => { o.selected = false; });
+  sondUpdateStoreBtn();
+  closeSondStorePop();
   loadSOND();
 }
 function sondAnCurrentSig() {
