@@ -8019,7 +8019,14 @@ function renderSondActive() {
 }
 
 // ─── SOND Analysis: store groups, expandable to SKU detail ───────────────────
-const sondAn = { data: null, sort: { key: 'valuation', dir: 'desc' }, open: {}, skus: {}, loading: {}, detSort: {} };
+const sondAn = { data: null, sig: null, sort: { key: 'valuation', dir: 'desc' }, open: {}, skus: {}, loading: {}, detSort: {} };
+
+// A key that changes whenever the top-bar filters change, so the analysis cache can
+// invalidate itself instead of silently showing stale rows for the old filter.
+function sondAnCurrentSig() {
+  const a = document.getElementById('sond-area'), s = document.getElementById('sond-store');
+  return (a && a.value || '') + '|' + (s && s.value || '');
+}
 
 // Each expanded store keeps its own SKU sort, so sorting one does not disturb another.
 function sortSondAnDet(code, key) {
@@ -8040,6 +8047,13 @@ function sondAnQS() {
 }
 
 async function loadSondAnalysis(force) {
+  const sig = sondAnCurrentSig();
+  // Invalidate every cached slice when the filter changes — store rollups, per-SKU
+  // details, and expanded rows were all built against the previous Area/Store.
+  if (sondAn.sig !== sig) {
+    sondAn.data = null; sondAn.skus = {}; sondAn.loading = {}; sondAn.open = {};
+    sondAn.sig = sig;
+  }
   if (sondAn.data && !force) { renderSondAnalysis(); return; }
   try {
     const r = await fetch('/api/sond/analysis?' + sondAnQS().toString());
