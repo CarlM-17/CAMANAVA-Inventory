@@ -6494,15 +6494,15 @@ canvas { max-height:260px; }
             <div class="sond-ms" id="sond-store-ms" style="position:relative;display:inline-block;width:220px;">
               <button type="button" class="filter-select" id="sond-store-btn" onclick="toggleSondStorePop(event)"
                 style="width:100%;text-align:left;cursor:pointer;height:34px;">All Stores</button>
-              <div id="sond-store-pop" style="display:none;position:absolute;top:100%;left:0;z-index:50;background:var(--bg1);
-                   border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,0.3);
-                   min-width:260px;max-width:340px;max-height:360px;overflow:hidden;margin-top:2px;">
-                <div style="padding:6px;border-bottom:1px solid var(--border);display:flex;gap:4px;">
+              <div id="sond-store-pop" style="display:none;position:absolute;top:100%;left:0;z-index:9999;background:#111418;
+                   border:1px solid #30363d;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.6);
+                   min-width:280px;max-width:360px;max-height:380px;overflow:hidden;margin-top:2px;">
+                <div style="padding:8px;border-bottom:1px solid #30363d;display:flex;gap:4px;background:#161b22;">
                   <input type="text" id="sond-store-pop-search" placeholder="Search..." oninput="filterSondStorePop(this.value)"
-                         style="flex:1;padding:4px 8px;font-size:12px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--text1);"/>
-                  <button type="button" onclick="sondClearStores()" style="padding:2px 8px;font-size:11px;background:transparent;border:1px solid var(--border);color:var(--text2);border-radius:4px;cursor:pointer;">Clear</button>
+                         style="flex:1;padding:6px 8px;font-size:12px;background:#0d1117;border:1px solid #30363d;border-radius:4px;color:#e6edf3;"/>
+                  <button type="button" onclick="sondClearStores()" style="padding:4px 10px;font-size:11px;background:#21262d;border:1px solid #30363d;color:#e6edf3;border-radius:4px;cursor:pointer;">Clear</button>
                 </div>
-                <div id="sond-store-pop-list" style="max-height:280px;overflow-y:auto;padding:4px 0;"></div>
+                <div id="sond-store-pop-list" style="max-height:300px;overflow-y:auto;padding:4px 0;background:#111418;"></div>
               </div>
               <!-- Hidden native select mirrors the checked items, so existing code reading storeEl keeps working -->
               <select id="sond-store" multiple style="display:none;"></select>
@@ -8107,13 +8107,15 @@ function renderSondStorePop(q) {
   const rows = sondStoreList().filter(s => !needle ||
     (s.name + ' ' + s.code).toLowerCase().includes(needle));
   list.innerHTML = rows.map(s =>
-    '<label style="display:flex;align-items:center;gap:8px;padding:6px 10px;cursor:pointer;font-size:12px;" ' +
-      'onmouseover="this.style.background=\\'var(--bg2)\\'" onmouseout="this.style.background=\\'\\'">' +
+    '<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;font-size:12px;color:#e6edf3;background:' +
+      (sel.has(s.code) ? '#1f2a44' : 'transparent') + ';" ' +
+      'onmouseover="this.style.background=\\'#1c232d\\'" ' +
+      'onmouseout="this.style.background=this.querySelector(\\'input\\').checked?\\'#1f2a44\\':\\'transparent\\'">' +
       '<input type="checkbox" value="' + esc(s.code) + '" ' + (sel.has(s.code) ? 'checked' : '') +
         ' onchange="onSondStoreCheck(this)"/>' +
-      '<span style="color:var(--text2);width:40px;">' + esc(s.code) + '</span>' +
+      '<span style="color:#8b949e;width:42px;font-family:monospace;">' + esc(s.code) + '</span>' +
       '<span>' + esc(s.name) + '</span>' +
-    '</label>').join('') || '<div style="padding:10px;color:var(--text2);font-size:11px;">No matches</div>';
+    '</label>').join('') || '<div style="padding:12px;color:#8b949e;font-size:11px;background:#111418;">No matches</div>';
 }
 async function toggleSondStorePop(ev) {
   if (ev) ev.stopPropagation();
