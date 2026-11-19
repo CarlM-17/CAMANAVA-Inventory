@@ -3596,7 +3596,10 @@ function sondFiltered(req) {
   const s = sessions[q.token || ''];
   let rows = cache.sond.rows;
   const area = (q.area || '').trim();
-  const store = (q.store || '').trim();
+  // Store accepts a single code or a comma-separated list, so SOND can be sliced to
+  // "the three stores I'm reviewing" without one request per store.
+  const storeList = (q.store || '').split(',').map(x => x.trim()).filter(Boolean);
+  const storeSet = storeList.length ? new Set(storeList) : null;
   const vendor = (q.vendor || '').trim();
   const category = (q.category || '').trim();
   const search = (q.search || '').trim().toLowerCase();
@@ -3609,7 +3612,7 @@ function sondFiltered(req) {
   const useArea = lock || area;
   return rows.filter(r =>
     (!useArea || r.area === useArea) &&
-    (!store || r.storeCode === store) &&
+    (!storeSet || storeSet.has(r.storeCode)) &&
     (!vendor || r.vendor === vendor) &&
     (!category || r.category === category) &&
     (!search || (r.sku + ' ' + r.desc + ' ' + r.storeName + ' ' + r.vendor).toLowerCase().includes(search))
@@ -3837,7 +3840,9 @@ function sondAnalysisData(req) {
   const seen = new Set();
   for (const x of rows) {
     const k = x.storeCode;
-    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName, skus: 0, soh: 0, poCs: 0, trfCs: 0, valuation: 0, matched: 0, seasonF: 0, seasonR: 0 };
+    if (!g[k]) g[k] = { area: x.area, storeCode: x.storeCode, storeName: x.storeName,
+      skus: 0, soh: 0, poCs: 0, trfCs: 0, incomingCs: 0, incomingVal: 0,
+      valuation: 0, matched: 0, seasonF: 0, seasonR: 0 };
     const row = g[k];
     const dedupe = k + '|' + x.sku;
     if (seen.has(dedupe)) continue;       // duplicated sheet rows must not double-count
@@ -3850,6 +3855,9 @@ function sondAnalysisData(req) {
       const pack = Number(inv.stdPack) || 0;
       if (pack > 0) row.soh += (Number(inv.onHand) || 0) / pack;   // cases
       row.valuation += Number(inv.onHandValue) || 0;
+      // Incoming = PO + TRF, in cases and in peso value, same source as the matrix views
+      if (pack > 0) row.incomingCs += ((Number(inv.poOrderGR) || 0) + (Number(inv.trfOrderGR) || 0)) / pack;
+      row.incomingVal += (Number(inv.poValue) || 0) + (Number(inv.trfValue) || 0);
     }
   }
   const svm = storeValuationMap();
@@ -3863,6 +3871,8 @@ function sondAnalysisData(req) {
     r.seasonBand = sondBand(r.seasonPct, 'closed', r.seasonF, r.seasonR);
     // On hand against season forecast — both in cases
     r.sohPct = r.seasonF > 0 ? +((r.soh / r.seasonF) * 100).toFixed(1) : null;
+    r.incomingCs = sond2(r.incomingCs);
+    r.incomingVal = Math.round(r.incomingVal);
     return r;
   }).sort((a, b) => b.valuation - a.valuation);
   const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
@@ -3878,6 +3888,8 @@ function sondAnalysisData(req) {
       seasonF: sond2(stores.reduce((a, r) => a + r.seasonF, 0)),
       seasonR: sond2(stores.reduce((a, r) => a + r.seasonR, 0)),
       seasonPct: sondPct(stores.reduce((a, r) => a + r.seasonF, 0), stores.reduce((a, r) => a + r.seasonR, 0)),
+      incomingCs: sond2(stores.reduce((a, r) => a + (r.incomingCs || 0), 0)),
+      incomingVal: Math.round(stores.reduce((a, r) => a + (r.incomingVal || 0), 0)),
       storeTotalVal: Math.round(sumStoreTotal),
       pctOfTotal: sumStoreTotal > 0 ? +((sumVal / sumStoreTotal) * 100).toFixed(2) : null
     }
@@ -3990,7 +4002,9 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       ['Area', 'area', 18], ['Store Code', 'storeCode', 12], ['Store Name', 'storeName', 30],
       ['No. of SKUs', 'skus', 12], ['System On Hand (CS)', 'soh', 18], ['Valuation', 'valuation', 18],
       ['Season Forecast', 'seasonF', 16], ['Season Received', 'seasonR', 16], ['%', 'seasonPct', 10],
-      ['% On Hand vs Fcst', 'sohPct', 15], ['% of Total Val.', 'pctOfTotal', 15]
+      ['% On Hand vs Fcst', 'sohPct', 15],
+      ['Incoming Order (CS)', 'incomingCs', 16], ['Incoming Order Value', 'incomingVal', 18],
+      ['% of Total Val.', 'pctOfTotal', 15]
     ];
     const ws1 = wb.addWorksheet('Per Store');
     header(ws1, sCols, 'As of ' + today + '  |  ' + scope + '  |  ' + d.totals.stores + ' stores  |  ' +
@@ -4001,17 +4015,19 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       const vals = [s.area, s.storeCode, s.storeName, s.skus, s.soh, s.valuation, s.seasonF, s.seasonR,
                     s.seasonPct == null ? null : s.seasonPct / 100,
                     s.sohPct == null ? null : s.sohPct / 100,
+                    s.incomingCs || 0, s.incomingVal || 0,
                     s.pctOfTotal == null ? null : s.pctOfTotal / 100];
       vals.forEach((v, i) => {
         const c = ws1.getCell(r1, i + 1);
         c.value = v == null ? '—' : v;
         c.border = border;
         if (i === 3) c.numFmt = '#,##0';
-        if (i === 4 || i === 6 || i === 7) c.numFmt = '#,##0.##';
+        if (i === 4 || i === 6 || i === 7 || i === 10) c.numFmt = '#,##0.##';
         if (i === 5) { c.numFmt = '₱#,##0'; c.font = { color: { argb: 'FF1B5E20' }, bold: true }; }
         if (i === 8) { c.numFmt = '0.0%'; const f = bandFill(s.seasonPct); if (f) c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: f } }; }
         if (i === 9) { c.numFmt = '0.0%'; c.font = { color: { argb: (s.sohPct != null && s.sohPct >= 100) ? 'FF1B5E20' : 'FFC62828' }, bold: true }; }
-        if (i === 10) c.numFmt = '0.00%';
+        if (i === 11) { c.numFmt = '₱#,##0'; c.font = { color: { argb: 'FF1B5E20' }, bold: true }; }
+        if (i === 12) c.numFmt = '0.00%';
       });
       r1++;
     });
@@ -4025,14 +4041,15 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
      [d.totals.seasonF, 7], [d.totals.seasonR, 8],
      [d.totals.seasonPct == null ? null : d.totals.seasonPct / 100, 9],
      [tsohPct == null ? null : tsohPct / 100, 10],
-     [d.totals.pctOfTotal == null ? null : d.totals.pctOfTotal / 100, 11]].forEach(([v, col]) => {
+     [d.totals.incomingCs || 0, 11], [d.totals.incomingVal || 0, 12],
+     [d.totals.pctOfTotal == null ? null : d.totals.pctOfTotal / 100, 13]].forEach(([v, col]) => {
       const c = ws1.getCell(r1, col);
       c.value = v == null ? '—' : v;
       if (col === 4) c.numFmt = '#,##0';
-      if (col === 5 || col === 7 || col === 8) c.numFmt = '#,##0.##';
-      if (col === 6) c.numFmt = '₱#,##0';
+      if (col === 5 || col === 7 || col === 8 || col === 11) c.numFmt = '#,##0.##';
+      if (col === 6 || col === 12) c.numFmt = '₱#,##0';
       if (col === 9 || col === 10) c.numFmt = '0.0%';
-      if (col === 11) c.numFmt = '0.00%';
+      if (col === 13) c.numFmt = '0.00%';
     });
     for (let i = 1; i <= sCols.length; i++) {
       const c = ws1.getCell(r1, i);
@@ -4059,7 +4076,8 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
     // Each store block mirrors the screen: store column headers, the store's summary
     // row, then the item column headers, then its items.
     const storeHdr = ['Area', 'Store Code', 'Store Name', 'No. of SKUs', 'System On Hand (CS)',
-                      'Valuation', 'Season Forecast', 'Season Received', '%', '% of Total Val.'];
+                      'Valuation', 'Season Forecast', 'Season Received', '%',
+                      'Incoming Order (CS)', 'Incoming Order Value', '% of Total Val.'];
     d.stores.forEach(s => {
       storeHdr.forEach((h, i) => {
         const c = ws2.getCell(r2, i + 1);
@@ -4072,6 +4090,7 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
       r2++;
       const sv = [s.area, s.storeCode, s.storeName, s.skus, s.soh, s.valuation, s.seasonF, s.seasonR,
                   s.seasonPct == null ? null : s.seasonPct / 100,
+                  s.incomingCs || 0, s.incomingVal || 0,
                   s.pctOfTotal == null ? null : s.pctOfTotal / 100];
       sv.forEach((v, i) => {
         const c = ws2.getCell(r2, i + 1);
@@ -4080,10 +4099,10 @@ app.get('/api/sond/analysis/export-xlsx', async (req, res) => {
         c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
         c.border = border;
         if (i === 3) c.numFmt = '#,##0';
-        if (i === 4 || i === 6 || i === 7) c.numFmt = '#,##0.##';
-        if (i === 5) c.numFmt = '₱#,##0';
+        if (i === 4 || i === 6 || i === 7 || i === 9) c.numFmt = '#,##0.##';
+        if (i === 5 || i === 10) c.numFmt = '₱#,##0';
         if (i === 8) c.numFmt = '0.0%';
-        if (i === 9) c.numFmt = '0.00%';
+        if (i === 11) c.numFmt = '0.00%';
       });
       ws2.getRow(r2).height = 19;
       r2++;
@@ -6472,7 +6491,8 @@ canvas { max-height:260px; }
           </div>
           <div class="section-actions">
             <select class="filter-select" id="sond-area" onchange="loadSOND()" style="width:150px;"><option value="">All Areas</option></select>
-            <select class="filter-select" id="sond-store" onchange="loadSOND()" style="width:190px;"><option value="">All Stores</option></select>
+            <select class="filter-select" id="sond-store" multiple size="1" onchange="loadSOND()" style="width:220px;height:34px;" title="Hold Ctrl (Windows) or Cmd (Mac) to pick multiple stores. Clear with the X."><option value="">All Stores</option></select>
+            <button type="button" class="btn btn-sm" onclick="sondClearStores()" title="Clear store selection" style="padding:4px 8px;">✕</button>
             <input type="text" class="table-search" placeholder="Search store..." oninput="searchTable('sond-store-table',this.value)"/>
             <button class="btn btn-sm" onclick="reloadSOND()" id="sond-reload-btn">↻ Reload Sheet</button>
           </div>
@@ -6507,7 +6527,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:560px;">
             <table id="sond-item-table" class="sond-matrix">
               <thead id="sond-item-head"></thead>
-              <tbody id="sond-item-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-item-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -6516,7 +6536,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:560px;">
             <table id="sond-store-table" class="sond-matrix">
               <thead id="sond-store-head"></thead>
-              <tbody id="sond-store-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-store-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -6525,7 +6545,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:560px;">
             <table id="sond-vendor-table" class="sond-matrix">
               <thead id="sond-vendor-head"></thead>
-              <tbody id="sond-vendor-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-vendor-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -6544,7 +6564,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:620px;">
             <table id="sond-an-table" class="sond-matrix">
               <thead id="sond-an-head"></thead>
-              <tbody id="sond-an-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-an-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -6553,7 +6573,7 @@ canvas { max-height:260px; }
           <div class="table-wrap" style="max-height:560px;">
             <table id="sond-category-table" class="sond-matrix">
               <thead id="sond-category-head"></thead>
-              <tbody id="sond-category-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
+              <tbody id="sond-category-body"><tr><td colspan="14" class="empty">Loading...</td></tr></tbody>
             </table>
           </div>
         </div>
@@ -7829,10 +7849,10 @@ function startSondAutoRefresh() {
 async function loadSOND() {
   startSondAutoRefresh();
   const areaEl = document.getElementById('sond-area');
-  const storeEl = document.getElementById('sond-store');
   const params = new URLSearchParams();
   if (areaEl && areaEl.value) params.set('area', areaEl.value);
-  if (storeEl && storeEl.value) params.set('store', storeEl.value);
+  const sv = sondStoreValues();
+  if (sv.length) params.set('store', sv.join(','));
   if (authToken) params.set('token', authToken);
   let d;
   try {
@@ -7878,10 +7898,13 @@ async function loadSOND() {
     sondState.areaSig = areaSig;
   }
   if (storeEl && sondState.storeSig !== storeSig) {
-    const keep = storeEl.value;
-    storeEl.innerHTML = '<option value="">All Stores</option>' +
-      d.storeList.map(s => '<option value="' + esc(s.code) + '">' + esc(s.name) + '</option>').join('');
-    if (keep && d.storeList.some(s => s.code === keep)) storeEl.value = keep;
+    // Preserve every currently-selected store when the list rebuilds (multi-select)
+    const keep = new Set(sondStoreValues());
+    const valid = new Set(d.storeList.map(s => s.code));
+    storeEl.innerHTML = d.storeList.map(s =>
+      '<option value="' + esc(s.code) + '"' + (keep.has(s.code) ? ' selected' : '') + '>' + esc(s.name) + '</option>').join('');
+    // Drop any kept code that no longer exists after refresh
+    Array.from(storeEl.options).forEach(o => { if (!valid.has(o.value)) o.selected = false; });
     sondState.storeSig = storeSig;
   }
   sondState.d = d;
@@ -8023,9 +8046,20 @@ const sondAn = { data: null, sig: null, sort: { key: 'valuation', dir: 'desc' },
 
 // A key that changes whenever the top-bar filters change, so the analysis cache can
 // invalidate itself instead of silently showing stale rows for the old filter.
+function sondStoreValues() {
+  const s = document.getElementById('sond-store');
+  if (!s) return [];
+  return Array.from(s.selectedOptions || []).map(o => o.value).filter(Boolean);
+}
+function sondClearStores() {
+  const s = document.getElementById('sond-store');
+  if (!s) return;
+  Array.from(s.options).forEach(o => { o.selected = false; });
+  loadSOND();
+}
 function sondAnCurrentSig() {
-  const a = document.getElementById('sond-area'), s = document.getElementById('sond-store');
-  return (a && a.value || '') + '|' + (s && s.value || '');
+  const a = document.getElementById('sond-area');
+  return (a && a.value || '') + '|' + sondStoreValues().sort().join(',');
 }
 
 // Each expanded store keeps its own SKU sort, so sorting one does not disturb another.
@@ -8039,9 +8073,10 @@ function sortSondAnDet(code, key) {
 
 function sondAnQS() {
   const p = new URLSearchParams();
-  const a = document.getElementById('sond-area'), s = document.getElementById('sond-store');
+  const a = document.getElementById('sond-area');
   if (a && a.value) p.set('area', a.value);
-  if (s && s.value) p.set('store', s.value);
+  const sv = sondStoreValues();
+  if (sv.length) p.set('store', sv.join(','));
   if (authToken) p.set('token', authToken);
   return p;
 }
@@ -8060,12 +8095,12 @@ async function loadSondAnalysis(force) {
     const d = await r.json();
     if (!d || !d.ready) {
       document.getElementById('sond-an-body').innerHTML =
-        '<tr><td colspan="12" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
+        '<tr><td colspan="14" class="empty">' + esc((d && d.error) || 'Not ready') + '</td></tr>';
       return;
     }
     sondAn.data = d;
   } catch (e) {
-    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="12" class="empty">Could not reach server</td></tr>';
+    document.getElementById('sond-an-body').innerHTML = '<tr><td colspan="14" class="empty">Could not reach server</td></tr>';
     return;
   }
   renderSondAnalysis();
@@ -8136,6 +8171,8 @@ function renderSondAnalysis() {
     ['skus', 'No. of SKUs', true], ['soh', 'System On Hand (CS)', true], ['valuation', 'Valuation', true],
     ['seasonF', 'Season Forecast', true], ['seasonR', 'Season Received', true], ['seasonPct', '%', true],
     ['sohPct', '% On Hand vs Fcst', true],
+    ['incomingCs', 'Incoming Order (CS)', true],
+    ['incomingVal', 'Incoming Order Value', true],
     ['pctOfTotal', '% of Total Val.', true]
   ];
   head.innerHTML = '<tr>' + cols.map(([k, h, num]) =>
@@ -8153,7 +8190,7 @@ function renderSondAnalysis() {
     return String(av || '').localeCompare(String(bv || '')) * dir;
   });
   renderSondAnCards(rows);
-  if (!rows.length) { body.innerHTML = '<tr><td colspan="12" class="empty">No data found</td></tr>'; return; }
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="14" class="empty">No data found</td></tr>'; return; }
 
   let html = '';
   rows.forEach(r => {
@@ -8173,12 +8210,16 @@ function renderSondAnalysis() {
       '<td class="num mono" style="font-weight:600;color:' + (r.sohPct == null ? 'var(--text2)' : (r.sohPct >= 100 ? 'var(--green-bright)' : 'var(--red-light)')) +
         ';" title="System on hand (cases) as a share of the whole season forecast">' +
         (r.sohPct == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.sohPct) + '%') + '</td>' +
+      '<td class="num mono" title="PO on order + TRF on order, in cases">' +
+        (r.incomingCs > 0 ? sondQty(r.incomingCs) : '<span class="nofc">\\u2014</span>') + '</td>' +
+      '<td class="num mono" style="color:var(--green-bright);font-weight:600;" title="Peso value of PO + TRF on order">' +
+        (r.incomingVal > 0 ? '\\u20b1' + fmtN(r.incomingVal) : '<span class="nofc">\\u2014</span>') + '</td>' +
       '<td class="num mono" style="font-weight:600;" title="SOND valuation as a share of this store\\'s entire inventory value (\\u20b1' +
         fmtN(r.storeTotalVal || 0) + ')">' +
         (r.pctOfTotal == null ? '<span class="nofc">\\u2014</span>' : fmtN(r.pctOfTotal) + '%') + '</td>' +
     '</tr>';
     if (isOpen) {
-      html += '<tr><td colspan="12" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
+      html += '<tr><td colspan="14" style="padding:0;background:var(--bg1);">' + sondAnDetail(r.storeCode) + '</td></tr>';
     }
   });
   body.innerHTML = html;
@@ -8380,9 +8421,9 @@ function exportSondExcel() {
   const params = new URLSearchParams();
   params.set('view', sondState.sub);
   const areaEl = document.getElementById('sond-area');
-  const storeEl = document.getElementById('sond-store');
   if (areaEl && areaEl.value) params.set('area', areaEl.value);
-  if (storeEl && storeEl.value) params.set('store', storeEl.value);
+  const sv = sondStoreValues();
+  if (sv.length) params.set('store', sv.join(','));
   if (authToken) params.set('token', authToken);
   const a = document.createElement('a');
   a.href = '/api/sond/export-xlsx?' + params.toString();
@@ -8681,7 +8722,7 @@ function renderTop300SirBody() {
   const countEl = document.getElementById('top300-sir-count');
   if (countEl) countEl.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="12" class="empty">No data</td></tr>'
+    ? '<tr><td colspan="14" class="empty">No data</td></tr>'
     : view.map(renderTop300SirRow).join('');
 }
 // Render all rows at once (no pagination — internal scroll cap on table-wrap keeps it usable).
@@ -9043,7 +9084,7 @@ function renderAgingBlackBody(which) {
   const countEl = document.getElementById(which === 'aging' ? 'agingblack-aging-count' : 'agingblack-black-count');
   if (countEl) countEl.textContent = fmt(view.length);
   tbody.innerHTML = view.length === 0
-    ? '<tr><td colspan="12" class="empty">No ' + (which === 'aging' ? 'aging' : 'black inventory') + ' items in this scope</td></tr>'
+    ? '<tr><td colspan="14" class="empty">No ' + (which === 'aging' ? 'aging' : 'black inventory') + ' items in this scope</td></tr>'
     : view.map(renderAgingBlackRow).join('');
 }
 // ── Action Plan modal + CRUD helpers ─────────────────────────────────────────
