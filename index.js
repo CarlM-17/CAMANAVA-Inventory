@@ -7863,6 +7863,7 @@ function startSondAutoRefresh() {
 async function loadSOND() {
   startSondAutoRefresh();
   const areaEl = document.getElementById('sond-area');
+  const storeEl = document.getElementById('sond-store');   // still used below to rebuild its options
   const params = new URLSearchParams();
   if (areaEl && areaEl.value) params.set('area', areaEl.value);
   const sv = sondStoreValues();
@@ -8071,8 +8072,20 @@ function sondStoreValues() {
   return Array.from(s.selectedOptions || []).map(o => o.value).filter(Boolean);
 }
 function sondStoreList() {
-  // Source of truth for the list — comes from /api/sond/summary
-  return (sondState.d && sondState.d.storeList) || [];
+  // Prefer the summary's storeList; fall back to the hidden <select>'s options so the
+  // popover still works when it opens before loadSOND has finished (e.g. clicking the
+  // button right after switching to SOND, or when only the Analysis sub-tab has loaded).
+  const fromSummary = (sondState.d && sondState.d.storeList) || [];
+  if (fromSummary.length) return fromSummary;
+  const sel = document.getElementById('sond-store');
+  if (!sel) return [];
+  const opts = Array.from(sel.options).filter(o => o.value);
+  if (opts.length) return opts.map(o => ({ code: o.value, name: o.textContent || o.value }));
+  // Last resort: pull it from the Analysis summary (served by /api/sond/analysis)
+  if (sondAn && sondAn.data && sondAn.data.stores) {
+    return sondAn.data.stores.map(s => ({ code: s.storeCode, name: s.storeName || s.storeCode }));
+  }
+  return [];
 }
 function sondUpdateStoreBtn() {
   const btn = document.getElementById('sond-store-btn');
@@ -8102,11 +8115,23 @@ function renderSondStorePop(q) {
       '<span>' + esc(s.name) + '</span>' +
     '</label>').join('') || '<div style="padding:10px;color:var(--text2);font-size:11px;">No matches</div>';
 }
-function toggleSondStorePop(ev) {
+async function toggleSondStorePop(ev) {
   if (ev) ev.stopPropagation();
   const pop = document.getElementById('sond-store-pop');
   if (!pop) return;
   if (pop.style.display === 'none') {
+    // If the summary hasn't loaded yet, open the popover and kick off the fetch so the
+    // list appears as soon as it's ready — rather than greeting the user with "No matches".
+    if (!sondStoreList().length) {
+      pop.style.display = 'block';
+      renderSondStorePop('');   // shows "Loading..." via the empty-state override below
+      const list = document.getElementById('sond-store-pop-list');
+      if (list) list.innerHTML = '<div style="padding:10px;color:var(--text2);font-size:11px;">Loading stores...</div>';
+      try { await loadSOND(); } catch (e) {}
+      renderSondStorePop('');
+      document.addEventListener('click', closeSondStorePopOnOutside, true);
+      return;
+    }
     renderSondStorePop('');
     pop.style.display = 'block';
     setTimeout(() => {
