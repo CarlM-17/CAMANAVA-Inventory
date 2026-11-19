@@ -3874,7 +3874,20 @@ function sondAnalysisData(req) {
     r.incomingCs = sond2(r.incomingCs);
     r.incomingVal = Math.round(r.incomingVal);
     return r;
-  }).sort((a, b) => b.valuation - a.valuation);
+  });
+  // Honour the table's current sort when the client passes sortKey/sortDir; default to
+  // valuation descending (matches the on-screen default) when none is specified.
+  const sortKey = (req.query.sortKey || 'valuation').toString();
+  const sortDir = (req.query.sortDir || 'desc').toString() === 'asc' ? 1 : -1;
+  stores.sort((a, b) => {
+    const av = a[sortKey], bv = b[sortKey];
+    const an = (av == null || av === ''), bn = (bv == null || bv === '');
+    if (an && bn) return 0;
+    if (an) return 1;
+    if (bn) return -1;
+    if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sortDir;
+    return String(av).localeCompare(String(bv)) * sortDir;
+  });
   const sumVal = stores.reduce((a, r) => a + r.valuation, 0);
   const sumStoreTotal = stores.reduce((a, r) => a + r.storeTotalVal, 0);
   return {
@@ -6539,6 +6552,7 @@ canvas { max-height:260px; }
               <input type="text" class="table-search" id="sond-an-search" placeholder="Search store..." oninput="renderSondAnalysis()" style="width:200px;"/>
               <button type="button" class="btn btn-sm" onclick="sondExpandAll(true)">Expand all</button>
               <button type="button" class="btn btn-sm" onclick="sondExpandAll(false)">Collapse all</button>
+              <button type="button" class="btn btn-sm" id="sond-an-png-btn" onclick="exportSondAnalysisPNG()">📷 Export PNG</button>
               <button type="button" class="btn btn-sm" onclick="exportSondAnalysisExcel()">⬇ Export Excel</button>
             </div>
           </div>
@@ -8154,13 +8168,18 @@ function sortSondAnDet(code, key) {
   renderSondAnalysis();
 }
 
-function sondAnQS() {
+function sondAnQS(includeSort) {
   const p = new URLSearchParams();
   const a = document.getElementById('sond-area');
   if (a && a.value) p.set('area', a.value);
   const sv = sondStoreValues();
   if (sv.length) p.set('store', sv.join(','));
   if (authToken) p.set('token', authToken);
+  // Export endpoints opt in to this so the downloaded file matches what is on screen
+  if (includeSort && sondAn && sondAn.sort) {
+    p.set('sortKey', sondAn.sort.key || 'valuation');
+    p.set('sortDir', sondAn.sort.dir || 'desc');
+  }
   return p;
 }
 
@@ -8191,9 +8210,111 @@ async function loadSondAnalysis(force) {
 
 function exportSondAnalysisExcel() {
   const a = document.createElement('a');
-  a.href = '/api/sond/analysis/export-xlsx?' + sondAnQS().toString();
+  a.href = '/api/sond/analysis/export-xlsx?' + sondAnQS(true).toString();
   a.download = '';
   document.body.appendChild(a); a.click(); a.remove();
+}
+
+// PNG export — summary table only, in the same column shape as the Excel sheet.
+// Uses the data already loaded in sondAn, so no server round-trip is needed.
+async function exportSondAnalysisPNG() {
+  const btn = document.getElementById('sond-an-png-btn');
+  const orig = btn ? btn.textContent : null;
+  if (btn) { btn.textContent = '⏳ Capturing...'; btn.disabled = true; }
+  try {
+    await loadHtml2Canvas();
+    const d = sondAn.data;
+    if (!d) throw new Error('Open the SOND Analysis tab first');
+    // Apply the current search and sort so the PNG matches what's on screen
+    const qEl = document.getElementById('sond-an-search');
+    const q = (qEl && qEl.value || '').trim().toLowerCase();
+    let rows = (d.stores || []).slice();
+    if (q) rows = rows.filter(r => (r.storeName + ' ' + r.storeCode + ' ' + r.area).toLowerCase().includes(q));
+    const st = sondAn.sort;
+    const dir = st.dir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const av = a[st.key], bv = b[st.key];
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+      return String(av || '').localeCompare(String(bv || '')) * dir;
+    });
+    // Build a self-contained capture node off-screen, so the export looks identical
+    // every time regardless of the surrounding layout, dark mode or open popovers.
+    const DG = '#1b5e20', G = '#107a3f', T = '#1b7f78';
+    const fmt = (n) => n == null ? '—' : Number(n).toLocaleString('en-US');
+    const fmtQ = (n) => n == null ? '—' : (Math.abs(n - Math.round(n)) < 0.005 ? Math.round(n).toLocaleString('en-US') : Number(n).toFixed(2));
+    const fmtP = (p) => p == null ? '—' : (Number(p).toFixed(1) + '%');
+    const bandCss = (p) => p == null ? '' : (p > 120 ? 'background:#BBDEFB;color:#0D47A1' : p >= 100 ? 'background:#C8E6C9;color:#1B5E20' : p >= 90 ? 'background:#FFF3C4;color:#8D6E00' : 'background:#FFCDD2;color:#B71C1C');
+    const sohCss = (p) => p == null ? 'color:#666' : (p >= 100 ? 'color:#1B5E20;font-weight:600' : 'color:#B71C1C;font-weight:600');
+    const trh = 'color:#fff;background:' + DG + ';padding:8px 10px;font-weight:600;border:1px solid rgba(0,0,0,0.25);font-size:12px;';
+    const th = 'color:#fff;background:' + G + ';padding:6px 10px;font-weight:600;border:1px solid rgba(0,0,0,0.2);font-size:11px;text-align:center;';
+    const td = 'padding:6px 10px;border:1px solid #d0d7de;font-size:11px;color:#1f2328;background:#fff;';
+    const tdN = td + 'text-align:right;font-family:ui-monospace,Consolas,monospace;';
+    const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const areaEl = document.getElementById('sond-area');
+    const scope = areaEl && areaEl.value ? 'Area: ' + areaEl.value : 'All areas';
+    const t = d.totals || {};
+    const totSohPct = t.seasonF > 0 ? (t.soh / t.seasonF * 100) : null;
+    const headers = ['Area','Store Code','Store Name','No. of SKUs','System On Hand (CS)','Valuation','Season Forecast','Season Received','%','% On Hand vs Fcst','Incoming Order (CS)','Incoming Order Value','% of Total Val.'];
+    const bodyRows = rows.map(r => '<tr>' +
+      '<td style="' + td + '">' + esc(r.area || '') + '</td>' +
+      '<td style="' + td + 'font-family:ui-monospace,Consolas,monospace;">' + esc(r.storeCode) + '</td>' +
+      '<td style="' + td + '">' + esc(r.storeName || '') + '</td>' +
+      '<td style="' + tdN + '">' + fmt(r.skus) + '</td>' +
+      '<td style="' + tdN + '">' + fmtQ(r.soh) + '</td>' +
+      '<td style="' + tdN + 'color:#1B5E20;font-weight:600;">₱' + fmt(r.valuation) + '</td>' +
+      '<td style="' + tdN + '">' + fmt(r.seasonF) + '</td>' +
+      '<td style="' + tdN + '">' + fmt(r.seasonR) + '</td>' +
+      '<td style="' + tdN + bandCss(r.seasonPct) + ';font-weight:600;">' + fmtP(r.seasonPct) + '</td>' +
+      '<td style="' + tdN + sohCss(r.sohPct) + ';">' + fmtP(r.sohPct) + '</td>' +
+      '<td style="' + tdN + '">' + fmtQ(r.incomingCs) + '</td>' +
+      '<td style="' + tdN + 'color:#1B5E20;font-weight:600;">₱' + fmt(r.incomingVal) + '</td>' +
+      '<td style="' + tdN + 'font-weight:600;">' + (r.pctOfTotal == null ? '—' : Number(r.pctOfTotal).toFixed(2) + '%') + '</td>' +
+    '</tr>').join('');
+    const totRow = '<tr>' +
+      '<td style="' + td + 'background:' + DG + ';color:#fff;font-weight:700;" colspan="3">TOTAL (' + rows.length + ' stores)</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmt(t.skus) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmtQ(t.soh) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">₱' + fmt(t.valuation) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmt(t.seasonF) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmt(t.seasonR) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmtP(t.seasonPct) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmtP(totSohPct) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + fmtQ(t.incomingCs) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">₱' + fmt(t.incomingVal) + '</td>' +
+      '<td style="' + tdN + 'background:' + T + ';color:#fff;font-weight:700;">' + (t.pctOfTotal == null ? '—' : Number(t.pctOfTotal).toFixed(2) + '%') + '</td>' +
+    '</tr>';
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;left:-20000px;top:0;background:#fff;padding:20px;font-family:system-ui,-apple-system,Segoe UI,sans-serif;';
+    wrap.innerHTML =
+      '<div style="' + trh + 'text-align:center;font-size:16px;margin-bottom:0;">CAMANAVA SOND Forecast Status (SOND Analysis)</div>' +
+      '<div style="padding:8px 10px;background:#fff;color:#444;font-style:italic;font-size:11px;text-align:center;border:1px solid #d0d7de;border-top:none;">' +
+        'As of ' + today + '  |  ' + esc(scope) + '  |  ' + fmt(t.stores) + ' stores  |  ' + fmt(t.skus) + ' SKUs  |  Valuation ₱' + fmt(t.valuation) +
+      '</div>' +
+      '<table style="border-collapse:collapse;margin-top:0;">' +
+        '<thead><tr>' + headers.map(h => '<th style="' + th + '">' + esc(h) + '</th>').join('') + '</tr></thead>' +
+        '<tbody>' + bodyRows + totRow + '</tbody>' +
+      '</table>';
+    document.body.appendChild(wrap);
+    try {
+      const canvas = await window.html2canvas(wrap, { backgroundColor: '#ffffff', scale: 2, useCORS: true, logging: false });
+      canvas.toBlob(blob => {
+        if (!blob) { alert('Could not build image'); return; }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const today2 = new Date().toISOString().split('T')[0];
+        a.href = url;
+        a.download = 'CAMANAVA_SOND_Analysis_' + today2 + '.png';
+        document.body.appendChild(a); a.click(); a.remove();
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+    } finally {
+      document.body.removeChild(wrap);
+    }
+  } catch (e) {
+    alert('PNG export failed: ' + e.message);
+  } finally {
+    if (btn) { btn.textContent = orig || '📷 Export PNG'; btn.disabled = false; }
+  }
 }
 
 function sortSondAn(key) {
