@@ -5480,6 +5480,152 @@ canvas { max-height:260px; }
 ::-webkit-scrollbar-track { background:var(--bg); }
 ::-webkit-scrollbar-thumb { background:var(--border); border-radius:3px; }
 ::-webkit-scrollbar-thumb:hover { background:var(--text2); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   CORPORATE THEME — Deep forest green + sage + amber accent
+   This block overrides every CSS variable set above; no dark/light swap.
+   Every component declared with var(--xxx) inherits the new colours. */
+:root, :root[data-theme="light"], body[data-theme="light"] {
+  --bg:         #f6f8f4;
+  --bg1:        #ffffff;
+  --bg2:        #f0f3ec;
+  --bg3:        #e6ebe0;
+  --text:       #0d3321;
+  --text1:      #0d3321;
+  --text2:      #556b5a;
+  --muted:      #6b7a6e;
+  --border:     #d7dcd4;
+  --border-strong: #b7c1b5;
+  --green-bright: #2a7a50;
+  --green-dim:    #eaf2e4;
+  --green:        #0d3321;
+  --green-dark:   #0d3321;
+  --red-light: #b93028;
+  --red:       #b93028;
+  --yellow-light: #9c7c00;
+  --yellow:       #9c7c00;
+  --blue: #2a7a50;
+  --accent-yellow: #f5c518;
+  --sidebar-bg: #0d3321;
+  --sidebar-hover: #164d33;
+  --sidebar-text: #d7e8d8;
+  --sidebar-muted: #8fb09a;
+}
+html, body { background: var(--bg); color: var(--text); }
+
+/* ── App shell: sidebar + content ── */
+#app.app-shell { display: flex; flex-direction: row; min-height: 100vh; }
+.sidebar {
+  width: 230px; min-width: 230px; background: var(--sidebar-bg); color: var(--sidebar-text);
+  display: flex; flex-direction: column; border-right: 3px solid var(--accent-yellow);
+  position: sticky; top: 0; height: 100vh; z-index: 40;
+  transition: transform 220ms ease, min-width 220ms ease, width 220ms ease;
+}
+.sidebar-brand {
+  padding: 16px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.08);
+  display: flex; align-items: center; gap: 10px;
+}
+.sidebar-brand img { width: 38px; height: 38px; border-radius: 8px; background: #fff; padding: 2px; object-fit: contain; }
+.sidebar-brand .t1 { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: 0.3px; }
+.sidebar-brand .t2 { font-size: 10px; color: var(--sidebar-muted); text-transform: uppercase; letter-spacing: 1.2px; margin-top: 1px; }
+.sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 0 12px; }
+.sidebar-nav::-webkit-scrollbar { width: 4px; }
+.sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+.nav-section { font-size: 10px; color: #6b9077; text-transform: uppercase; letter-spacing: 1px; padding: 12px 18px 4px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px; padding: 9px 18px;
+  color: var(--sidebar-text); font-size: 13px; cursor: pointer; user-select: none;
+  border-left: 3px solid transparent; transition: background 120ms, border-color 120ms;
+}
+.nav-item .nav-ico { width: 18px; text-align: center; color: var(--sidebar-muted); font-size: 14px; flex-shrink: 0; }
+.nav-item:hover { background: var(--sidebar-hover); }
+.nav-item.active { background: var(--sidebar-hover); color: #fff; border-left-color: var(--accent-yellow); font-weight: 600; }
+.nav-item.active .nav-ico { color: var(--accent-yellow); }
+.sidebar-foot {
+  padding: 12px 16px; border-top: 1px solid rgba(255,255,255,0.08);
+  display: flex; align-items: center; gap: 10px;
+}
+.sidebar-foot .avatar { width: 30px; height: 30px; background: #2a7a50; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 12px; }
+.sidebar-foot .name { font-size: 12px; color: #fff; font-weight: 500; }
+.sidebar-foot .role { font-size: 10px; color: var(--sidebar-muted); }
+
+/* Content pane sits next to the sidebar */
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.app-shell .main { display: block; height: auto; }
+.app-shell header.header { position: static; }
+
+/* Header: slimmer, lighter, corporate */
+.app-shell .header {
+  background: #ffffff; color: var(--text); border-bottom: 1px solid var(--border);
+  box-shadow: none; padding: 10px 20px; gap: 12px;
+}
+.app-shell .header h1 { color: var(--text); font-size: 15px; letter-spacing: 0.2px; }
+.app-shell .header-logo .dot { background: var(--accent-yellow); box-shadow: 0 0 6px rgba(245,197,24,0.5); }
+.app-shell #header-sub { color: var(--text2); }
+
+/* Sidebar toggle button in the header */
+.sidebar-toggle {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  width: 34px; height: 34px; cursor: pointer; color: var(--text);
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.sidebar-toggle:hover { background: var(--green-dim); border-color: var(--green-bright); color: var(--green-bright); }
+
+/* Hide the old horizontal tab strip — navigation lives in the sidebar now */
+.app-shell .tabs { display: none !important; }
+
+/* Primary buttons become corporate green */
+.btn-green { background: var(--sidebar-bg); color: #fff; border-color: var(--sidebar-bg); }
+.btn-green:hover { background: var(--green-bright); border-color: var(--green-bright); color: #fff; }
+
+/* Cards get a crisp white surface and a thin border */
+.section, .kpi-card { background: var(--bg1); border: 1px solid var(--border); border-radius: 10px; }
+.kpi-card { border-left: 4px solid var(--sidebar-bg); }
+.kpi-card.green { border-left-color: var(--green-bright); }
+.kpi-card.yellow { border-left-color: var(--accent-yellow); }
+.kpi-card.red { border-left-color: var(--red-light); }
+.kpi-card.blue { border-left-color: var(--sidebar-bg); }
+
+/* Table headers use deep green; badges use sage tint */
+table thead th, thead th { background: var(--sidebar-bg) !important; color: #fff !important; border-color: rgba(0,0,0,0.25) !important; }
+.badge-blue, .badge-green { background: var(--green-dim); color: var(--green-bright); }
+
+/* Sidebar collapsed state (icon rail, 56px) */
+.app-shell.sidebar-collapsed .sidebar { width: 56px; min-width: 56px; }
+.app-shell.sidebar-collapsed .sidebar-brand { padding: 14px 10px; justify-content: center; }
+.app-shell.sidebar-collapsed .sidebar-brand .t1,
+.app-shell.sidebar-collapsed .sidebar-brand .t2,
+.app-shell.sidebar-collapsed .nav-section,
+.app-shell.sidebar-collapsed .nav-item span:not(.nav-ico),
+.app-shell.sidebar-collapsed .sidebar-foot .name,
+.app-shell.sidebar-collapsed .sidebar-foot .role { display: none; }
+.app-shell.sidebar-collapsed .nav-item { padding: 10px 0; justify-content: center; }
+.app-shell.sidebar-collapsed .sidebar-foot { padding: 12px 10px; justify-content: center; }
+
+/* ── Mobile: sidebar slides over, backdrop dims the page ── */
+.sidebar-backdrop {
+  display: none; position: fixed; inset: 0; background: rgba(13,51,33,0.45); z-index: 35;
+}
+@media (max-width: 860px) {
+  .app-shell .sidebar {
+    position: fixed; top: 0; left: 0; height: 100vh;
+    transform: translateX(-100%); box-shadow: 4px 0 16px rgba(0,0,0,0.25);
+  }
+  .app-shell.sidebar-open .sidebar { transform: translateX(0); }
+  .app-shell.sidebar-open .sidebar-backdrop { display: block; }
+  .app-shell.sidebar-collapsed .sidebar { width: 240px; min-width: 240px; }
+  .app-shell.sidebar-collapsed .sidebar-brand { padding: 16px 16px 14px; justify-content: flex-start; }
+  .app-shell.sidebar-collapsed .sidebar-brand .t1,
+  .app-shell.sidebar-collapsed .sidebar-brand .t2,
+  .app-shell.sidebar-collapsed .nav-section,
+  .app-shell.sidebar-collapsed .nav-item span:not(.nav-ico),
+  .app-shell.sidebar-collapsed .sidebar-foot .name,
+  .app-shell.sidebar-collapsed .sidebar-foot .role { display: inline; }
+  .app-shell.sidebar-collapsed .nav-item { padding: 9px 18px; justify-content: flex-start; }
+  .app-shell .header h1 { font-size: 13px; }
+  .app-shell .header-right .btn { padding: 4px 8px; font-size: 11px; }
+  .content { padding: 10px; }
+}
 </style>
 </head>
 <body>
@@ -5528,9 +5674,55 @@ canvas { max-height:260px; }
   <div class="loader-text" id="loading-msg">Connecting to data source...</div>
 </div>
 
-<div id="app" style="display:none;">
+<div id="app" class="app-shell" style="display:none;">
 
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <img src="/icon.png" alt=""/>
+    <div>
+      <div class="t1">CAMANAVA</div>
+      <div class="t2">Inventory</div>
+    </div>
+  </div>
+  <nav class="sidebar-nav" id="sidebar-nav">
+    <div class="nav-section">Dashboard</div>
+    <div class="nav-item active" data-tab="overview" onclick="showTab('overview')"><span class="nav-ico">▦</span><span>Overview</span></div>
+
+    <div class="nav-section">Problem status</div>
+    <div class="nav-item" data-tab="outofstock" onclick="showTab('outofstock')"><span class="nav-ico">⊘</span><span>Out of Stock</span></div>
+    <div class="nav-item" data-tab="critical" onclick="showTab('critical')"><span class="nav-ico">!</span><span>Critical</span></div>
+    <div class="nav-item" data-tab="overstock" onclick="showTab('overstock')"><span class="nav-ico">⬢</span><span>Overstock</span></div>
+    <div class="nav-item" data-tab="aging" onclick="showTab('aging')"><span class="nav-ico">◴</span><span>Aging</span></div>
+    <div class="nav-item" data-tab="blackinv" onclick="showTab('blackinv')"><span class="nav-ico">◼</span><span>Black Inventory</span></div>
+    <div class="nav-item" data-tab="negsku" onclick="showTab('negsku')"><span class="nav-ico">△</span><span>Negative SKU</span></div>
+    <div class="nav-item" data-tab="deadstock" onclick="showTab('deadstock')"><span class="nav-ico">☠</span><span>P8 Weeks No Sales</span></div>
+
+    <div class="nav-section">Analysis</div>
+    <div class="nav-item" data-tab="stores" onclick="showTab('stores')"><span class="nav-ico">⌂</span><span>Stores</span></div>
+    <div class="nav-item" data-tab="suppliers" onclick="showTab('suppliers')"><span class="nav-ico">▤</span><span>Suppliers</span></div>
+    <div class="nav-item" data-tab="skus" onclick="showTab('skus')"><span class="nav-ico">⚲</span><span>SKU Analysis</span></div>
+    <div class="nav-item" data-tab="top300" onclick="showTab('top300')"><span class="nav-ico">★</span><span>Top 300 Blitz</span></div>
+    <div class="nav-item" data-tab="ricereview" onclick="showTab('ricereview')"><span class="nav-ico">◉</span><span>Rice Stock Review</span></div>
+    <div class="nav-item" data-tab="agingblack" onclick="showTab('agingblack')"><span class="nav-ico">◐</span><span>Aging &amp; Black Summary</span></div>
+    <div class="nav-item" data-tab="sond" onclick="showTab('sond')"><span class="nav-ico">◆</span><span>SOND</span></div>
+    <div class="nav-item" data-tab="focusbrand" onclick="showTab('focusbrand')"><span class="nav-ico">⬚</span><span>Focus Brand</span></div>
+
+    <div class="nav-section" id="nav-section-system">System</div>
+    <div class="nav-item" data-tab="logs" id="nav-logs" style="display:none;" onclick="showTab('logs')"><span class="nav-ico">⚑</span><span>Activity Log</span></div>
+  </nav>
+  <div class="sidebar-foot">
+    <div class="avatar" id="sidebar-avatar">CM</div>
+    <div style="flex:1;min-width:0;">
+      <div class="name" id="sidebar-username">–</div>
+      <div class="role" id="sidebar-role">–</div>
+    </div>
+  </div>
+</aside>
+<div class="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
+
+<div class="app-main">
 <header class="header">
+  <button class="sidebar-toggle" onclick="toggleSidebar()" title="Show / hide navigation" aria-label="Toggle navigation">☰</button>
   <div class="header-logo">
     <div class="dot"></div>
     <div>
@@ -5541,7 +5733,6 @@ canvas { max-height:260px; }
   <div class="header-right">
     <span id="user-info" style="font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace;"></span>
     <div class="refresh-info" id="refresh-info">–</div>
-    <button class="btn" id="theme-toggle-btn" onclick="toggleTheme()" title="Toggle light/dark mode" style="padding:6px 10px;">🌙</button>
     <button class="btn btn-green" onclick="triggerRefresh()">↺ Refresh</button>
     <button class="btn" onclick="doLogout()">Logout</button>
   </div>
@@ -7024,6 +7215,7 @@ canvas { max-height:260px; }
 
   </main>
 </div><!-- end main -->
+</div><!-- /app-main -->
 </div><!-- end app -->
 
 <!-- ACTION PLAN MODAL (Aging & Black) -->
@@ -7353,18 +7545,27 @@ async function startApp() {
 
 function applyUserRestrictions() {
   if (!currentUser) return;
+  const areaLabel = currentUser.isAdmin ? 'All Areas' : (currentUser.area || 'All Areas');
   const info = document.getElementById('user-info');
-  if (info) {
-    const areaLabel = currentUser.isAdmin ? 'All Areas' : (currentUser.area || 'All Areas');
-    info.textContent = '👤 ' + currentUser.username + ' (' + (currentUser.level || 'user') + ' · ' + areaLabel + ')';
-  }
+  if (info) info.textContent = '👤 ' + currentUser.username + ' (' + (currentUser.level || 'user') + ' · ' + areaLabel + ')';
+  // Mirror into the sidebar's user chip
+  const sbName = document.getElementById('sidebar-username');
+  if (sbName) sbName.textContent = currentUser.username || '';
+  const sbRole = document.getElementById('sidebar-role');
+  if (sbRole) sbRole.textContent = (currentUser.isAdmin ? 'Administrator' : (currentUser.level || 'User')) + ' · ' + areaLabel;
+  const sbAv = document.getElementById('sidebar-avatar');
+  if (sbAv) sbAv.textContent = (currentUser.username || '?').slice(0, 2).toUpperCase();
   // If user is locked to an area, set it in filters and disable the area dropdown
   if (!currentUser.isAdmin && currentUser.area) {
     activeFilters.area = currentUser.area;
   }
-  // Show Activity Log tab only for admins
+  // Show Activity Log only for admins — in both the old tab button and the new sidebar
   const logsTabBtn = document.getElementById('tab-btn-logs');
   if (logsTabBtn) logsTabBtn.style.display = currentUser.isAdmin ? '' : 'none';
+  const logsNav = document.getElementById('nav-logs');
+  if (logsNav) logsNav.style.display = currentUser.isAdmin ? '' : 'none';
+  const navSystem = document.getElementById('nav-section-system');
+  if (navSystem) navSystem.style.display = currentUser.isAdmin ? '' : 'none';
   // Show AI Assistant (Morning Brief card + Ask FAB) only for whitelisted owner accounts
   const aiFab = document.getElementById('ai-ask-fab');
   const aiBrief = document.getElementById('ai-brief-card');
@@ -10508,16 +10709,42 @@ function showTab(name) {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
-  document.querySelectorAll('.tab').forEach((el) => {
-    el.classList.remove('active');
-  });
-  // Mark the clicked tab active by matching its onclick target
+  // Clear active state on the old horizontal tabs and the new sidebar nav
+  document.querySelectorAll('.tab, .nav-item').forEach((el) => { el.classList.remove('active'); });
   document.querySelectorAll('.tab').forEach((el) => {
     if (el.getAttribute('onclick') && el.getAttribute('onclick').includes("'" + name + "'")) el.classList.add('active');
   });
+  // Light up the matching sidebar item
+  const navItem = document.querySelector('.nav-item[data-tab="' + name + '"]');
+  if (navItem) navItem.classList.add('active');
+  // On phones, close the slide-over sidebar once the user picks a page
+  if (window.matchMedia('(max-width: 860px)').matches) toggleSidebar(false);
   activeTab = name;
   loadTabData();
 }
+
+// Sidebar hide/show. On desktop it docks and the icon rail stays visible; on mobile
+// it slides over the content with a backdrop so narrow phone screens get the full
+// width for tables.
+function toggleSidebar(force) {
+  const app = document.getElementById('app');
+  if (!app) return;
+  const mobile = window.matchMedia('(max-width: 860px)').matches;
+  const cls = mobile ? 'sidebar-open' : 'sidebar-collapsed';
+  const willBe = (typeof force === 'boolean') ? force :
+    mobile ? !app.classList.contains('sidebar-open')
+           :  !app.classList.contains('sidebar-collapsed');
+  app.classList.toggle(cls, willBe);
+  try { sessionStorage.setItem('cmnv-sidebar-collapsed', app.classList.contains('sidebar-collapsed') ? '1' : '0'); } catch (e) {}
+}
+// Remember collapsed state across navigations within a session
+(function restoreSidebar(){
+  try {
+    const app = document.getElementById('app'); if (!app) return;
+    if (!window.matchMedia('(max-width: 860px)').matches &&
+        sessionStorage.getItem('cmnv-sidebar-collapsed') === '1') app.classList.add('sidebar-collapsed');
+  } catch (e) {}
+})();
 
 // ─── TABLE SEARCH ─────────────────────────────────────────────────────────────
 // Stores current search query per table key (preserved across sort/pagination)
@@ -10866,30 +11093,10 @@ function esc(s) {
 // ─── THEME (Light / Dark) ────────────────────────────────────────────────────
 // Applies at page load: reads saved preference from localStorage; falls back to
 // the OS-level prefers-color-scheme media query. Toggle in header swaps + saves.
-function applyTheme(theme) {
-  const t = theme === 'light' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', t);
-  document.body && document.body.setAttribute('data-theme', t);
-  const btn = document.getElementById('theme-toggle-btn');
-  if (btn) btn.innerHTML = t === 'light' ? '🌙' : '☀';
-  // Charts embed colors from CSS variables at creation time — re-render on toggle
-  if (typeof charts === 'object' && charts) {
-    try { for (const k in charts) { if (charts[k] && charts[k].destroy) charts[k].destroy(); charts[k] = null; } } catch(e){}
-    // Reload the overview charts in the background (safe no-op on other tabs)
-    if (typeof loadCharts === 'function' && (typeof activeTab === 'undefined' || activeTab === 'overview')) {
-      try { loadCharts(); } catch(e){}
-    }
-  }
-}
-function initTheme() {
-  let saved = null;
-  try { saved = localStorage.getItem('camanava_theme'); } catch (e) {}
-  if (!saved) {
-    const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches;
-    saved = prefersLight ? 'light' : 'dark';
-  }
-  applyTheme(saved);
-}
+// Theme functions remain as no-ops so no stray reference from older code throws.
+// The corporate palette is now the single theme; no light/dark swap.
+function applyTheme() {}
+function initTheme() {}
 function toggleTheme() {
   const current = (document.documentElement.getAttribute('data-theme') || 'dark');
   const next = current === 'light' ? 'dark' : 'light';
