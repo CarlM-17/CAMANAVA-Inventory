@@ -5549,13 +5549,12 @@ html, body { background: var(--bg); color: var(--text); }
 .sidebar-foot .name { font-size: 12px; color: #fff; font-weight: 500; }
 .sidebar-foot .role { font-size: 10px; color: var(--sidebar-muted); }
 
-/* Content pane sits next to the sidebar */
-.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.app-shell .main { display: block; height: auto; }
-.app-shell header.header { position: static; }
-
-/* Header: slimmer, lighter, corporate */
-.app-shell .header {
+/* Content pane sits next to the sidebar. Column flex: header on top, scroll area below. */
+.app-main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+.app-shell .main { display: block; height: auto; flex: 1; min-height: 0; overflow-y: auto; }
+.app-shell .content { height: auto; padding: 20px; }
+.app-shell header.header {
+  position: static; flex-shrink: 0; height: 56px;
   background: #ffffff; color: var(--text); border-bottom: 1px solid var(--border);
   box-shadow: none; padding: 10px 20px; gap: 12px;
 }
@@ -5626,6 +5625,35 @@ table thead th, thead th { background: var(--sidebar-bg) !important; color: #fff
   .app-shell .header-right .btn { padding: 4px 8px; font-size: 11px; }
   .content { padding: 10px; }
 }
+
+/* ── Minimum readable size: lift all small text to 11px while keeping headings larger ── */
+body, .app-shell { font-size: 13px; }
+.app-shell .nav-item { font-size: 13px; }
+.app-shell .nav-section { font-size: 11px; letter-spacing: 0.8px; }
+.app-shell .sidebar-foot .name { font-size: 13px; }
+.app-shell .sidebar-foot .role { font-size: 11px; }
+.app-shell .section-header .section-title { font-size: 15px; }
+.app-shell .kpi-card .kpi-label,
+.app-shell .section .section-title + div,
+.app-shell .section-actions { font-size: 11px; }
+.app-shell .filter-bar label,
+.app-shell .filter-bar .fb-group label,
+.app-shell .fb-group label { font-size: 11px; letter-spacing: 0.3px; }
+.app-shell .filter-select,
+.app-shell .filter-bar input,
+.app-shell .table-search { font-size: 12px; }
+.app-shell table, .app-shell table th, .app-shell table td,
+.app-shell .section table { font-size: 11px; }
+.app-shell .table-wrap table thead th { font-size: 11px; padding: 8px 10px; letter-spacing: 0.3px; }
+.app-shell .table-wrap table tbody td { padding: 7px 10px; }
+.app-shell .badge { font-size: 10px; padding: 3px 8px; }
+.app-shell .btn { font-size: 12px; }
+.app-shell .btn-sm { font-size: 11px; padding: 5px 10px; }
+.app-shell .page-info { font-size: 11px; }
+.app-shell .page-btn { font-size: 11px; padding: 4px 9px; }
+.app-shell #header-sub,
+.app-shell #user-info,
+.app-shell .refresh-info { font-size: 11px; }
 </style>
 </head>
 <body>
@@ -7531,8 +7559,10 @@ async function startApp() {
     await sleep(1000);
   }
   document.getElementById('loading-overlay').style.display = 'none';
+  // #app is a horizontal flex row: [sidebar | content]. Don't set flexDirection:column
+  // here — that would stack them vertically and collapse the sidebar beneath the content.
   document.getElementById('app').style.display = 'flex';
-  document.getElementById('app').style.flexDirection = 'column';
+  document.getElementById('app').style.flexDirection = '';
   // Show user info + lock area filter if needed
   applyUserRestrictions();
   // Start inactivity detection & heartbeat
