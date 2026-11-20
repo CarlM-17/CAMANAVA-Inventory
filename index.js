@@ -2009,13 +2009,28 @@ app.get('/api/skus-abc-summary', (req, res) => {
   });
 });
 
+// House-brand matchers — one place to tweak the criteria if the brand list expands.
+// Pure Basics is identified by description / brand text; Lusitano by its supplier name.
+const HOUSE_BRANDS = {
+  purebasics: { label: 'Pure Basics', match: r =>
+    ((r.brand || '') + ' ' + (r.skuDesc || '')).toUpperCase().includes('PURE BASIC') },
+  lusitano:   { label: 'Lusitano',    match: r =>
+    (r.supplierName || '').toUpperCase().includes('LUSITANO') }
+};
+function houseMatcher(key) {
+  const h = HOUSE_BRANDS[String(key).toLowerCase()];
+  return h ? h.match : () => true;
+}
+
 app.get('/api/skus', (req, res) => {
   if (!cache.ready) return res.json({ error: 'Cache not ready' });
-  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', abc = '', token, ...filters } = req.query;
+  const { page = '1', pageSize = '100', sortBy = '', sortDir = 'asc', search = '', status = '', abc = '', house = '', token, ...filters } = req.query;
   // Enforce area lock for non-admin users
   const s = sessions[token || ''];
   if (s && !s.isAdmin && s.area) filters.area = s.area;
   let rows = applyFilters(cache.rows, filters);
+  // House-brand filter — Pure Basics (brand/desc text) and Lusitano (supplier)
+  if (house) rows = rows.filter(houseMatcher(house));
   // Status filter
   // SKU Analysis status filter — matches internal status codes from buildAnalytics.
   // Legacy short codes (critical/oos/overstock/deadstock/normal) also supported
@@ -2984,11 +2999,12 @@ app.get('/api/export/:type', async (req, res) => {
 // SKU Analysis Excel export — respects all filters, sort, search, and status
 app.get('/api/export-skus-xlsx', async (req, res) => {
   if (!cache.ready) return res.status(503).send('Cache not ready');
-  const { sortBy = '', sortDir = 'asc', search = '', status = '', token, ...filters } = req.query;
+  const { sortBy = '', sortDir = 'asc', search = '', status = '', house = '', token, ...filters } = req.query;
   const s = sessions[token || ''];
   if (s && !s.isAdmin && s.area) filters.area = s.area;
 
   let rows = applyFilters(cache.rows, filters);
+  if (house) rows = rows.filter(houseMatcher(house));
   // SKU Analysis status filter — matches internal status codes from buildAnalytics.
   // Legacy short codes (critical/oos/overstock/deadstock/normal) also supported
   // for backward compatibility with any older cached links.
@@ -5615,6 +5631,7 @@ canvas { max-height:260px; }
       <div class="tab" onclick="showTab('skus')">🔍 SKU Analysis</div>
       <div class="tab" onclick="showTab('top300')">⭐ Top 300 SKU Blitz</div>
       <div class="tab" onclick="showTab('ricereview')">🌾 Rice Stock Review</div>
+      <div class="tab" onclick="showTab('focusbrand')">🏷 Focus Brand</div>
       <div class="tab" onclick="showTab('agingblack')">📉 Aging & Black Summary</div>
       <div class="tab" onclick="showTab('sond')">🎄 SOND</div>
       <div class="tab" id="tab-btn-logs" onclick="showTab('logs')" style="display:none;">🔐 Activity Log</div>
@@ -6402,6 +6419,74 @@ canvas { max-height:260px; }
         </div>
         <div class="pagination" id="skus-pagination"></div>
         </div><!-- /sku-subtab-list -->
+      </div>
+    </div>
+
+    <!-- FOCUS BRAND TAB -->
+    <div id="tab-focusbrand" style="display:none;">
+      <div class="section">
+        <div class="section-header">
+          <div class="section-title">🏷 Focus Brand
+            <span class="badge badge-blue" id="fb-total-count" style="margin-left:8px;">0</span>
+          </div>
+          <div class="section-actions">
+            <select class="filter-select" id="fb-status-filter" onchange="loadFocusBrand(1)" style="width:170px;">
+              <option value="">All Status</option>
+              <option value="Negative">⚠ Negative Stock</option>
+              <option value="OOS">🚫 Out of Stock</option>
+              <option value="Idle">💤 Idle</option>
+              <option value="Black">⬛ Black Inventory</option>
+              <option value="P8NoSales">📆 P8 Weeks No Sales</option>
+              <option value="Aging">📅 Aging</option>
+              <option value="Overstock">📦 Overstock</option>
+              <option value="Critical">⚠ Critical</option>
+              <option value="Healthy">✅ Healthy</option>
+              <option value="WellStocked">🟢 Well Stocked</option>
+            </select>
+            <input type="text" class="table-search" id="fb-search-input" placeholder="Search SKU / Store / Supplier..." oninput="debouncedFocusSearch()"/>
+            <button class="btn btn-sm" onclick="exportFocusBrandExcel()" id="fb-export-btn">⬇ Export Excel</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:10px;">
+          <div class="fb-subtab active" id="fb-sub-btn-purebasics" onclick="showFocusBrandSub('purebasics')">📦 Pure Basics</div>
+          <div class="fb-subtab" id="fb-sub-btn-lusitano" onclick="showFocusBrandSub('lusitano')">🏭 Lusitano</div>
+        </div>
+        <style>
+          .fb-subtab { padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; margin-bottom:-1px; user-select:none; }
+          .fb-subtab.active { color:var(--blue); border-bottom-color:var(--blue); }
+        </style>
+        <div class="table-wrap" style="max-height:620px;">
+          <table id="fb-table">
+            <thead><tr>
+              <th onclick="sortFocusBrand('storeName')">Store Name</th>
+              <th onclick="sortFocusBrand('abc')">ABC</th>
+              <th onclick="sortFocusBrand('skuCode')">SKU</th>
+              <th onclick="sortFocusBrand('skuDesc')">Description</th>
+              <th onclick="sortFocusBrand('supplierName')">Supplier</th>
+              <th onclick="sortFocusBrand('onHand')">On Hand</th>
+              <th onclick="sortFocusBrand('qtyCasesNum')">Qty in Cases</th>
+              <th onclick="sortFocusBrand('invValue')">Inv Value</th>
+              <th onclick="sortFocusBrand('salesInvRatio')">Sales/Inv Ratio</th>
+              <th onclick="sortFocusBrand('skuWTS')">WTS</th>
+              <th onclick="sortFocusBrand('skuDaysCover')">Days Cover</th>
+              <th onclick="sortFocusBrand('p8ave')">P8 Ave/Week</th>
+              <th onclick="sortFocusBrand('aveWklySales')">P8 Ave Sales/Week</th>
+              <th onclick="sortFocusBrand('status')">Status</th>
+              <th onclick="sortFocusBrand('lostSalesPerWeek')">Lost Sales/Wk</th>
+              <th onclick="sortFocusBrand('ico')">ICO</th>
+              <th onclick="sortFocusBrand('poOrderGR')">PO On Order</th>
+              <th onclick="sortFocusBrand('trfOrderGR')">Trf On Order</th>
+              <th onclick="sortFocusBrand('xdockGR')">XDock Alloc</th>
+              <th onclick="sortFocusBrand('dateLastOrdered')">Date Last Ordered</th>
+              <th onclick="sortFocusBrand('dateLastSold')">Last Sold</th>
+              <th onclick="sortFocusBrand('dateLastReceived')">Last Received</th>
+              <th onclick="sortFocusBrand('lastTransferIn')">Transfer In</th>
+              <th onclick="sortFocusBrand('lastTransferOut')">Transfer Out</th>
+            </tr></thead>
+            <tbody id="fb-body"><tr><td colspan="24" class="empty">Loading...</td></tr></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="fb-pagination"></div>
       </div>
     </div>
 
@@ -7803,6 +7888,7 @@ async function loadTabData() {
   if (activeTab === 'skus') await loadSKUs(1);
   if (activeTab === 'top300') await loadTop300();
   if (activeTab === 'ricereview') await loadRiceReview();
+  if (activeTab === 'focusbrand') await loadFocusBrand(1);
   if (activeTab === 'agingblack') await loadAgingBlack();
   if (activeTab === 'sond') await loadSOND();
   if (activeTab === 'logs') await loadLogs();
@@ -9980,8 +10066,96 @@ function renderSkuAbcCards(s) {
   ].join('');
 }
 
-function renderSKUTable(rows) {
-  const tbody = document.getElementById('skus-body');
+// ─── FOCUS BRAND TAB ─────────────────────────────────────────────────────────
+// Two sub-tabs that reuse /api/skus (and its sort, pagination and export) with
+// an added filter on the server. One shared state since only one is visible.
+const fbState = {
+  brand: 'purebasics', page: 1, pageSize: 100, total: 0, totalPages: 0,
+  sortBy: 'invValue', sortDir: 'desc', search: ''
+};
+let fbSearchTimer = null;
+function debouncedFocusSearch() {
+  clearTimeout(fbSearchTimer);
+  fbSearchTimer = setTimeout(() => loadFocusBrand(1), 350);
+}
+function showFocusBrandSub(brand) {
+  if (fbState.brand === brand) return;
+  fbState.brand = brand;
+  fbState.page = 1;
+  ['purebasics', 'lusitano'].forEach(b => {
+    const btn = document.getElementById('fb-sub-btn-' + b);
+    if (btn) btn.classList.toggle('active', b === brand);
+  });
+  loadFocusBrand(1);
+}
+function sortFocusBrand(key) {
+  if (fbState.sortBy === key) fbState.sortDir = fbState.sortDir === 'asc' ? 'desc' : 'asc';
+  else { fbState.sortBy = key; fbState.sortDir = 'desc'; }
+  loadFocusBrand(1);
+}
+function goFocusBrandPage(p) {
+  if (p < 1 || p > fbState.totalPages) return;
+  loadFocusBrand(p);
+}
+async function loadFocusBrand(page) {
+  if (page) fbState.page = page;
+  const searchEl = document.getElementById('fb-search-input');
+  const statusEl = document.getElementById('fb-status-filter');
+  const search = searchEl ? searchEl.value : '';
+  const status = statusEl ? statusEl.value : '';
+  fbState.search = search;
+  const params = new URLSearchParams({
+    ...activeFilters,
+    page: fbState.page, pageSize: fbState.pageSize,
+    sortBy: fbState.sortBy, sortDir: fbState.sortDir,
+    search: search, status: status, house: fbState.brand
+  });
+  if (authToken) params.set('token', authToken);
+  const r = await fetch('/api/skus?' + params.toString());
+  const d = await r.json();
+  if (!d || d.error) return;
+  fbState.total = d.total;
+  fbState.totalPages = d.totalPages;
+  document.getElementById('fb-total-count').textContent = fmt(d.total);
+  renderSKUTable(d.rows, 'fb-body');
+  renderFocusBrandPagination();
+}
+function renderFocusBrandPagination() {
+  const cont = document.getElementById('fb-pagination');
+  if (!cont) return;
+  const total = fbState.totalPages, current = fbState.page;
+  if (total <= 1) { cont.innerHTML = '<span class="page-info">' + fmt(fbState.total) + ' SKUs</span>'; return; }
+  let html = '<span class="page-info">' + fmt(fbState.total) + ' SKUs | Page ' + current + ' of ' + total + '</span>';
+  html += '<button class="page-btn" onclick="goFocusBrandPage(1)">&laquo;</button>';
+  html += '<button class="page-btn" onclick="goFocusBrandPage(' + Math.max(1, current - 1) + ')">&lsaquo;</button>';
+  const startP = Math.max(1, current - 2), endP = Math.min(total, current + 2);
+  for (let i = startP; i <= endP; i++) {
+    html += '<button class="page-btn' + (i === current ? ' active' : '') + '" onclick="goFocusBrandPage(' + i + ')">' + i + '</button>';
+  }
+  html += '<button class="page-btn" onclick="goFocusBrandPage(' + Math.min(total, current + 1) + ')">&rsaquo;</button>';
+  html += '<button class="page-btn" onclick="goFocusBrandPage(' + total + ')">&raquo;</button>';
+  cont.innerHTML = html;
+}
+function exportFocusBrandExcel() {
+  const statusEl = document.getElementById('fb-status-filter');
+  const searchEl = document.getElementById('fb-search-input');
+  const params = new URLSearchParams({
+    ...activeFilters,
+    sortBy: fbState.sortBy, sortDir: fbState.sortDir,
+    search: searchEl ? searchEl.value : '',
+    status: statusEl ? statusEl.value : '',
+    house: fbState.brand
+  });
+  if (authToken) params.set('token', authToken);
+  const a = document.createElement('a');
+  a.href = '/api/export-skus-xlsx?' + params.toString();
+  a.download = '';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+function renderSKUTable(rows, tbodyId) {
+  const tbody = document.getElementById(tbodyId || 'skus-body');
+  if (!tbody) return;
   if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="24" class="empty">No data found</td></tr>'; return; }
   tbody.innerHTML = rows.map(r => {
     const wts = r.weeksToSell != null ? r.weeksToSell.toFixed(1) : '—';
@@ -10330,7 +10504,7 @@ function renderSupplierRow(r) {
 
 // ─── TABS ─────────────────────────────────────────────────────────────────────
 function showTab(name) {
-  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','agingblack','sond','logs'].forEach(t => {
+  ['overview','outofstock','critical','overstock','aging','blackinv','negsku','deadstock','stores','suppliers','skus','top300','ricereview','agingblack','sond','focusbrand','logs'].forEach(t => {
     const el = document.getElementById('tab-' + t);
     if (el) el.style.display = t === name ? '' : 'none';
   });
