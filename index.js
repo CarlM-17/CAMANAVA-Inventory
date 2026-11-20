@@ -5518,7 +5518,7 @@ html, body { background: var(--bg); color: var(--text); }
 .sidebar {
   width: 230px; min-width: 230px; background: var(--sidebar-bg); color: var(--sidebar-text);
   display: flex; flex-direction: column; border-right: 3px solid var(--accent-yellow);
-  position: sticky; top: 0; height: 100vh; z-index: 40;
+  position: sticky; top: 0; height: 100vh; z-index: 70;
   transition: transform 220ms ease, min-width 220ms ease, width 220ms ease;
 }
 .sidebar-brand {
@@ -5603,8 +5603,15 @@ table thead th, thead th { background: var(--sidebar-bg) !important; color: #fff
 
 /* ── Mobile: sidebar slides over, backdrop dims the page ── */
 .sidebar-backdrop {
-  display: none; position: fixed; inset: 0; background: rgba(13,51,33,0.45); z-index: 35;
+  display: none; position: fixed; inset: 0; background: rgba(13,51,33,0.55); z-index: 60;
 }
+/* Sidebar foot logout button — primary way to log out on phones */
+.sidebar-logout {
+  background: transparent; border: 1px solid rgba(255,255,255,0.18); color: #fff;
+  padding: 4px 10px; border-radius: 5px; font-size: 11px; cursor: pointer;
+  margin-left: 4px; white-space: nowrap;
+}
+.sidebar-logout:hover { background: rgba(255,255,255,0.08); border-color: var(--accent-yellow); color: var(--accent-yellow); }
 @media (max-width: 860px) {
   .app-shell .sidebar {
     position: fixed; top: 0; left: 0; height: 100vh;
@@ -5623,6 +5630,11 @@ table thead th, thead th { background: var(--sidebar-bg) !important; color: #fff
   .app-shell.sidebar-collapsed .nav-item { padding: 9px 18px; justify-content: flex-start; }
   .app-shell .header h1 { font-size: 13px; }
   .app-shell .header-right .btn { padding: 4px 8px; font-size: 11px; }
+  /* Declutter the mobile header: hide user chip + Logout here, since both live in the
+     sidebar foot on phones. Keep Refresh (critical) as an icon-sized button. */
+  .app-shell .header-right #user-info,
+  .app-shell .header-right .refresh-info,
+  .app-shell .header-right .btn[onclick="doLogout()"] { display: none; }
   .content { padding: 10px; }
 }
 
@@ -5744,6 +5756,7 @@ body, .app-shell { font-size: 13px; }
       <div class="name" id="sidebar-username">–</div>
       <div class="role" id="sidebar-role">–</div>
     </div>
+    <button class="sidebar-logout" onclick="doLogout()" title="Log out">⇠</button>
   </div>
 </aside>
 <div class="sidebar-backdrop" onclick="toggleSidebar(false)"></div>
