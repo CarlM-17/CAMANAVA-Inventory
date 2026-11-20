@@ -5638,34 +5638,56 @@ table thead th, thead th { background: var(--sidebar-bg) !important; color: #fff
   .content { padding: 10px; }
 }
 
-/* ── Minimum readable size: lift all small text to 11px while keeping headings larger ── */
-body, .app-shell { font-size: 13px; }
-.app-shell .nav-item { font-size: 13px; }
-.app-shell .nav-section { font-size: 11px; letter-spacing: 0.8px; }
-.app-shell .sidebar-foot .name { font-size: 13px; }
-.app-shell .sidebar-foot .role { font-size: 11px; }
-.app-shell .section-header .section-title { font-size: 15px; }
-.app-shell .kpi-card .kpi-label,
+/* ═══════════════════════════════════════════════════════════════════════════
+   Option B — Comfortable sizing.
+   Chosen as the baseline: matches Excel/Sheets body size (13px), tables scan
+   cleanly without crowding, phones still show several rows per screen. */
+body, .app-shell { font-size: 14px; }
+.app-shell .nav-item { font-size: 14px; }
+.app-shell .nav-section { font-size: 12px; letter-spacing: 0.8px; }
+.app-shell .sidebar-foot .name { font-size: 14px; }
+.app-shell .sidebar-foot .role { font-size: 12px; }
+.app-shell .header h1 { font-size: 17px; }
+.app-shell .section-header .section-title { font-size: 17px; }
+.app-shell .kpi-card .kpi-label { font-size: 12px; }
+.app-shell .kpi-card [style*="font-size:22px"],
+.app-shell .kpi-card [style*="font-size: 22px"] { font-size: 24px !important; }
 .app-shell .section .section-title + div,
-.app-shell .section-actions { font-size: 11px; }
+.app-shell .section-actions { font-size: 12px; }
 .app-shell .filter-bar label,
 .app-shell .filter-bar .fb-group label,
-.app-shell .fb-group label { font-size: 11px; letter-spacing: 0.3px; }
+.app-shell .fb-group label { font-size: 12px; letter-spacing: 0.3px; }
 .app-shell .filter-select,
 .app-shell .filter-bar input,
-.app-shell .table-search { font-size: 12px; }
+.app-shell .table-search { font-size: 13px; }
 .app-shell table, .app-shell table th, .app-shell table td,
-.app-shell .section table { font-size: 11px; }
-.app-shell .table-wrap table thead th { font-size: 11px; padding: 8px 10px; letter-spacing: 0.3px; }
-.app-shell .table-wrap table tbody td { padding: 7px 10px; }
-.app-shell .badge { font-size: 10px; padding: 3px 8px; }
-.app-shell .btn { font-size: 12px; }
-.app-shell .btn-sm { font-size: 11px; padding: 5px 10px; }
-.app-shell .page-info { font-size: 11px; }
-.app-shell .page-btn { font-size: 11px; padding: 4px 9px; }
+.app-shell .section table { font-size: 13px; }
+.app-shell .table-wrap table thead th { font-size: 12px; padding: 10px 11px; letter-spacing: 0.3px; }
+.app-shell .table-wrap table tbody td { padding: 9px 10px; }
+.app-shell .badge { font-size: 11px; padding: 3px 9px; }
+.app-shell .btn { font-size: 13px; }
+.app-shell .btn-sm { font-size: 12px; padding: 6px 11px; }
+.app-shell .page-info { font-size: 12px; }
+.app-shell .page-btn { font-size: 12px; padding: 5px 10px; }
 .app-shell #header-sub,
 .app-shell #user-info,
-.app-shell .refresh-info { font-size: 11px; }
+.app-shell .refresh-info { font-size: 12px; }
+
+/* Let tables fill the available vertical space — remove the arbitrary 500-620px
+   cap in favour of a viewport-relative height. The sticky table headers make the
+   scrolling container feel like a pinned pane rather than a cropped card. */
+.app-shell .table-wrap { max-height: calc(100vh - 260px) !important; min-height: 240px; }
+.app-shell .section { display: flex; flex-direction: column; }
+
+/* Phones: trim one notch so several rows stay on screen without zoom */
+@media (max-width: 480px) {
+  .app-shell table, .app-shell table th, .app-shell table td { font-size: 12px; }
+  .app-shell .table-wrap table thead th { padding: 7px 8px; }
+  .app-shell .table-wrap table tbody td { padding: 7px 8px; }
+  .app-shell .nav-item { font-size: 15px; padding: 11px 18px; }
+  .app-shell .header h1 { font-size: 15px; }
+  .app-shell .table-wrap { max-height: calc(100vh - 230px) !important; }
+}
 </style>
 </head>
 <body>
