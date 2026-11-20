@@ -5525,9 +5525,10 @@ html, body { background: var(--bg); color: var(--text); }
   padding: 16px 16px 14px; border-bottom: 1px solid rgba(255,255,255,0.08);
   display: flex; align-items: center; gap: 10px;
 }
-.sidebar-brand img { width: 38px; height: 38px; border-radius: 8px; background: #fff; padding: 2px; object-fit: contain; }
-.sidebar-brand .t1 { font-size: 14px; font-weight: 700; color: #fff; letter-spacing: 0.3px; }
-.sidebar-brand .t2 { font-size: 10px; color: var(--sidebar-muted); text-transform: uppercase; letter-spacing: 1.2px; margin-top: 1px; }
+.sidebar-brand { padding: 18px 16px 16px; }
+.sidebar-brand img { width: 42px; height: 42px; border-radius: 8px; background: #fff; padding: 2px; object-fit: contain; flex-shrink: 0; }
+.sidebar-brand .t1 { font-size: 18px; font-weight: 800; color: #ffffff; letter-spacing: 0.6px; line-height: 1.1; }
+.sidebar-brand .t2 { font-size: 13px; color: var(--accent-yellow); font-weight: 600; letter-spacing: 1.5px; margin-top: 3px; text-transform: uppercase; }
 .sidebar-nav { flex: 1; overflow-y: auto; padding: 8px 0 12px; }
 .sidebar-nav::-webkit-scrollbar { width: 4px; }
 .sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
@@ -5558,6 +5559,8 @@ html, body { background: var(--bg); color: var(--text); }
   background: #ffffff; color: var(--text); border-bottom: 1px solid var(--border);
   box-shadow: none; padding: 10px 20px; gap: 12px;
 }
+/* Remove the big header-logo block — brand lives in the sidebar now */
+.app-shell .header .header-logo { display: none; }
 .app-shell .header h1 { color: var(--text); font-size: 15px; letter-spacing: 0.2px; }
 .app-shell .header-logo .dot { background: var(--accent-yellow); box-shadow: 0 0 6px rgba(245,197,24,0.5); }
 .app-shell #header-sub { color: var(--text2); }
@@ -5678,6 +5681,92 @@ body, .app-shell { font-size: 14px; }
    scrolling container feel like a pinned pane rather than a cropped card. */
 .app-shell .table-wrap { max-height: calc(100vh - 260px) !important; min-height: 240px; }
 .app-shell .section { display: flex; flex-direction: column; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Crisp, sharp colour overrides.
+   Replace every translucent pill/badge/cell with a SOLID background + dark text
+   from the same hue family — at WCAG AA contrast on pale fills. The theme now
+   never relies on 10–20% alpha washes that disappear in bright light. */
+
+/* Status pills (SKU status column) */
+.app-shell .status-critical    { background: #FFCDD2 !important; color: #8B1F1F !important; border: 1px solid #F09595 !important; }
+.app-shell .status-oos         { background: #F09595 !important; color: #4A0F0F !important; border: 1px solid #E24B4A !important; }
+.app-shell .status-overstock   { background: #FFE0B2 !important; color: #7A4B00 !important; border: 1px solid #F2B86B !important; }
+.app-shell .status-aging       { background: #FAEEDA !important; color: #633806 !important; border: 1px solid #EF9F27 !important; }
+.app-shell .status-p8          { background: #E0E0E0 !important; color: #2C2C2A !important; border: 1px solid #B4B2A9 !important; }
+.app-shell .status-dead        { background: #D3D1C7 !important; color: #2C2C2A !important; border: 1px solid #888780 !important; }
+.app-shell .status-idle        { background: #F1EFE8 !important; color: #5F5E5A !important; border: 1px solid #B4B2A9 !important; font-style: normal !important; }
+.app-shell .status-excluded    { background: #E6F1FB !important; color: #042C53 !important; border: 1px solid #85B7EB !important; font-style: normal !important; }
+.app-shell .status-wellstocked { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #97C459 !important; }
+.app-shell .status-healthy     { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #639922 !important; }
+.app-shell .status-normal      { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #639922 !important; }
+.app-shell .status-critical, .app-shell .status-oos,
+.app-shell .status-overstock, .app-shell .status-aging,
+.app-shell .status-p8, .app-shell .status-dead, .app-shell .status-idle,
+.app-shell .status-excluded, .app-shell .status-wellstocked,
+.app-shell .status-healthy, .app-shell .status-normal {
+  font-size: 11px !important; font-weight: 700 !important; padding: 3px 9px !important; border-radius: 10px !important;
+}
+
+/* Store Risk Matrix pills (Days Cover / Critical % / OOS % / Overstock %) */
+.app-shell .risk-pill { font-size: 12px !important; font-weight: 700 !important; padding: 4px 10px !important; border-radius: 10px !important; letter-spacing: 0.1px; }
+.app-shell .risk-low  { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #639922 !important; }
+.app-shell .risk-med  { background: #FAC775 !important; color: #633806 !important; border: 1px solid #BA7517 !important; }
+.app-shell .risk-high { background: #F09595 !important; color: #501313 !important; border: 1px solid #E24B4A !important; }
+.app-shell .risk-none { background: #E6EBE0 !important; color: #2C2C2A !important; border: 1px solid #B4B2A9 !important; }
+
+/* Area badges and SKU-count badges */
+.app-shell .badge-blue  { background: #0d3321 !important; color: #ffffff !important; border: 1px solid #0d3321 !important; font-weight: 700 !important; }
+.app-shell .badge-green { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #639922 !important; font-weight: 700 !important; }
+.app-shell .badge-amber, .app-shell .badge-yellow { background: #FAC775 !important; color: #633806 !important; border: 1px solid #BA7517 !important; font-weight: 700 !important; }
+.app-shell .badge-red   { background: #F09595 !important; color: #501313 !important; border: 1px solid #E24B4A !important; font-weight: 700 !important; }
+
+/* ABC letter pill in SKU rows */
+.app-shell .abc-pill[data-abc="A"] { background: #C0DD97 !important; color: #173404 !important; border: 1px solid #639922 !important; }
+.app-shell .abc-pill[data-abc="B"] { background: #FAC775 !important; color: #633806 !important; border: 1px solid #BA7517 !important; }
+.app-shell .abc-pill[data-abc="C"] { background: #E0E0E0 !important; color: #2C2C2A !important; border: 1px solid #888780 !important; }
+.app-shell .abc-pill { font-weight: 700 !important; }
+
+/* SOND month-band sub-headers and cells — switch pale tints to solid */
+.app-shell .sond-matrix td.cell-met       { background: #DFEDD2 !important; }
+.app-shell .sond-matrix td.cell-close     { background: #FFE5A8 !important; }
+.app-shell .sond-matrix td.cell-short     { background: #FBC7C7 !important; }
+.app-shell .sond-matrix td.cell-over      { background: #B5D4F4 !important; }
+.app-shell .sond-matrix td.cell-unplanned { background: #CFBFF2 !important; }
+.app-shell .sond-matrix .b-met   { color: #173404 !important; font-weight: 700; }
+.app-shell .sond-matrix .b-close { color: #633806 !important; font-weight: 700; }
+.app-shell .sond-matrix .b-short { color: #501313 !important; font-weight: 700; }
+.app-shell .sond-matrix .b-over  { color: #042C53 !important; font-weight: 700; }
+.app-shell .sond-matrix .b-unplanned { color: #26215C !important; font-weight: 700; }
+
+/* ABC Analysis table group tints */
+.app-shell #abcstore-table .g-t { background: #E6F1FB !important; }
+.app-shell #abcstore-table .g-a { background: #EAF3DE !important; }
+.app-shell #abcstore-table .g-b { background: #FAEEDA !important; }
+.app-shell #abcstore-table .g-c { background: #FCEBEB !important; }
+.app-shell #abcstore-table tr.abc-total td.g-t { background: #B5D4F4 !important; color: #042C53 !important; font-weight: 700; }
+.app-shell #abcstore-table tr.abc-total td.g-a { background: #C0DD97 !important; color: #173404 !important; font-weight: 700; }
+.app-shell #abcstore-table tr.abc-total td.g-b { background: #FAC775 !important; color: #633806 !important; font-weight: 700; }
+.app-shell #abcstore-table tr.abc-total td.g-c { background: #F09595 !important; color: #501313 !important; font-weight: 700; }
+
+/* Monetary green values, lost sales red — bump weight for crispness */
+.app-shell table td[style*="color:var(--green-bright)"],
+.app-shell table td[style*="color: var(--green-bright)"] { color: #1a6d3d !important; font-weight: 700 !important; }
+.app-shell table td[style*="color:var(--red-light)"],
+.app-shell table td[style*="color: var(--red-light)"] { color: #b93028 !important; font-weight: 700 !important; }
+
+/* Numbers in table cells get a tabular rhythm */
+.app-shell table td.mono, .app-shell table td.num { font-family: 'JetBrains Mono', 'IBM Plex Mono', Consolas, monospace !important; font-variant-numeric: tabular-nums; }
+
+/* Kill the AI Brief gradient — sharp solid card instead */
+.app-shell #ai-brief-card { background: #ffffff !important; border: 1px solid var(--border) !important; border-left: 4px solid var(--sidebar-bg) !important; }
+
+/* Alternating zebra on tables for scanability — no translucent */
+.app-shell .table-wrap tbody tr:nth-child(even) td { background: #f6f8f4; }
+.app-shell .table-wrap tbody tr:hover td { background: #EAF2E4 !important; }
+
+/* Status dot in the "Cache ready" strip — solid bright green */
+.app-shell .cache-status, .app-shell .cache-ready-strip { background: #EAF2E4 !important; color: #0d3321 !important; border: 1px solid #C0DD97 !important; }
 
 /* Phones: trim one notch so several rows stay on screen without zoom */
 @media (max-width: 480px) {
