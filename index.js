@@ -2010,12 +2010,12 @@ app.get('/api/skus-abc-summary', (req, res) => {
 });
 
 // House-brand matchers — one place to tweak the criteria if the brand list expands.
-// Pure Basics is identified by description / brand text; Lusitano by its supplier name.
+// Pure Basics is identified by description / brand text; Monte Sierra by its supplier name.
 const HOUSE_BRANDS = {
-  purebasics: { label: 'Pure Basics', match: r =>
+  purebasics:  { label: 'Pure Basics',  match: r =>
     ((r.brand || '') + ' ' + (r.skuDesc || '')).toUpperCase().includes('PURE BASIC') },
-  lusitano:   { label: 'Lusitano',    match: r =>
-    (r.supplierName || '').toUpperCase().includes('LUSITANO') }
+  montesierra: { label: 'Monte Sierra', match: r =>
+    (r.supplierName || '').toUpperCase().includes('MONTE SIERRA IMPORTS OPC') }
 };
 function houseMatcher(key) {
   const h = HOUSE_BRANDS[String(key).toLowerCase()];
@@ -2029,7 +2029,7 @@ app.get('/api/skus', (req, res) => {
   const s = sessions[token || ''];
   if (s && !s.isAdmin && s.area) filters.area = s.area;
   let rows = applyFilters(cache.rows, filters);
-  // House-brand filter — Pure Basics (brand/desc text) and Lusitano (supplier)
+  // Focus Brand filter — Pure Basics (brand/desc text) and Monte Sierra (supplier)
   if (house) rows = rows.filter(houseMatcher(house));
   // Status filter
   // SKU Analysis status filter — matches internal status codes from buildAnalytics.
@@ -6449,7 +6449,7 @@ canvas { max-height:260px; }
         </div>
         <div style="display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:10px;">
           <div class="fb-subtab active" id="fb-sub-btn-purebasics" onclick="showFocusBrandSub('purebasics')">📦 Pure Basics</div>
-          <div class="fb-subtab" id="fb-sub-btn-lusitano" onclick="showFocusBrandSub('lusitano')">🏭 Lusitano</div>
+          <div class="fb-subtab" id="fb-sub-btn-montesierra" onclick="showFocusBrandSub('montesierra')">🏔 Monte Sierra</div>
         </div>
         <style>
           .fb-subtab { padding:8px 14px; font-size:12px; font-weight:600; cursor:pointer; color:var(--text2); border-bottom:2px solid transparent; margin-bottom:-1px; user-select:none; }
@@ -10082,7 +10082,7 @@ function showFocusBrandSub(brand) {
   if (fbState.brand === brand) return;
   fbState.brand = brand;
   fbState.page = 1;
-  ['purebasics', 'lusitano'].forEach(b => {
+  ['purebasics', 'montesierra'].forEach(b => {
     const btn = document.getElementById('fb-sub-btn-' + b);
     if (btn) btn.classList.toggle('active', b === brand);
   });
