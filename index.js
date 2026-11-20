@@ -1519,6 +1519,7 @@ app.get('/api/status', (req, res) => {
     ready: cache.ready,
     refreshing: cache.refreshing,
     lastRefresh: cache.lastRefresh,
+    lastDataModified: cache.lastModifiedTime,   // Google Drive's own file-modified time
     error: cache.error,
     totalRows: cache.rows.length
   });
@@ -5674,7 +5675,14 @@ body, .app-shell { font-size: 14px; }
 .app-shell .page-btn { font-size: 12px; padding: 5px 10px; }
 .app-shell #header-sub,
 .app-shell #user-info,
-.app-shell .refresh-info { font-size: 12px; }
+.app-shell .refresh-info { font-size: 12px; display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; color: var(--text); font-family: inherit; }
+.app-shell .freshness-dot { width: 9px; height: 9px; border-radius: 50%; background: #B4B2A9; flex-shrink: 0; box-shadow: 0 0 0 2px rgba(0,0,0,0.04); }
+.app-shell .refresh-info.fresh { background: #EAF3DE; border-color: #97C459; color: #173404; }
+.app-shell .refresh-info.fresh .freshness-dot { background: #639922; box-shadow: 0 0 6px rgba(99,153,34,0.5); }
+.app-shell .refresh-info.stale { background: #FAEEDA; border-color: #EF9F27; color: #633806; }
+.app-shell .refresh-info.stale .freshness-dot { background: #EF9F27; box-shadow: 0 0 6px rgba(239,159,39,0.55); }
+.app-shell .refresh-info.old { background: #FCEBEB; border-color: #E24B4A; color: #501313; }
+.app-shell .refresh-info.old .freshness-dot { background: #A32D2D; box-shadow: 0 0 6px rgba(163,45,45,0.55); animation: pulse 2s infinite; }
 
 /* Let tables fill the available vertical space — remove the arbitrary 500-620px
    cap in favour of a viewport-relative height. The sticky table headers make the
@@ -5884,7 +5892,10 @@ body, .app-shell { font-size: 14px; }
   </div>
   <div class="header-right">
     <span id="user-info" style="font-size:11px;color:var(--text2);font-family:'IBM Plex Mono',monospace;"></span>
-    <div class="refresh-info" id="refresh-info">–</div>
+    <div class="refresh-info" id="refresh-info" title="When the raw data was last saved to Google Drive">
+      <span class="freshness-dot" id="freshness-dot"></span>
+      <span id="freshness-text">Data updated –</span>
+    </div>
     <button class="btn btn-green" onclick="triggerRefresh()">↺ Refresh</button>
     <button class="btn" onclick="doLogout()">Logout</button>
   </div>
@@ -7774,10 +7785,34 @@ async function loadAll() {
   updateStatus();
 }
 
+// Formats the Google Drive file's modifiedTime as a freshness chip. The colour
+// mirrors how "current" the raw data is, so a user can tell at a glance whether
+// the CSV in Drive has been updated recently.
+function renderDataFreshness(iso) {
+  const chip = document.getElementById('refresh-info');
+  const txt = document.getElementById('freshness-text');
+  if (!chip || !txt) return;
+  chip.classList.remove('fresh', 'stale', 'old');
+  if (!iso) { txt.textContent = 'Data updated –'; return; }
+  const when = new Date(iso);
+  const hours = (Date.now() - when.getTime()) / 36e5;
+  let rel;
+  if (hours < 1) rel = Math.max(1, Math.round(hours * 60)) + ' min ago';
+  else if (hours < 24) rel = Math.round(hours) + ' hr ago';
+  else if (hours < 48) rel = 'yesterday';
+  else rel = Math.round(hours / 24) + ' days ago';
+  const absStr = when.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  txt.textContent = 'Data updated ' + rel + ' (' + absStr + ')';
+  if (hours < 24) chip.classList.add('fresh');
+  else if (hours < 72) chip.classList.add('stale');
+  else chip.classList.add('old');
+  chip.title = 'Raw CSV in Google Drive · last modified ' + when.toLocaleString();
+}
+
 async function updateStatus() {
   const r = await fetch('/api/status');
   const d = await r.json();
-  document.getElementById('refresh-info').textContent = d.lastRefresh ? 'Last refresh: ' + new Date(d.lastRefresh).toLocaleString() : '–';
+  renderDataFreshness(d.lastDataModified);
   document.getElementById('header-sub').textContent = d.totalRows ? fmt(d.totalRows) + ' SKU rows loaded' : 'CAMANAVA';
   document.getElementById('status-rows').textContent = d.totalRows ? fmt(d.totalRows) + ' rows in cache' : '';
   const dot = document.getElementById('status-dot');
